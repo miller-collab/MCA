@@ -1,0 +1,6 @@
+{
+  "name": "MCA - Controle de Atividades e MES",
+  "description": "Sistema MES industrial completo para monitoramento e controle de atividades de chão de fábrica em tempo real, gestão de turnos, indicadores de eficiência do líder e inteligência artificial operacional.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
