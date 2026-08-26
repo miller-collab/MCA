@@ -1,55 +1,129 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
-import { NavigationTabs, TabKey } from './components/NavigationTabs';
+import { NavigationTabs } from './components/NavigationTabs';
 import { ProductionFloorView } from './components/ProductionFloorView';
-import { HistoryView } from './components/HistoryView';
 import { EfficiencyView } from './components/EfficiencyView';
+import { HistoryView } from './components/HistoryView';
 import { LeaderDashboardView } from './components/LeaderDashboardView';
 import { ShiftAndFactoryConfigView } from './components/ShiftAndFactoryConfigView';
 
-import { 
-  Collaborator, 
-  ActivityItem, 
-  ShiftConfig, 
-  ProductionLog, 
+import {
+  Collaborator,
+  ActivityItem,
+  ShiftConfig,
+  ProductionLog,
   ActivityCategory,
-  AutoCloseNotification
+  AutoCloseNotification,
 } from './types';
-import { 
-  INITIAL_COLLABORATORS, 
-  INITIAL_ACTIVITIES, 
-  INITIAL_SHIFTS, 
-  INITIAL_OBSERVATIONS 
+
+import {
+  INITIAL_COLLABORATORS,
+  INITIAL_SHIFTS,
+  INITIAL_ACTIVITIES,
+  INITIAL_OBSERVATIONS,
 } from './data/initialData';
-import { 
-  gerarLogsIniciais, 
-  formatarDataPtBr, 
-  formatarHoraPtBr, 
-  verificarTurnoEncerrado, 
+
+import {
+  formatarDataPtBr,
+  formatarHoraPtBr,
   calcularDiferencaMinutos,
   playFactoryChime,
-  padronizarNomeTurno
+  verificarTurnoEncerrado,
+  padronizarNomeTurno,
 } from './utils/factoryCalculations';
 
-export default function App() {
-  // 1. Core State with LocalStorage Persistence
+import {
+  findSavedCollaboratorsInBrowser,
+  savePermanentLocalBackup,
+} from './utils/recoveryUtils';
+
+import {
+  subscribeToLogs,
+  subscribeToCollaborators,
+  subscribeToActivities,
+  subscribeToShifts,
+  subscribeToFactoryConfig,
+  subscribeToAutoCloseNotifs,
+  saveLogToFirestore,
+  deleteLogFromFirestore,
+  saveCollaboratorsToFirestore,
+  saveActivitiesToFirestore,
+  saveShiftsToFirestore,
+  saveFactoryConfigToFirestore,
+  saveAutoCloseNotifToFirestore,
+  dismissAutoCloseNotifInFirestore,
+  clearAllNotifsInFirestore,
+  seedInitialFirestoreDataIfEmpty,
+} from './services/firestoreSync';
+
+export type TabKey = 'painel' | 'eficiencia' | 'historico' | 'indicadores' | 'turnos';
+
+// Helper to generate initial logs if empty
+function gerarLogsIniciais(
+  colaboradores: Collaborator[],
+  atividades: ActivityItem[]
+): ProductionLog[] {
+  const hoje = formatarDataPtBr(new Date());
+  return [
+    {
+      id: 'log-seed-1',
+      date: hoje,
+      collaboratorName: 'Carlos Silva',
+      role: 'PREPARADOR TORNO AUTOMATICO',
+      shift: 'Turno 1',
+      activity: 'SETUP DE MAQUINA',
+      category: 'Setup',
+      startTime: '08:00:00',
+      status: 'Em Execução',
+    },
+    {
+      id: 'log-seed-2',
+      date: hoje,
+      collaboratorName: 'Marcos Oliveira',
+      role: 'INSPETOR TCNC / OPERADOR',
+      shift: 'Turno 1',
+      activity: 'MEDIR PEÇAS',
+      category: 'Qualidade / Inspeção',
+      startTime: '08:15:00',
+      status: 'Em Execução',
+    },
+    {
+      id: 'log-seed-3',
+      date: hoje,
+      collaboratorName: 'Anderson Souza',
+      role: 'AREA DO CAVACO E OLEO',
+      shift: 'Turno 1',
+      activity: 'LIMPEZA DO CAVACO',
+      category: '5S & Limpeza',
+      startTime: '07:50:00',
+      status: 'Em Execução',
+    },
+    {
+      id: 'log-seed-4',
+      date: hoje,
+      collaboratorName: 'Robson Santos',
+      role: 'PREPARADOR DE FERRAMENTAS',
+      shift: 'Turno 1',
+      activity: 'AFIAR FERRAMENTAS',
+      category: 'Setup',
+      startTime: '07:30:00',
+      endTime: '08:15:00',
+      durationMinutes: 45,
+      status: 'Concluída',
+      observation: 'Operação Concluída com Sucesso sem Anomalias',
+    },
+  ];
+}
+
+export function App() {
+  // 1. Core State
   const [collaborators, setCollaborators] = useState<Collaborator[]>(() => {
-    const saved = localStorage.getItem('mca_collaborators_v3');
-    if (saved) {
-      try {
-        const parsed: Collaborator[] = JSON.parse(saved);
-        return parsed.map((c) => ({
-          ...c,
-          shift: padronizarNomeTurno(c.shift),
-        }));
-      } catch (e) {
-        console.error(e);
-      }
+    const recovered = findSavedCollaboratorsInBrowser();
+    if (recovered.found && recovered.collaborators.length > 0) {
+      return recovered.collaborators;
     }
-    return INITIAL_COLLABORATORS.map((c) => ({
-      ...c,
-      shift: padronizarNomeTurno(c.shift),
-    }));
+    const saved = localStorage.getItem('mca_collaborators_v3');
+    return saved ? JSON.parse(saved) : INITIAL_COLLABORATORS;
   });
 
   const [activities, setActivities] = useState<ActivityItem[]>(() => {
@@ -64,18 +138,7 @@ export default function App() {
 
   const [observations, setObservations] = useState<string[]>(() => {
     const saved = localStorage.getItem('mca_observations_v3');
-    try {
-      const rawList: string[] = saved ? JSON.parse(saved) : INITIAL_OBSERVATIONS;
-      return Array.from(
-        new Set(
-          rawList
-            .map((o) => o.trim())
-            .filter((o) => o && !o.toLowerCase().startsWith('sem observ'))
-        )
-      );
-    } catch {
-      return INITIAL_OBSERVATIONS;
-    }
+    return saved ? JSON.parse(saved) : INITIAL_OBSERVATIONS;
   });
 
   const [customRoleColors, setCustomRoleColors] = useState<Record<string, string>>(() => {
@@ -108,7 +171,7 @@ export default function App() {
   // 2. Navigation & UI state
   const [activeTab, setActiveTab] = useState<TabKey>('painel');
   const [isLeaderUnlocked, setIsLeaderUnlocked] = useState(false);
-  const [leaderPin, setLeaderPin] = useState('8619');
+  const [leaderPin] = useState('8619');
   const [toleranceMinutes, setToleranceMinutes] = useState<number>(() => {
     const saved = localStorage.getItem('mca_tolerance_minutes_v3');
     return saved ? parseInt(saved, 10) : 60;
@@ -116,34 +179,85 @@ export default function App() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [drilldownFilter, setDrilldownFilter] = useState('');
 
-  // 3. Save states to LocalStorage
+  // 3. Real-Time Cloud Firestore Sync (Subscribes all tablets simultaneously)
+  useEffect(() => {
+    // Seed initial dataset if Firestore is newly provisioned
+    seedInitialFirestoreDataIfEmpty(
+      INITIAL_COLLABORATORS,
+      INITIAL_ACTIVITIES,
+      INITIAL_SHIFTS,
+      INITIAL_OBSERVATIONS
+    );
+
+    // Subscribe to real-time logs from Firestore
+    const unsubLogs = subscribeToLogs((cloudLogs) => {
+      if (cloudLogs && cloudLogs.length > 0) {
+        setLogs(cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) })));
+      }
+    });
+
+    // Subscribe to collaborators
+    const unsubColabs = subscribeToCollaborators((cloudColabs) => {
+      if (cloudColabs && cloudColabs.length > 0) {
+        setCollaborators(cloudColabs);
+      }
+    });
+
+    // Subscribe to activities
+    const unsubActivities = subscribeToActivities((cloudActivities) => {
+      if (cloudActivities && cloudActivities.length > 0) {
+        setActivities(cloudActivities);
+      }
+    });
+
+    // Subscribe to shifts
+    const unsubShifts = subscribeToShifts((cloudShifts) => {
+      if (cloudShifts && cloudShifts.length > 0) {
+        setShifts(cloudShifts);
+      }
+    });
+
+    // Subscribe to factory config
+    const unsubConfig = subscribeToFactoryConfig((cloudConfig) => {
+      if (cloudConfig) {
+        if (cloudConfig.toleranceMinutes) setToleranceMinutes(cloudConfig.toleranceMinutes);
+        if (cloudConfig.observations && cloudConfig.observations.length > 0) {
+          setObservations(cloudConfig.observations);
+        }
+        if (cloudConfig.customRoleColors) {
+          setCustomRoleColors(cloudConfig.customRoleColors);
+        }
+      }
+    });
+
+    // Subscribe to auto close notifications
+    const unsubNotifs = subscribeToAutoCloseNotifs((cloudNotifs) => {
+      setAutoCloseNotifs(cloudNotifs);
+    });
+
+    return () => {
+      unsubLogs();
+      unsubColabs();
+      unsubActivities();
+      unsubShifts();
+      unsubConfig();
+      unsubNotifs();
+    };
+  }, []);
+
+  // 4. LocalStorage Backup Mirroring & Multi-key redundancy
   useEffect(() => {
     localStorage.setItem('mca_tolerance_minutes_v3', toleranceMinutes.toString());
   }, [toleranceMinutes]);
   useEffect(() => {
-    localStorage.setItem('mca_collaborators_v3', JSON.stringify(collaborators));
-  }, [collaborators]);
-
-  useEffect(() => {
-    localStorage.setItem('mca_activities_v3', JSON.stringify(activities));
-  }, [activities]);
-
-  useEffect(() => {
-    localStorage.setItem('mca_shifts_v3', JSON.stringify(shifts));
-  }, [shifts]);
-
+    savePermanentLocalBackup(collaborators, activities, shifts, logs);
+  }, [collaborators, activities, shifts, logs]);
   useEffect(() => {
     localStorage.setItem('mca_observations_v3', JSON.stringify(observations));
   }, [observations]);
-
   useEffect(() => {
     localStorage.setItem('mca_role_colors_v3', JSON.stringify(customRoleColors));
   }, [customRoleColors]);
-
-  useEffect(() => {
-    localStorage.setItem('mca_logs_v3', JSON.stringify(logs));
-  }, [logs]);
-
   useEffect(() => {
     localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(autoCloseNotifs));
   }, [autoCloseNotifs]);
@@ -155,9 +269,17 @@ export default function App() {
     setShifts(INITIAL_SHIFTS);
     setObservations(INITIAL_OBSERVATIONS);
     setCustomRoleColors({});
+    saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
+    saveActivitiesToFirestore(INITIAL_ACTIVITIES);
+    saveShiftsToFirestore(INITIAL_SHIFTS);
+    saveFactoryConfigToFirestore({
+      toleranceMinutes: 60,
+      observations: INITIAL_OBSERVATIONS,
+      customRoleColors: {}
+    });
   }, []);
 
-  // 4. Auto Shift Closure Engine (Closes forgotten operations when shift ends)
+  // 5. Auto Shift Closure Engine (Closes forgotten operations when shift ends)
   useEffect(() => {
     const checkAndAutoCloseShifts = () => {
       setLogs((prevLogs) => {
@@ -180,7 +302,7 @@ export default function App() {
               changed = true;
               const dur = calcularDiferencaMinutos(log.startTime, shift.saida);
               
-              newNotifs.push({
+              const notif: AutoCloseNotification = {
                 id: `autoclose-${Date.now()}-${log.id}`,
                 logId: log.id,
                 collaboratorName: log.collaboratorName,
@@ -192,9 +314,12 @@ export default function App() {
                 timestamp: Date.now(),
                 readByOperator: false,
                 readByLeader: false,
-              });
+              };
 
-              return {
+              newNotifs.push(notif);
+              saveAutoCloseNotifToFirestore(notif);
+
+              const closedLog: ProductionLog = {
                 ...log,
                 endTime: shift.saida,
                 durationMinutes: dur,
@@ -205,6 +330,9 @@ export default function App() {
                 autoClosed: true,
                 autoClosedAtShiftEnd: true,
               };
+
+              saveLogToFirestore(closedLog);
+              return closedLog;
             }
           }
           return log;
@@ -244,7 +372,7 @@ export default function App() {
           const endHour = shift?.saida || '17:30:00';
           const dur = calcularDiferencaMinutos(log.startTime, endHour);
 
-          newNotifs.push({
+          const notif: AutoCloseNotification = {
             id: `autoclose-${Date.now()}-${log.id}`,
             logId: log.id,
             collaboratorName: log.collaboratorName,
@@ -256,9 +384,12 @@ export default function App() {
             timestamp: Date.now(),
             readByOperator: false,
             readByLeader: false,
-          });
+          };
 
-          return {
+          newNotifs.push(notif);
+          saveAutoCloseNotifToFirestore(notif);
+
+          const closedLog: ProductionLog = {
             ...log,
             endTime: endHour,
             durationMinutes: dur,
@@ -269,6 +400,9 @@ export default function App() {
             autoClosed: true,
             autoClosedAtShiftEnd: true,
           };
+
+          saveLogToFirestore(closedLog);
+          return closedLog;
         }
         return log;
       });
@@ -287,19 +421,22 @@ export default function App() {
     setAutoCloseNotifs((prev) =>
       prev.map((n) => (n.id === notifId ? { ...n, readByOperator: true } : n))
     );
+    dismissAutoCloseNotifInFirestore(notifId);
   }, []);
 
   const handleDismissLeaderNotif = useCallback((notifId: string) => {
     setAutoCloseNotifs((prev) =>
       prev.map((n) => (n.id === notifId ? { ...n, readByLeader: true } : n))
     );
+    dismissAutoCloseNotifInFirestore(notifId);
   }, []);
 
   const handleClearAllNotifs = useCallback(() => {
     setAutoCloseNotifs([]);
+    clearAllNotifsInFirestore();
   }, []);
 
-  // 5. Operations Handlers
+  // 6. Operations Handlers (Synchronized to Cloud & Tablet Clients)
   const handleStartActivity = useCallback(
     (
       collaboratorName: string,
@@ -324,6 +461,7 @@ export default function App() {
       };
 
       setLogs((prev) => [newLog, ...prev]);
+      saveLogToFirestore(newLog);
       if (soundEnabled) playFactoryChime('start');
     },
     [collaborators, soundEnabled]
@@ -344,7 +482,7 @@ export default function App() {
         prev.map((log) => {
           if (log.id === logId) {
             const dur = calcularDiferencaMinutos(log.startTime, endTimeStr);
-            return {
+            const finishedLog: ProductionLog = {
               ...log,
               endTime: endTimeStr,
               durationMinutes: dur,
@@ -354,6 +492,8 @@ export default function App() {
               partsProduced,
               scrapCount,
             };
+            saveLogToFirestore(finishedLog);
+            return finishedLog;
           }
           return log;
         })
@@ -384,13 +524,15 @@ export default function App() {
             targetColab = log.collaboratorName;
             targetRole = log.role;
             const dur = calcularDiferencaMinutos(log.startTime, timeStr);
-            return {
+            const finishedLog: ProductionLog = {
               ...log,
               endTime: timeStr,
               durationMinutes: dur,
               status: 'Concluída' as const,
               observation: observation || 'Setup / Troca Rápida de Operação',
             };
+            saveLogToFirestore(finishedLog);
+            return finishedLog;
           }
           return log;
         });
@@ -409,6 +551,7 @@ export default function App() {
             status: 'Em Execução',
             machineId: machineId || 'TORNO-01',
           };
+          saveLogToFirestore(nextLog);
           return [nextLog, ...updated];
         }
 
@@ -422,10 +565,12 @@ export default function App() {
 
   const handleDeleteLog = useCallback((id: string) => {
     setLogs((prev) => prev.filter((l) => l.id !== id));
+    deleteLogFromFirestore(id);
   }, []);
 
   const handleUpdateLog = useCallback((updatedLog: ProductionLog) => {
     setLogs((prev) => prev.map((l) => (l.id === updatedLog.id ? updatedLog : l)));
+    saveLogToFirestore(updatedLog);
   }, []);
 
   const handleUnlockLeader = useCallback(
@@ -448,17 +593,58 @@ export default function App() {
       ...newC,
       id: `col-${Date.now()}`,
     };
-    setCollaborators((prev) => [...prev, colabObj]);
+    setCollaborators((prev) => {
+      const nextList = [...prev, colabObj];
+      saveCollaboratorsToFirestore(nextList);
+      return nextList;
+    });
   }, []);
 
   const handleDeleteCollaborator = useCallback((id: string) => {
-    setCollaborators((prev) => prev.filter((c) => c.id !== id));
+    setCollaborators((prev) => {
+      const nextList = prev.filter((c) => c.id !== id);
+      saveCollaboratorsToFirestore(nextList);
+      return nextList;
+    });
   }, []);
 
   const handleToggleCollaboratorActive = useCallback((id: string) => {
-    setCollaborators((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, active: !c.active } : c))
-    );
+    setCollaborators((prev) => {
+      const nextList = prev.map((c) => (c.id === id ? { ...c, active: !c.active } : c));
+      saveCollaboratorsToFirestore(nextList);
+      return nextList;
+    });
+  }, []);
+
+  const handleUpdateToleranceMinutes = useCallback((newTol: number) => {
+    setToleranceMinutes(newTol);
+    saveFactoryConfigToFirestore({ toleranceMinutes: newTol });
+  }, []);
+
+  const handleUpdateObservations = useCallback((newObs: string[]) => {
+    setObservations(newObs);
+    saveFactoryConfigToFirestore({ observations: newObs });
+  }, []);
+
+  const handleUpdateRoleColors = useCallback((newColors: Record<string, string>) => {
+    setCustomRoleColors(newColors);
+    saveFactoryConfigToFirestore({ customRoleColors: newColors });
+  }, []);
+
+  const handleUpdateActivities = useCallback((newActivities: ActivityItem[]) => {
+    setActivities(newActivities);
+    saveActivitiesToFirestore(newActivities);
+  }, []);
+
+  const handleSaveCollaborators = useCallback((newColabs: Collaborator[]) => {
+    setCollaborators(newColabs);
+    saveCollaboratorsToFirestore(newColabs);
+    savePermanentLocalBackup(newColabs, activities, shifts, logs);
+  }, [activities, shifts, logs]);
+
+  const handleUpdateShifts = useCallback((newShifts: ShiftConfig[]) => {
+    setShifts(newShifts);
+    saveShiftsToFirestore(newShifts);
   }, []);
 
   const handleDrilldownClick = useCallback((operatorName: string) => {
@@ -469,8 +655,8 @@ export default function App() {
   const unreadLeaderAlertCount = autoCloseNotifs.filter((n) => !n.readByLeader).length;
 
   return (
-    <div className="min-h-screen bg-[#050505] text-[#FFFFFF] flex flex-col font-sans antialiased">
-      {/* Top Header */}
+    <div className="min-h-screen bg-[#0A0A0A] text-[#FFFFFF] flex flex-col font-sans antialiased selection:bg-[#007BFF] selection:text-white">
+      {/* Top Header with Live Cloud Sync and Tablet Modal */}
       <Header
         shifts={shifts}
         soundEnabled={soundEnabled}
@@ -505,6 +691,7 @@ export default function App() {
             onStartActivity={handleStartActivity}
             onFinishActivity={handleFinishActivity}
             onQuickChangeover={handleQuickChangeover}
+            onSaveCollaborators={handleSaveCollaborators}
           />
         )}
 
@@ -514,7 +701,7 @@ export default function App() {
             collaborators={collaborators}
             shifts={shifts}
             toleranceMinutes={toleranceMinutes}
-            onUpdateToleranceMinutes={setToleranceMinutes}
+            onUpdateToleranceMinutes={handleUpdateToleranceMinutes}
             isLeaderUnlocked={isLeaderUnlocked}
             onUnlockLeader={handleUnlockLeader}
             onDrilldownClick={(operatorName) => {
@@ -551,7 +738,7 @@ export default function App() {
             customRoleColors={customRoleColors}
             isUnlocked={isLeaderUnlocked}
             toleranceMinutes={toleranceMinutes}
-            onUpdateToleranceMinutes={setToleranceMinutes}
+            onUpdateToleranceMinutes={handleUpdateToleranceMinutes}
             autoCloseNotifs={autoCloseNotifs}
             onDismissLeaderNotif={handleDismissLeaderNotif}
             onClearAllNotifs={handleClearAllNotifs}
@@ -564,10 +751,10 @@ export default function App() {
               setActiveTab('historico');
             }}
             onUpdateCollaborators={setCollaborators}
-            onUpdateActivities={setActivities}
-            onUpdateShifts={setShifts}
-            onUpdateObservations={setObservations}
-            onUpdateRoleColors={setCustomRoleColors}
+            onUpdateActivities={handleUpdateActivities}
+            onUpdateShifts={handleUpdateShifts}
+            onUpdateObservations={handleUpdateObservations}
+            onUpdateRoleColors={handleUpdateRoleColors}
             onResetToDefaults={handleResetToDefaults}
           />
         )}
@@ -576,7 +763,7 @@ export default function App() {
           <ShiftAndFactoryConfigView
             shifts={shifts}
             collaborators={collaborators}
-            onSaveShifts={setShifts}
+            onSaveShifts={handleUpdateShifts}
             onAddCollaborator={handleAddCollaborator}
             onDeleteCollaborator={handleDeleteCollaborator}
             onToggleCollaboratorActive={handleToggleCollaboratorActive}
@@ -585,11 +772,12 @@ export default function App() {
       </main>
 
       {/* Industrial Footer */}
-      <footer className="bg-[#111111] border-t border-[#333333] text-[#888888] text-xs py-3 px-4 text-center">
-        <div className="max-w-[1100px] mx-auto flex flex-wrap justify-between items-center gap-2">
-          <span>MCA • MONITORAMENTO E CONTROLE DAS ATIVIDADES</span>
-          <span className="font-mono text-[#666666] text-[11px]">
-            Modo Chão de Fábrica & Gestão do Líder
+      <footer className="bg-[#111111] border-t border-[#262626] text-[#888888] text-xs py-3 px-4 text-center">
+        <div className="max-w-[1200px] mx-auto flex flex-wrap justify-between items-center gap-2">
+          <span className="font-bold">MCA • MONITORAMENTO E CONTROLE DAS ATIVIDADES</span>
+          <span className="font-mono text-[#00E676] text-[11px] flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#00E676] animate-pulse"></span>
+            Nuvem Ativa • Multi-Tablet Sincronizado em Tempo Real
           </span>
         </div>
       </footer>
@@ -597,3 +785,4 @@ export default function App() {
   );
 }
 
+export default App;

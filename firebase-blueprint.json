@@ -1,0 +1,94 @@
+{
+  "$schema": "https://raw.githubusercontent.com/firebase/firebase-tools/master/schema/firestore-blueprint.json",
+  "entities": {
+    "collaborators": {
+      "type": "collection",
+      "description": "Collaborators and operators of the manufacturing floor",
+      "fields": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "shift": { "type": "string" },
+        "active": { "type": "boolean" },
+        "avatarColor": { "type": "string" }
+      }
+    },
+    "activities": {
+      "type": "collection",
+      "description": "Available activities, operations, and routines per role",
+      "fields": {
+        "id": { "type": "string" },
+        "role": { "type": "string" },
+        "name": { "type": "string" },
+        "priority": { "type": "number" },
+        "category": { "type": "string" },
+        "standardMinutes": { "type": "number" }
+      }
+    },
+    "shifts": {
+      "type": "collection",
+      "description": "Factory shift definitions and schedules",
+      "fields": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "entrada": { "type": "string" },
+        "saidaAlmoco": { "type": "string" },
+        "retornoAlmoco": { "type": "string" },
+        "saida": { "type": "string" },
+        "dias": { "type": "array" },
+        "color": { "type": "string" }
+      }
+    },
+    "logs": {
+      "type": "collection",
+      "description": "Real-time production and operation logs pointed by tablets and operators",
+      "fields": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "collaboratorName": { "type": "string" },
+        "role": { "type": "string" },
+        "shift": { "type": "string" },
+        "activity": { "type": "string" },
+        "category": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "durationMinutes": { "type": "number" },
+        "status": { "type": "string" },
+        "observation": { "type": "string" },
+        "notes": { "type": "string" },
+        "partsProduced": { "type": "number" },
+        "scrapCount": { "type": "number" },
+        "autoClosed": { "type": "boolean" },
+        "autoClosedAtShiftEnd": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "autoclose_notifs": {
+      "type": "collection",
+      "description": "Notifications of automatic shift closures",
+      "fields": {
+        "id": { "type": "string" },
+        "logId": { "type": "string" },
+        "collaboratorName": { "type": "string" },
+        "role": { "type": "string" },
+        "activity": { "type": "string" },
+        "shiftName": { "type": "string" },
+        "shiftEnd": { "type": "string" },
+        "date": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "readByOperator": { "type": "boolean" },
+        "readByLeader": { "type": "boolean" }
+      }
+    },
+    "factory_config": {
+      "type": "collection",
+      "description": "General factory configuration and parameters",
+      "fields": {
+        "toleranceMinutes": { "type": "number" },
+        "observations": { "type": "array" },
+        "customRoleColors": { "type": "map" }
+      }
+    }
+  }
+}

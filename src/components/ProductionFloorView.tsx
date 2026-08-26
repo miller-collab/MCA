@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, CheckCircle2, Play, AlertTriangle, Search, Filter, 
   Clock, User, Wrench, ChevronRight, X, ArrowRight, RotateCcw,
-  Zap, BellRing, Check, ShieldAlert
+  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles
 } from 'lucide-react';
 import { ActivityItem, Collaborator, ProductionLog, ShiftConfig, ActivityCategory, AutoCloseNotification } from '../types';
 import { 
@@ -18,6 +18,8 @@ import {
   playFactoryChime,
   padronizarNomeTurno
 } from '../utils/factoryCalculations';
+import { QuickCollaboratorModal } from './QuickCollaboratorModal';
+import { findSavedCollaboratorsInBrowser } from '../utils/recoveryUtils';
 
 interface ProductionFloorViewProps {
   logs: ProductionLog[];
@@ -32,6 +34,7 @@ interface ProductionFloorViewProps {
   onStartActivity: (collaboratorName: string, role: string, activityName: string, category: ActivityCategory, machineId?: string) => void;
   onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number) => void;
   onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string) => void;
+  onSaveCollaborators?: (colabs: Collaborator[]) => void;
 }
 
 export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
@@ -47,14 +50,19 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   onStartActivity,
   onFinishActivity,
   onQuickChangeover,
+  onSaveCollaborators,
 }) => {
   // Screen state: 'painel' | 'colab' | 'ativ' | 'fechamento' | 'changeover'
   const [currentScreen, setCurrentScreen] = useState<'painel' | 'colab' | 'ativ' | 'fechamento' | 'changeover'>('painel');
+  const [isQuickManageOpen, setIsQuickManageOpen] = useState(false);
+  const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
   
   // Selection state
   const [selectedColab, setSelectedColab] = useState<Collaborator | null>(null);
   const [activitySearch, setActivitySearch] = useState('');
   const [colabSearch, setColabSearch] = useState('');
+  const [selectedShiftFilter, setSelectedShiftFilter] = useState('TODOS');
+  const [colabShiftFilter, setColabShiftFilter] = useState('TODOS');
 
   // Finish state
   const [logToFinish, setLogToFinish] = useState<ProductionLog | null>(null);
@@ -74,21 +82,36 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   }, []);
 
   // Filter active logs (Em Execução)
-  const activeLogs = logs.filter(l => l.status === 'Em Execução');
+  const allActiveLogs = logs.filter(l => l.status === 'Em Execução');
+
+  // Filter active logs by selected shift if desired (for multi-tablet stationing)
+  const activeLogs = useMemo(() => {
+    if (selectedShiftFilter === 'TODOS') return allActiveLogs;
+    return allActiveLogs.filter((log) => {
+      const colab = collaborators.find((c) => c.name === log.collaboratorName);
+      const shiftName = colab?.shift || log.shift || '';
+      return padronizarNomeTurno(shiftName) === padronizarNomeTurno(selectedShiftFilter);
+    });
+  }, [allActiveLogs, selectedShiftFilter, collaborators]);
 
   // Set of busy collaborators
-  const busyCollaborators = new Set(activeLogs.map(l => l.collaboratorName));
+  const busyCollaborators = new Set(allActiveLogs.map(l => l.collaboratorName));
 
   // Available collaborators
   const availableCollaborators = collaborators.filter(
     c => c.active && !busyCollaborators.has(c.name)
   );
 
-  // Filtered available collaborators by search
-  const filteredAvailableColabs = availableCollaborators.filter(c => 
-    c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
-    c.role.toLowerCase().includes(colabSearch.toLowerCase())
-  );
+  // Filtered available collaborators by search and shift filter
+  const filteredAvailableColabs = availableCollaborators.filter(c => {
+    const matchSearch = 
+      c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
+      c.role.toLowerCase().includes(colabSearch.toLowerCase());
+    const matchShift = 
+      colabShiftFilter === 'TODOS' || 
+      padronizarNomeTurno(c.shift) === padronizarNomeTurno(colabShiftFilter);
+    return matchSearch && matchShift;
+  });
 
   // Unread operator notifications
   const unreadOperatorNotifs = autoCloseNotifs.filter(n => !n.readByOperator);
@@ -157,6 +180,8 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setSelectedColab(null);
     setColabSearch('');
     setActivitySearch('');
+    // Align colab shift filter with main floor filter
+    setColabShiftFilter(selectedShiftFilter);
     setCurrentScreen('colab');
     if (soundEnabled) playFactoryChime('beep');
   };
@@ -220,7 +245,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   };
 
   return (
-    <div className="max-w-[1100px] mx-auto p-3 sm:p-4 space-y-4">
+    <div className="max-w-[1200px] mx-auto p-3 sm:p-4 space-y-4">
       {/* ALERTA DE FECHAMENTO AUTOMÁTICO DE TURNO PARA OPERADORES */}
       {unreadOperatorNotifs.length > 0 && currentScreen === 'painel' && (
         <div className="bg-[#1C1400] border-2 border-[#FF9800] rounded-xl p-4 shadow-xl animate-in fade-in slide-in-from-top-2 duration-300">
@@ -279,38 +304,61 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
       {/* TELA 1: PAINEL PRINCIPAL DE PRODUÇÃO */}
       {currentScreen === 'painel' && (
-        <div className="space-y-5 animate-in fade-in duration-200">
-          {/* Barra de Ações Rápidas de Chão de Fábrica */}
-          <div className="flex flex-col sm:flex-row gap-3 items-stretch">
-            {/* Botão Principal de Iniciar Atividade */}
+        <div className="space-y-4 animate-in fade-in duration-200">
+          {/* Barra de Ações Rápidas de Chão de Fábrica & Filtro de Turno do Tablet */}
+          <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between bg-[#161616] border border-[#2D2D2D] p-3 rounded-xl shadow-md">
+            {/* Botão Principal de Iniciar Atividade (Grande para Touch em Tablets) */}
             <button
               id="btn-iniciar-atividade"
               onClick={handleOpenStartModal}
-              className="flex-1 py-4 px-6 bg-[#0066CC] hover:bg-[#005bb5] active:bg-[#004c99] text-white font-black text-base sm:text-lg rounded-lg border border-[#005bb5] shadow-lg transition-transform transform active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer"
+              className="flex-1 py-3.5 sm:py-4 px-5 sm:px-6 bg-[#0066CC] hover:bg-[#005bb5] active:bg-[#004c99] text-white font-black text-base sm:text-lg rounded-xl border border-[#005bb5] shadow-lg transition-transform transform active:scale-[0.99] flex items-center justify-center gap-2.5 cursor-pointer min-h-[54px]"
             >
-              <span>➕ INICIAR NOVA ATIVIDADE</span>
+              <span className="tracking-wide">➕ INICIAR NOVA ATIVIDADE</span>
               {availableCollaborators.length > 0 && (
-                <span className="bg-black/30 text-white text-xs px-2.5 py-1 rounded-full font-mono">
-                  {availableCollaborators.length} disponíveis
+                <span className="bg-black/35 text-[#00E676] text-xs px-2.5 py-1 rounded-full font-mono font-bold border border-black/20">
+                  {availableCollaborators.length} livres
                 </span>
               )}
             </button>
+
+            {/* Quick Shift Filter Pills para Tablets de cada Posto/Turno */}
+            <div className="flex items-center gap-1 bg-[#0F0F0F] p-1 rounded-xl border border-[#333333] shrink-0 overflow-x-auto">
+              {['TODOS', 'Turno 1', 'Turno 2', 'Turno 3'].map((shiftOpt) => {
+                const isActive = selectedShiftFilter === shiftOpt;
+                return (
+                  <button
+                    key={shiftOpt}
+                    onClick={() => setSelectedShiftFilter(shiftOpt)}
+                    className={`px-3 py-2 rounded-lg text-xs font-bold transition whitespace-nowrap cursor-pointer min-h-[40px] flex items-center justify-center ${
+                      isActive
+                        ? 'bg-[#007BFF] text-white shadow-sm'
+                        : 'text-[#888888] hover:text-white hover:bg-[#222222]'
+                    }`}
+                  >
+                    {shiftOpt === 'TODOS' ? 'Todos os Turnos' : shiftOpt}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Grid de Cards de Tarefas em Andamento */}
+          {/* Grid de Cards de Tarefas em Andamento (Otimizado para Tablets 7"-12") */}
           {activeLogs.length === 0 ? (
-            <div className="p-12 text-center bg-[#1E1E1E] border border-[#333333] rounded-lg">
-              <p className="text-[#888888] text-base sm:text-lg font-bold">
-                Nenhuma atividade rodando no momento.
+            <div className="p-12 text-center bg-[#181818] border border-[#2D2D2D] rounded-2xl space-y-2">
+              <Users className="w-10 h-10 text-[#555555] mx-auto" />
+              <p className="text-[#AAAAAA] text-base sm:text-lg font-bold">
+                {selectedShiftFilter === 'TODOS'
+                  ? 'Nenhuma atividade rodando no momento.'
+                  : `Nenhuma atividade rodando no ${selectedShiftFilter}.`}
               </p>
-              <p className="text-[#666666] text-xs sm:text-sm mt-1">
-                Clique no botão azul acima para alocar um colaborador em uma atividade.
+              <p className="text-[#666666] text-xs sm:text-sm">
+                Toque no botão azul acima para iniciar um apontamento de trabalho neste tablet.
               </p>
             </div>
           ) : (
             <div
               id="grid-ativas"
-              className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-3.5"
+              className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4"
             >
               {activeLogs.map((tarefa) => {
                 const corBase = getRoleColor(tarefa.role);
@@ -322,13 +370,13 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                   <div
                     key={tarefa.id}
                     onClick={() => handleCardClick(tarefa)}
-                    className={`card bg-[#1E1E1E] border border-[#333333] rounded-lg overflow-hidden cursor-pointer flex flex-col transition-transform hover:scale-[1.02] hover:border-[#666666] shadow-md select-none ${
-                      flashing ? 'card-piscar border-[#FF3D00]' : ''
+                    className={`card bg-[#141414] border rounded-xl overflow-hidden cursor-pointer flex flex-col transition-all hover:scale-[1.02] hover:border-[#666666] active:scale-[0.98] shadow-lg select-none min-h-[160px] ${
+                      flashing ? 'card-piscar border-[#FF3D00]' : 'border-[#2D2D2D]'
                     }`}
                   >
                     {/* Header com a cor do cargo */}
                     <div
-                      className="card-header p-2.5 font-black text-center text-xs sm:text-sm uppercase tracking-wide truncate"
+                      className="card-header p-2.5 sm:p-3 font-black text-center text-xs sm:text-sm uppercase tracking-wide truncate"
                       style={{ backgroundColor: corBase, color: corTextoHead }}
                       title={tarefa.collaboratorName}
                     >
@@ -338,7 +386,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                     {/* Body do Card */}
                     <div className="card-body p-3 text-center flex-grow flex flex-col justify-between">
                       <div
-                        className="card-atividade text-xs text-[#CCCCCC] mb-2 min-h-[36px] line-clamp-2 leading-tight flex items-center justify-center font-medium"
+                        className="card-atividade text-xs sm:text-[13px] text-[#DDDDDD] mb-2 min-h-[36px] line-clamp-2 leading-tight flex items-center justify-center font-medium"
                         title={tarefa.activity}
                       >
                         {tarefa.activity}
@@ -368,46 +416,91 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
         </div>
       )}
 
-      {/* TELA 2: SELEÇÃO DE COLABORADOR */}
+      {/* TELA 2: SELEÇÃO DE COLABORADOR (Touch-Friendly para Tablet) */}
       {currentScreen === 'colab' && (
-        <div className="space-y-4 max-w-2xl mx-auto animate-in fade-in duration-150">
-          <div className="flex items-center justify-between border-b border-[#333333] pb-3">
+        <div className="space-y-4 max-w-3xl mx-auto animate-in fade-in duration-150">
+          <div className="flex flex-wrap items-center justify-between border-b border-[#333333] pb-3 gap-2">
             <div>
-              <h2 className="text-xl font-bold text-white">Selecione o Colaborador</h2>
-              <p className="text-xs text-[#888888]">Apenas colaboradores sem atividade aberta são listados</p>
+              <h2 className="text-xl sm:text-2xl font-bold text-white">Selecione seu Nome</h2>
+              <p className="text-xs text-[#888888]">Toque no seu cartão para iniciar sua atividade</p>
             </div>
-            <button
-              onClick={() => setCurrentScreen('painel')}
-              className="text-[#888888] hover:text-white text-xs px-3 py-1.5 rounded bg-[#222222] border border-[#444444] cursor-pointer"
-            >
-              Voltar ao Painel
-            </button>
+            
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsQuickManageOpen(true)}
+                className="px-3.5 py-2 rounded-xl bg-[#007BFF]/20 hover:bg-[#007BFF]/30 border border-[#007BFF]/50 text-[#007BFF] text-xs font-bold transition flex items-center gap-1.5 cursor-pointer min-h-[40px]"
+                title="Cadastrar, editar ou colar lista de colaboradores"
+              >
+                <Users className="w-4 h-4" />
+                <span>⚙️ Gerenciar / Cadastrar Equipe</span>
+              </button>
+
+              <button
+                onClick={() => setCurrentScreen('painel')}
+                className="text-[#888888] hover:text-white text-xs px-3.5 py-2 rounded-xl bg-[#222222] border border-[#444444] cursor-pointer min-h-[40px] flex items-center"
+              >
+                Voltar ao Painel
+              </button>
+            </div>
           </div>
 
-          {/* Campo de Busca de Colaborador */}
-          <div className="relative">
-            <Search className="w-4 h-4 text-[#777777] absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="🔍 Digite para filtrar colaborador ou cargo..."
-              value={colabSearch}
-              onChange={(e) => setColabSearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-3 bg-[#222222] text-white border border-[#555555] rounded-lg text-sm focus:outline-none focus:border-[#007BFF]"
-              autoFocus
-            />
+          {/* Quick Notice with 1-Click Restore / Add if needed */}
+          {restoreFeedback && (
+            <div className="p-3 bg-[#00E676]/20 border border-[#00E676] text-[#00E676] rounded-xl text-xs font-bold flex items-center justify-between animate-in fade-in">
+              <span>{restoreFeedback}</span>
+              <button onClick={() => setRestoreFeedback(null)} className="text-[#00E676] hover:text-white text-xs font-bold">
+                OK
+              </button>
+            </div>
+          )}
+
+          {/* Quick Shift Filter for Operator List on Tablet */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 bg-[#161616] p-1 rounded-xl border border-[#333333] overflow-x-auto">
+              {['TODOS', 'Turno 1', 'Turno 2', 'Turno 3'].map((shiftOpt) => {
+                const isActive = colabShiftFilter === shiftOpt;
+                return (
+                  <button
+                    key={shiftOpt}
+                    onClick={() => setColabShiftFilter(shiftOpt)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[36px] ${
+                      isActive
+                        ? 'bg-[#007BFF] text-white shadow-sm'
+                        : 'text-[#888888] hover:text-white hover:bg-[#222222]'
+                    }`}
+                  >
+                    {shiftOpt === 'TODOS' ? 'Todos os Turnos' : shiftOpt}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Campo de Busca de Colaborador */}
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="w-4 h-4 text-[#777777] absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Filtrar por nome ou cargo..."
+                value={colabSearch}
+                onChange={(e) => setColabSearch(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] min-h-[42px]"
+                autoFocus
+              />
+            </div>
           </div>
 
-          {/* Grid Compacta de Colaboradores */}
+          {/* Grid de Colaboradores (Cards Grandes para Tablet) */}
           {filteredAvailableColabs.length === 0 ? (
-            <div className="p-8 text-center bg-[#1E1E1E] border border-[#333333] rounded-lg">
+            <div className="p-8 text-center bg-[#181818] border border-[#2D2D2D] rounded-2xl">
               <p className="text-white font-bold">
                 {colabSearch
                   ? 'Nenhum colaborador encontrado com este filtro.'
-                  : 'Todos os colaboradores já estão ocupados com atividades em andamento.'}
+                  : 'Todos os colaboradores deste turno já estão com atividades em andamento.'}
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {filteredAvailableColabs.map((colab) => {
                 const corFuncao = getRoleColor(colab.role);
                 const assignedShift = shifts.find(
@@ -423,24 +516,26 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                   <button
                     key={colab.id}
                     onClick={() => handleSelectColab(colab)}
-                    className={`p-3 bg-[#252525] hover:bg-[#333333] text-white rounded-lg text-left transition border cursor-pointer flex flex-col justify-between relative ${
-                      hasRecentAutoClose ? 'border-[#FF9800] bg-[#2A2000]' : 'border-[#444444]'
+                    className={`p-3.5 sm:p-4 bg-[#1C1C1C] hover:bg-[#282828] active:bg-[#333333] text-white rounded-xl text-left transition-all border cursor-pointer flex flex-col justify-between relative shadow-md hover:scale-[1.01] active:scale-[0.98] min-h-[100px] ${
+                      hasRecentAutoClose ? 'border-[#FF9800] bg-[#2A2000]' : 'border-[#333333]'
                     }`}
-                    style={{ borderTop: `4px solid ${corFuncao}` }}
+                    style={{ borderTop: `5px solid ${corFuncao}` }}
                   >
                     {hasRecentAutoClose && (
-                      <span className="absolute top-1.5 right-1.5 px-1 py-0.5 bg-[#FF9800] text-black text-[9px] font-black rounded" title="Possui aviso de encerramento automático">
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 bg-[#FF9800] text-black text-[9px] font-black rounded" title="Possui aviso de encerramento automático">
                         Aviso
                       </span>
                     )}
-                    <div className="font-bold text-sm text-white truncate w-full" title={colab.name}>
-                      {colab.name}
+                    <div>
+                      <div className="font-black text-sm sm:text-base text-white truncate w-full" title={colab.name}>
+                        {colab.name}
+                      </div>
+                      <div className="text-xs text-[#AAAAAA] truncate mt-1 font-medium" title={colab.role}>
+                        {colab.role}
+                      </div>
                     </div>
-                    <div className="text-[11px] text-[#AAAAAA] truncate mt-1" title={colab.role}>
-                      {colab.role}
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] font-mono mt-1 w-full gap-1">
-                      <span className="text-[#007BFF] font-semibold truncate">
+                    <div className="flex items-center justify-between text-[11px] font-mono mt-2 w-full gap-1 pt-1 border-t border-[#262626]">
+                      <span className="text-[#007BFF] font-bold truncate">
                         {padronizarNomeTurno(colab.shift)} {assignedShift ? `(${assignedShift.entrada}-${assignedShift.saida})` : ''}
                       </span>
                       {isShiftInactive && (
@@ -457,7 +552,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
           <button
             onClick={() => setCurrentScreen('painel')}
-            className="btn w-full py-3.5 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-lg border border-[#555555] transition cursor-pointer"
+            className="w-full py-3.5 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold rounded-xl border border-[#444444] transition cursor-pointer min-h-[48px]"
           >
             Voltar ao Painel
           </button>
@@ -466,26 +561,28 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
       {/* TELA 3: SELEÇÃO DE ATIVIDADE */}
       {currentScreen === 'ativ' && selectedColab && (
-        <div className="max-w-[550px] mx-auto space-y-4 animate-in fade-in duration-150">
+        <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
           <div className="border-b border-[#333333] pb-3">
-            <h2 className="text-xl font-bold text-white">Selecione a Atividade</h2>
-            <h3 className="text-sm font-bold text-[#007BFF] mt-1">
-              Colaborador: {selectedColab.name}
-            </h3>
-            <span
-              className="inline-block text-[11px] font-bold px-2 py-0.5 rounded mt-1"
-              style={{
-                backgroundColor: getRoleColor(selectedColab.role),
-                color: definirCorTextoHeader(getRoleColor(selectedColab.role)),
-              }}
-            >
-              {selectedColab.role}
-            </span>
+            <h2 className="text-xl sm:text-2xl font-bold text-white">Selecione a Operação</h2>
+            <div className="flex items-center gap-2 mt-1.5">
+              <span className="text-sm font-bold text-white">
+                Colaborador: <span className="text-[#007BFF]">{selectedColab.name}</span>
+              </span>
+              <span
+                className="text-[10px] font-black px-2 py-0.5 rounded"
+                style={{
+                  backgroundColor: getRoleColor(selectedColab.role),
+                  color: definirCorTextoHeader(getRoleColor(selectedColab.role)),
+                }}
+              >
+                {selectedColab.role}
+              </span>
+            </div>
           </div>
 
           {/* Aviso se o colaborador tiver ocorrência recente de auto-fechamento */}
           {autoCloseNotifs.some(n => n.collaboratorName === selectedColab.name && !n.readByOperator) && (
-            <div className="bg-[#2A1D00] border border-[#FF9800] p-3 rounded-lg text-xs text-[#FFE082] flex items-start gap-2">
+            <div className="bg-[#2A1D00] border border-[#FF9800] p-3 rounded-xl text-xs text-[#FFE082] flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-[#FF9800] shrink-0 mt-0.5" />
               <div>
                 <b className="text-white">Atenção {selectedColab.name}:</b> Sua última atividade foi encerrada automaticamente pelo sistema no fim do turno anterior porque você não a finalizou manualmente.
@@ -498,18 +595,18 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             <Search className="w-4 h-4 text-[#777777] absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="🔍 Filtrar rotinas e operações..."
+              placeholder="Filtrar rotinas e operações..."
               value={activitySearch}
               onChange={(e) => setActivitySearch(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-sm focus:outline-none focus:border-[#007BFF]"
+              className="w-full pl-10 pr-4 py-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] min-h-[48px]"
               autoFocus
             />
           </div>
 
           {/* Lista de Atividades filtradas para a função */}
-          <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+          <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
             {filteredRoleActivities.length === 0 ? (
-              <div className="p-6 text-center bg-[#1E1E1E] border border-[#333333] rounded-lg text-sm text-[#888888]">
+              <div className="p-6 text-center bg-[#181818] border border-[#2D2D2D] rounded-xl text-sm text-[#888888]">
                 Nenhuma atividade encontrada para o cargo <b>{selectedColab.role}</b>.
               </div>
             ) : (
@@ -517,19 +614,19 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 <button
                   key={act.id}
                   onClick={() => handleConfirmStart(act)}
-                  className="w-full p-3.5 bg-[#252525] hover:bg-[#333333] text-left text-white rounded-lg border border-[#444444] transition flex items-center justify-between gap-3 group cursor-pointer"
+                  className="w-full p-4 bg-[#1C1C1C] hover:bg-[#282828] active:bg-[#333333] text-left text-white rounded-xl border border-[#333333] hover:border-[#007BFF] transition-all flex items-center justify-between gap-3 group cursor-pointer shadow-sm min-h-[56px]"
                 >
                   <div className="min-w-0">
-                    <div className="font-bold text-sm text-white group-hover:text-[#007BFF] transition-colors truncate">
+                    <div className="font-bold text-sm sm:text-base text-white group-hover:text-[#007BFF] transition-colors truncate">
                       {act.name}
                     </div>
                     <div className="flex items-center gap-2 mt-1">
                       <span className="text-[10px] font-bold text-[#FF8C00] font-mono bg-black/40 px-1.5 py-0.5 rounded">
                         P{act.priority}
                       </span>
-                      <span className="text-[10px] text-[#888888]">{act.category}</span>
+                      <span className="text-xs text-[#888888]">{act.category}</span>
                       {act.standardMinutes && (
-                        <span className="text-[10px] text-[#00E676] font-mono">
+                        <span className="text-xs text-[#00E676] font-mono">
                           • {act.standardMinutes} min padrão
                         </span>
                       )}
@@ -543,7 +640,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
           <button
             onClick={() => setCurrentScreen('colab')}
-            className="btn w-full py-3 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-lg border border-[#555555] transition cursor-pointer"
+            className="w-full py-3.5 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold rounded-xl border border-[#444444] transition cursor-pointer min-h-[48px]"
           >
             Voltar
           </button>
@@ -552,19 +649,19 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
       {/* TELA 4: FECHAMENTO / CONCLUIR ATIVIDADE */}
       {currentScreen === 'fechamento' && logToFinish && (
-        <div className="max-w-[500px] mx-auto space-y-4 animate-in fade-in duration-150">
+        <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
           <div className="border-b border-[#333333] pb-3">
-            <h2 className="text-xl font-bold text-white">Concluir Atividade</h2>
-            <div className="p-3 bg-[#1E1E1E] border border-[#333333] rounded-lg mt-2 text-xs sm:text-sm space-y-1">
+            <h2 className="text-xl sm:text-2xl font-bold text-white">Concluir Atividade</h2>
+            <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2 text-xs sm:text-sm space-y-1.5">
               <p className="text-[#BBB]">
-                Trabalhador: <b className="text-white">{logToFinish.collaboratorName}</b>
+                Colaborador: <b className="text-white text-base">{logToFinish.collaboratorName}</b>
               </p>
               <p className="text-[#BBB]">
-                Atividade Alvo: <b className="text-[#007BFF]">{logToFinish.activity}</b>
+                Operação: <b className="text-[#007BFF]">{logToFinish.activity}</b>
               </p>
               <p className="text-[#BBB]">
-                Hora Início: <b className="text-white font-mono">{logToFinish.startTime}</b> • Tempo Atual:{' '}
-                <b className="text-[#00E676] font-mono">
+                Hora Início: <b className="text-white font-mono">{logToFinish.startTime}</b> • Tempo Total:{' '}
+                <b className="text-[#00E676] font-mono text-base">
                   {formatarTempoSegundos(getElapsedSeconds(logToFinish.startTime))}
                 </b>
               </p>
@@ -580,7 +677,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               id="select-obs"
               value={finishObs}
               onChange={(e) => setFinishObs(e.target.value)}
-              className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-lg text-sm focus:outline-none focus:border-[#007BFF]"
+              className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] min-h-[48px]"
             >
               <option value="">Sem observação padrão</option>
               {sanitizedObservations.map((obs, idx) => (
@@ -591,7 +688,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             </select>
           </div>
 
-          {/* Quantidade de Peças e Refugo (Campos adicionais avançados) */}
+          {/* Quantidade de Peças e Refugo */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
@@ -603,7 +700,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 placeholder="Ex: 50"
                 value={partsProduced}
                 onChange={(e) => setPartsProduced(e.target.value)}
-                className="w-full p-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-sm font-mono focus:outline-none focus:border-[#007BFF]"
+                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
               />
             </div>
             <div>
@@ -616,7 +713,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 placeholder="Ex: 0"
                 value={scrapCount}
                 onChange={(e) => setScrapCount(e.target.value)}
-                className="w-full p-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-sm font-mono focus:outline-none focus:border-[#007BFF]"
+                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
               />
             </div>
           </div>
@@ -628,11 +725,11 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             </label>
             <textarea
               id="texto-notas"
-              rows={3}
-              placeholder="Digite uma anotação extra sobre esta atividade se necessário..."
+              rows={2}
+              placeholder="Digite uma anotação extra se necessário..."
               value={finishNotes}
               onChange={(e) => setFinishNotes(e.target.value)}
-              className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-lg text-sm focus:outline-none focus:border-[#007BFF] resize-none"
+              className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] resize-none"
             />
           </div>
 
@@ -640,7 +737,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
           {onQuickChangeover && (
             <button
               onClick={handleOpenChangeover}
-              className="w-full py-2.5 bg-[#4A148C] hover:bg-[#6A1B9A] text-white font-bold rounded-lg border border-[#7B1FA2] text-xs flex items-center justify-center gap-2 cursor-pointer transition"
+              className="w-full py-3 bg-[#4A148C] hover:bg-[#6A1B9A] text-white font-bold rounded-xl border border-[#7B1FA2] text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer transition min-h-[46px]"
             >
               <Zap className="w-4 h-4 text-[#FFD700]" />
               <span>TROCA RÁPIDA (ENCERRAR E INICIAR PRÓXIMA)</span>
@@ -650,14 +747,14 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
           {/* Botões de Ação */}
           <button
             onClick={handleConfirmFinish}
-            className="w-full py-4 bg-[#00E676] hover:bg-[#00c853] text-black font-black text-base sm:text-lg rounded-lg border border-[#00c853] shadow-lg transition-transform active:scale-[0.99] cursor-pointer"
+            className="w-full py-4 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-base sm:text-lg rounded-xl border border-[#00c853] shadow-lg transition-transform active:scale-[0.99] cursor-pointer min-h-[54px]"
           >
             CONFIRMAR ENCERRAMENTO
           </button>
 
           <button
             onClick={() => setCurrentScreen('painel')}
-            className="btn w-full py-3 bg-[#555555] hover:bg-[#666666] text-white font-bold rounded-lg border border-[#777777] transition cursor-pointer"
+            className="w-full py-3 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-xl border border-[#555555] transition cursor-pointer min-h-[46px]"
           >
             Cancelar
           </button>
@@ -666,7 +763,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
       {/* TELA 5: TROCA RÁPIDA (CHANGEOVER) */}
       {currentScreen === 'changeover' && logToFinish && selectedColab && (
-        <div className="max-w-[500px] mx-auto space-y-4 animate-in fade-in duration-150">
+        <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
           <div className="border-b border-[#333333] pb-3">
             <h2 className="text-xl font-bold text-[#FFD700] flex items-center gap-2">
               <Zap className="w-5 h-5" />
@@ -677,22 +774,22 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             </p>
           </div>
 
-          <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+          <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
             {filteredRoleActivities.map((act) => (
               <button
                 key={act.id}
                 onClick={() => handleConfirmChangeover(act)}
-                className="w-full p-3.5 bg-[#252525] hover:bg-[#333333] text-left text-white rounded-lg border border-[#444444] transition flex items-center justify-between gap-3 group cursor-pointer"
+                className="w-full p-4 bg-[#1C1C1C] hover:bg-[#282828] text-left text-white rounded-xl border border-[#333333] hover:border-[#00E676] transition flex items-center justify-between gap-3 group cursor-pointer min-h-[54px]"
               >
                 <div className="min-w-0">
-                  <div className="font-bold text-sm text-white group-hover:text-[#00E676] transition-colors truncate">
+                  <div className="font-bold text-sm sm:text-base text-white group-hover:text-[#00E676] transition-colors truncate">
                     {act.name}
                   </div>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-[10px] font-bold text-[#FF8C00] font-mono bg-black/40 px-1.5 py-0.5 rounded">
                       P{act.priority}
                     </span>
-                    <span className="text-[10px] text-[#888888]">{act.category}</span>
+                    <span className="text-xs text-[#888888]">{act.category}</span>
                   </div>
                 </div>
                 <ArrowRight className="w-5 h-5 text-[#555555] group-hover:text-[#00E676] shrink-0" />
@@ -702,13 +799,35 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
           <button
             onClick={() => setCurrentScreen('fechamento')}
-            className="btn w-full py-3 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-lg border border-[#555555] cursor-pointer"
+            className="w-full py-3 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-xl border border-[#555555] cursor-pointer min-h-[46px]"
           >
             Voltar ao Fechamento Normal
           </button>
         </div>
       )}
+
+      {/* MODAL DE GESTÃO RÁPIDA DE COLABORADORES */}
+      <QuickCollaboratorModal
+        isOpen={isQuickManageOpen}
+        onClose={() => setIsQuickManageOpen(false)}
+        collaborators={collaborators}
+        shifts={shifts}
+        customRoleColors={customRoleColors}
+        onSaveCollaborators={(newColabs) => {
+          if (onSaveCollaborators) {
+            onSaveCollaborators(newColabs);
+          }
+        }}
+        onRestoreFromBackup={() => {
+          const rec = findSavedCollaboratorsInBrowser();
+          if (rec.found && onSaveCollaborators) {
+            onSaveCollaborators(rec.collaborators);
+            setRestoreFeedback(`Restaurados ${rec.collaborators.length} operadores do backup (${rec.sourceKey}) com sucesso!`);
+            return true;
+          }
+          return false;
+        }}
+      />
     </div>
   );
 };
-
