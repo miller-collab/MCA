@@ -18,7 +18,8 @@ const COLLABORATOR_STORAGE_KEYS = [
 ];
 
 /**
- * Scans all historical localStorage keys to find previously configured collaborators
+ * Scans historical localStorage keys to find previously configured collaborators.
+ * Filters out obsolete dummy datasets (like 'Valter Ribeiro (Líder)').
  */
 export function findSavedCollaboratorsInBrowser(): {
   found: boolean;
@@ -31,6 +32,25 @@ export function findSavedCollaboratorsInBrowser(): {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
+          // Check if it's the obsolete mock list
+          const hasLegacyDummy = parsed.some(
+            (item: any) =>
+              item?.name === 'Valter Ribeiro (Líder)' ||
+              item?.name === 'Carlos Silva' ||
+              item?.name === 'Marcos Oliveira' ||
+              item?.name === 'Lucas Mendes'
+          );
+
+          if (hasLegacyDummy) {
+            // Clear obsolete key so it doesn't pollute
+            try {
+              localStorage.removeItem(key);
+            } catch {
+              // Ignore
+            }
+            continue;
+          }
+
           // Check if it has collaborator structure
           const valid = parsed.every((item: any) => item && (item.name || item.nome));
           if (valid) {

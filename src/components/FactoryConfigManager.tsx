@@ -6,7 +6,7 @@ import {
   CheckSquare, Square, Layers, Info, HelpCircle
 } from 'lucide-react';
 import { Collaborator, ActivityItem, ShiftConfig, ActivityCategory } from '../types';
-import { INITIAL_COLLABORATORS, INITIAL_ACTIVITIES, INITIAL_SHIFTS, INITIAL_OBSERVATIONS, definirCorFuncao } from '../data/initialData';
+import { INITIAL_COLLABORATORS, INITIAL_ACTIVITIES, INITIAL_SHIFTS, INITIAL_OBSERVATIONS, INITIAL_ROLES, definirCorFuncao } from '../data/initialData';
 import { padronizarNomeTurno } from '../utils/factoryCalculations';
 
 interface FactoryConfigManagerProps {
@@ -15,11 +15,14 @@ interface FactoryConfigManagerProps {
   shifts: ShiftConfig[];
   observations: string[];
   customRoleColors?: Record<string, string>;
+  customRoles?: string[];
+  deletedRoles?: string[];
   onUpdateCollaborators: (colabs: Collaborator[]) => void;
   onUpdateActivities: (activities: ActivityItem[]) => void;
   onUpdateShifts: (shifts: ShiftConfig[]) => void;
   onUpdateObservations: (obs: string[]) => void;
   onUpdateRoleColors?: (colors: Record<string, string>) => void;
+  onUpdateRoles?: (roles: string[], deletedRoles?: string[]) => void;
   onResetToDefaults: () => void;
 }
 
@@ -56,11 +59,14 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   shifts,
   observations,
   customRoleColors = {},
+  customRoles,
+  deletedRoles = [],
   onUpdateCollaborators,
   onUpdateActivities,
   onUpdateShifts,
   onUpdateObservations,
   onUpdateRoleColors,
+  onUpdateRoles,
   onResetToDefaults,
 }) => {
   const [subTab, setSubTab] = useState<ConfigSubTab>('colaboradores');
@@ -121,9 +127,12 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   // Observation form state
   const [newObsText, setNewObsText] = useState('');
 
-  // Role Customization State
+  // Role Customization & Editing State
   const [newRoleName, setNewRoleName] = useState('');
   const [newRoleColor, setNewRoleColor] = useState('#007BFF');
+  const [editingRole, setEditingRole] = useState<string | null>(null);
+  const [editRoleName, setEditRoleName] = useState('');
+  const [editRoleColor, setEditRoleColor] = useState('#007BFF');
 
   // Bulk Import State
   const [importText, setImportText] = useState('');
@@ -134,27 +143,19 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     setTimeout(() => setFeedbackMsg(null), 3500);
   };
 
-  // Distinct roles extracted from collaborators and activities
-  const existingRoles = Array.from(
-    new Set([
+  // Distinct roles extracted dynamically from customRoles, collaborators and activities
+  const existingRoles = React.useMemo(() => {
+    const rawList = [
+      ...(customRoles && customRoles.length > 0 ? customRoles : INITIAL_ROLES),
       ...collaborators.map((c) => c.role.toUpperCase().trim()),
       ...activities.map((a) => a.role.toUpperCase().trim()),
-      'LÍDER DE PRODUÇÃO',
-      'PREPARADOR TORNO AUTOMATICO',
-      'INSPETOR TCNC / OPERADOR',
-      'INSPETOR / OPERADOR TA',
-      'PREPARADOR DE FERRAMENTAS',
-      'PREPARADOR PROGAMADOR',
-      'AREA DO CAVACO E OLEO',
-      'SERVIÇOS GERAIS TORNO AUTOMATICO',
-      'SISTEMA / AREA DO CAVACO E OLEO',
-      'OPERADOR DE TORNO CNC',
-      'OPERADOR DE CENTRO DE USINAGEM',
-      'AUXILIAR DE PRODUÇÃO',
-      'MANUTENÇÃO MECÂNICA',
-      'SOLDADOR TIG/MIG',
-    ])
-  ).filter(Boolean);
+    ];
+    const delSet = new Set((deletedRoles || []).map((r) => r.toUpperCase().trim()));
+    const unique = Array.from(new Set(rawList.map((r) => r.toUpperCase().trim()))).filter(
+      (r) => r && !delSet.has(r)
+    );
+    return unique;
+  }, [customRoles, deletedRoles, collaborators, activities]);
 
   // Helper for role color
   const getRoleColor = (roleName: string) => {
@@ -364,7 +365,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 3. ROLE COLORS HANDLERS
+  // 3. ROLE (CARGOS) HANDLERS - CRIAR, EDITAR (RENOMEAR / COR) E EXCLUIR
   // -------------------------------------------------------------
   const handleSaveRoleColor = (roleName: string, colorHex: string) => {
     if (onUpdateRoleColors) {
@@ -378,11 +379,154 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     e.preventDefault();
     if (!newRoleName.trim()) return;
     const rUpper = newRoleName.trim().toUpperCase();
+
+    if (existingRoles.some((r) => r.toUpperCase().trim() === rUpper)) {
+      showNotification(`O cargo "${rUpper}" já está cadastrado na fábrica!`, 'error');
+      return;
+    }
+
+    const newDeleted = (deletedRoles || []).filter((r) => r.toUpperCase().trim() !== rUpper);
+    const currentRoles = customRoles && customRoles.length > 0 ? customRoles : existingRoles;
+    const newRolesList = Array.from(new Set([...currentRoles, rUpper]));
+
+    if (onUpdateRoles) {
+      onUpdateRoles(newRolesList, newDeleted);
+    }
     if (onUpdateRoleColors) {
       onUpdateRoleColors({ ...customRoleColors, [rUpper]: newRoleColor });
     }
+
     setNewRoleName('');
-    showNotification(`Novo cargo "${rUpper}" registrado com sucesso!`);
+    showNotification(`Novo cargo "${rUpper}" registrado e salvo com sucesso!`);
+  };
+
+  const handleStartEditRole = (role: string) => {
+    setEditingRole(role);
+    setEditRoleName(role);
+    setEditRoleColor(getRoleColor(role));
+  };
+
+  const handleSaveEditedRole = (originalRole: string) => {
+    const trimmedNewName = editRoleName.trim().toUpperCase();
+    if (!trimmedNewName) {
+      showNotification('O nome do cargo não pode ficar em branco.', 'error');
+      return;
+    }
+
+    const origUpper = originalRole.toUpperCase().trim();
+    const isRenaming = trimmedNewName !== origUpper;
+
+    if (isRenaming && existingRoles.some((r) => r.toUpperCase().trim() === trimmedNewName)) {
+      showNotification(`Já existe um cargo cadastrado com o nome "${trimmedNewName}".`, 'error');
+      return;
+    }
+
+    // 1. Atualizar paleta de cores
+    const updatedColors = { ...customRoleColors };
+    if (isRenaming) {
+      delete updatedColors[origUpper];
+    }
+    updatedColors[trimmedNewName] = editRoleColor;
+    if (onUpdateRoleColors) {
+      onUpdateRoleColors(updatedColors);
+    }
+
+    // 2. Atualizar lista de cargos
+    const currentRolesList = customRoles && customRoles.length > 0 ? customRoles : existingRoles;
+    const updatedRolesList = currentRolesList.map((r) =>
+      r.toUpperCase().trim() === origUpper ? trimmedNewName : r
+    );
+    if (!updatedRolesList.includes(trimmedNewName)) {
+      updatedRolesList.push(trimmedNewName);
+    }
+    if (onUpdateRoles) {
+      onUpdateRoles(updatedRolesList, deletedRoles);
+    }
+
+    // 3. Se renomeou, atualizar todos os colaboradores vinculados a este cargo
+    if (isRenaming) {
+      const updatedColabs = collaborators.map((c) =>
+        c.role.toUpperCase().trim() === origUpper
+          ? { ...c, role: trimmedNewName }
+          : c
+      );
+      onUpdateCollaborators(updatedColabs);
+
+      // 4. Se renomeou, atualizar todas as atividades vinculadas a este cargo
+      const updatedActs = activities.map((a) =>
+        a.role.toUpperCase().trim() === origUpper
+          ? { ...a, role: trimmedNewName }
+          : a
+      );
+      onUpdateActivities(updatedActs);
+
+      showNotification(`Cargo renomeado de "${originalRole}" para "${trimmedNewName}" com sucesso!`);
+    } else {
+      showNotification(`Cor do cargo "${trimmedNewName}" atualizada com sucesso!`);
+    }
+
+    setEditingRole(null);
+  };
+
+  const handleDeleteRole = (role: string) => {
+    const roleUpper = role.toUpperCase().trim();
+    const colabsWithRole = collaborators.filter((c) => c.role.toUpperCase().trim() === roleUpper);
+    const actsWithRole = activities.filter((a) => a.role.toUpperCase().trim() === roleUpper);
+
+    let desc = `Deseja realmente excluir o cargo "${roleUpper}" da fábrica?`;
+    if (colabsWithRole.length > 0 && actsWithRole.length > 0) {
+      desc = `Deseja realmente excluir o cargo "${roleUpper}"? Há ${colabsWithRole.length} colaborador(es) e ${actsWithRole.length} atividade(s) vinculadas. Ao excluir, o cargo e as atividades serão removidos e os colaboradores receberão outro cargo.`;
+    } else if (colabsWithRole.length > 0) {
+      desc = `Deseja realmente excluir o cargo "${roleUpper}"? Há ${colabsWithRole.length} colaborador(es) vinculados. Ao confirmar, o cargo será excluído e os colaboradores serão reatribuídos.`;
+    } else if (actsWithRole.length > 0) {
+      desc = `Deseja realmente excluir o cargo "${roleUpper}"? Há ${actsWithRole.length} atividade(s) cadastradas que também serão removidas da matriz.`;
+    }
+
+    setConfirmModal({
+      isOpen: true,
+      title: `Excluir Cargo "${roleUpper}"`,
+      description: desc,
+      confirmText: 'Sim, Excluir Cargo',
+      onConfirm: () => {
+        // 1. Adiciona a deletedRoles e remove de customRoles
+        const currentRoles = customRoles && customRoles.length > 0 ? customRoles : existingRoles;
+        const newRoles = currentRoles.filter((r) => r.toUpperCase().trim() !== roleUpper);
+        const newDeletedRoles = Array.from(new Set([...(deletedRoles || []), roleUpper]));
+
+        if (onUpdateRoles) {
+          onUpdateRoles(newRoles, newDeletedRoles);
+        }
+
+        // 2. Remove cor do customRoleColors
+        if (onUpdateRoleColors && customRoleColors) {
+          const newColors = { ...customRoleColors };
+          delete newColors[roleUpper];
+          onUpdateRoleColors(newColors);
+        }
+
+        // 3. Remove atividades vinculadas exclusivamente a este cargo
+        if (actsWithRole.length > 0) {
+          const filteredActs = activities.filter((a) => a.role.toUpperCase().trim() !== roleUpper);
+          onUpdateActivities(filteredActs);
+        }
+
+        // 4. Se houver colaboradores com este cargo, reatribui para o primeiro cargo ativo
+        if (colabsWithRole.length > 0) {
+          const fallbackRole = newRoles[0] || 'SERVIÇOS GERAIS TORNO AUTOMATICO';
+          const updatedColabs = collaborators.map((c) =>
+            c.role.toUpperCase().trim() === roleUpper ? { ...c, role: fallbackRole } : c
+          );
+          onUpdateCollaborators(updatedColabs);
+        }
+
+        if (editingRole === role) {
+          setEditingRole(null);
+        }
+
+        showNotification(`Cargo "${roleUpper}" foi excluído com sucesso.`);
+        setConfirmModal(null);
+      },
+    });
   };
 
   // -------------------------------------------------------------
@@ -641,6 +785,31 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         {/* ========================================================= */}
         {subTab === 'colaboradores' && (
           <div className="space-y-4">
+            {/* Quick Status / Force Sync Bar */}
+            <div className="p-3 bg-[#111111] border border-[#333333] rounded-lg flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#00E676] animate-pulse"></span>
+                <span className="text-xs font-bold text-white">
+                  {collaborators.length} Colaboradores Ativos no Sistema
+                </span>
+                <span className="text-[11px] text-[#888888]">
+                  (Sincronização Nuvem Firestore Ativa)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onResetToDefaults();
+                  showNotification('Colaboradores e turnos sincronizados com a matriz oficial!');
+                }}
+                className="px-2.5 py-1 bg-[#222222] hover:bg-[#333333] text-[#00E676] border border-[#00E676]/30 hover:border-[#00E676] rounded text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                title="Sincronizar a lista com os 14 colaboradores oficiais da matriz"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Restaurar 14 Colaboradores Oficiais</span>
+              </button>
+            </div>
+
             {/* Form de Cadastro de Novo Operador */}
             <form
               onSubmit={handleAddCollaborator}
@@ -848,63 +1017,119 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         {/* ========================================================= */}
         {subTab === 'atividades' && (
           <div className="space-y-4">
-            {/* Form de Cadastro de Nova Atividade */}
-            <div className="p-4 bg-[#1E1E1E] rounded-lg border border-[#333333] space-y-3">
+            {/* Form de Cadastro / Edição Direta de Atividade (Foto 4) */}
+            <div className={`p-4 rounded-lg border transition-all space-y-3 ${
+              editingActId 
+                ? 'bg-[#1C1A2E] border-[#007BFF] shadow-lg ring-1 ring-[#007BFF]/50' 
+                : 'bg-[#1E1E1E] border-[#333333]'
+            }`}>
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#333333] pb-2.5">
                 <div className="flex items-center gap-2">
-                  <span className="p-1.5 bg-[#007BFF]/20 text-[#007BFF] rounded-lg">
-                    <Layers className="w-4 h-4" />
+                  <span className={`p-1.5 rounded-lg ${editingActId ? 'bg-[#007BFF] text-white' : 'bg-[#007BFF]/20 text-[#007BFF]'}`}>
+                    {editingActId ? <Edit2 className="w-4 h-4" /> : <Layers className="w-4 h-4" />}
                   </span>
                   <div>
-                    <h3 className="text-xs font-bold text-white uppercase tracking-wider">
-                      Cadastrar Atividade na Matriz
+                    <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                      {editingActId ? (
+                        <>
+                          <span className="text-[#00E676]">MODO EDIÇÃO DE ATIVIDADE:</span>
+                          <span>{editActForm.name || 'Atividade Selecionada'}</span>
+                          <span className="px-1.5 py-0.2 bg-[#007BFF]/30 text-[#007BFF] rounded text-[10px]">
+                            P{editActForm.priority}
+                          </span>
+                        </>
+                      ) : (
+                        'Cadastrar Atividade na Matriz'
+                      )}
                     </h3>
                     <p className="text-[11px] text-[#888888]">
-                      Vincule rotinas operacionais a um cargo específico, a múltiplos cargos ou a <b>TODOS</b> de uma vez.
+                      {editingActId
+                        ? 'Altere os parâmetros desta atividade abaixo ou clique em Excluir para removê-la da matriz.'
+                        : 'Vincule rotinas operacionais a um cargo específico, a múltiplos cargos ou a TODOS de uma vez.'}
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewActRole('ALL');
-                      setIsMultiRoleSelectOpen(false);
-                    }}
-                    className={`px-2.5 py-1 text-xs rounded font-bold cursor-pointer transition flex items-center gap-1 border ${
-                      newActRole === 'ALL'
-                        ? 'bg-[#FFD700]/20 border-[#FFD700] text-[#FFD700]'
-                        : 'bg-[#222222] border-[#444444] text-[#AAAAAA] hover:text-white'
-                    }`}
-                  >
-                    <Sparkles className="w-3 h-3" />
-                    <span>Vincular a Todos os Cargos</span>
-                  </button>
+                  {/* Seletor rápido de atividade para editar */}
+                  {!editingActId && activities.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      <select
+                        aria-label="Selecionar atividade existente para editar ou excluir"
+                        onChange={(e) => {
+                          const act = activities.find((a) => a.id === e.target.value);
+                          if (act) handleStartEditAct(act);
+                          e.target.value = '';
+                        }}
+                        defaultValue=""
+                        className="py-1 px-2 bg-[#161616] hover:bg-[#222222] text-[#007BFF] border border-[#007BFF]/40 rounded text-xs font-bold cursor-pointer focus:outline-none"
+                      >
+                        <option value="" disabled>
+                          ✏️ Selecionar Atividade para Editar/Excluir...
+                        </option>
+                        {activities.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            [{a.role}] P{a.priority} - {a.name} ({a.standardMinutes || 30}m)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewActRole('MULTI');
-                      setIsMultiRoleSelectOpen(!isMultiRoleSelectOpen);
-                      if (selectedRolesForNewAct.length === 0) {
-                        setSelectedRolesForNewAct(existingRoles);
-                      }
-                    }}
-                    className={`px-2.5 py-1 text-xs rounded font-bold cursor-pointer transition flex items-center gap-1 border ${
-                      newActRole === 'MULTI'
-                        ? 'bg-[#007BFF]/20 border-[#007BFF] text-[#007BFF]'
-                        : 'bg-[#222222] border-[#444444] text-[#AAAAAA] hover:text-white'
-                    }`}
-                  >
-                    <CheckSquare className="w-3 h-3" />
-                    <span>Selecionar Múltiplos ({selectedRolesForNewAct.length})</span>
-                  </button>
+                  {!editingActId && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewActRole('ALL');
+                          setIsMultiRoleSelectOpen(false);
+                        }}
+                        className={`px-2.5 py-1 text-xs rounded font-bold cursor-pointer transition flex items-center gap-1 border ${
+                          newActRole === 'ALL'
+                            ? 'bg-[#FFD700]/20 border-[#FFD700] text-[#FFD700]'
+                            : 'bg-[#222222] border-[#444444] text-[#AAAAAA] hover:text-white'
+                        }`}
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Vincular a Todos os Cargos</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewActRole('MULTI');
+                          setIsMultiRoleSelectOpen(!isMultiRoleSelectOpen);
+                          if (selectedRolesForNewAct.length === 0) {
+                            setSelectedRolesForNewAct(existingRoles);
+                          }
+                        }}
+                        className={`px-2.5 py-1 text-xs rounded font-bold cursor-pointer transition flex items-center gap-1 border ${
+                          newActRole === 'MULTI'
+                            ? 'bg-[#007BFF]/20 border-[#007BFF] text-[#007BFF]'
+                            : 'bg-[#222222] border-[#444444] text-[#AAAAAA] hover:text-white'
+                        }`}
+                      >
+                        <CheckSquare className="w-3 h-3" />
+                        <span>Selecionar Múltiplos ({selectedRolesForNewAct.length})</span>
+                      </button>
+                    </>
+                  )}
+
+                  {editingActId && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingActId(null)}
+                      className="px-3 py-1 bg-[#333333] hover:bg-[#444444] text-white rounded text-xs font-bold flex items-center gap-1 cursor-pointer transition"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Cancelar Edição</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
               {/* Multi-role selection panel when MULTI is chosen */}
-              {newActRole === 'MULTI' && (
+              {!editingActId && newActRole === 'MULTI' && (
                 <div className="p-3 bg-[#161616] border border-[#007BFF]/40 rounded-lg space-y-2.5 animate-in fade-in duration-150">
                   <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
                     <span className="text-white font-bold flex items-center gap-1.5">
@@ -961,32 +1186,54 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                 </div>
               )}
 
+              {/* FORMULÁRIO DE CADASTRO OU EDIÇÃO */}
               <form
-                onSubmit={handleAddActivity}
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (editingActId) {
+                    handleSaveEditAct(editingActId);
+                  } else {
+                    handleAddActivity(e);
+                  }
+                }}
                 className="grid grid-cols-1 sm:grid-cols-6 gap-3 items-end"
               >
                 <div className="sm:col-span-1">
                   <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Cargo Vinculado:</label>
-                  <select
-                    value={newActRole}
-                    onChange={(e) => {
-                      setNewActRole(e.target.value);
-                      if (e.target.value === 'MULTI') {
-                        if (selectedRolesForNewAct.length === 0) setSelectedRolesForNewAct(existingRoles);
-                      }
-                    }}
-                    className="w-full p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs focus:outline-none focus:border-[#007BFF]"
-                  >
-                    <option value="ALL">⭐ [TODOS OS CARGOS] ({existingRoles.length})</option>
-                    <option value="MULTI">☑️ [MÚLTIPLOS CARGOS ({selectedRolesForNewAct.length})]...</option>
-                    <optgroup label="── Cargos Individuais ──">
+                  {editingActId ? (
+                    <select
+                      value={editActForm.role || ''}
+                      onChange={(e) => setEditActForm({ ...editActForm, role: e.target.value })}
+                      className="w-full p-2 bg-[#111111] text-white border border-[#007BFF] rounded text-xs font-bold focus:outline-none"
+                    >
                       {existingRoles.map((r) => (
                         <option key={r} value={r}>
                           {r}
                         </option>
                       ))}
-                    </optgroup>
-                  </select>
+                    </select>
+                  ) : (
+                    <select
+                      value={newActRole}
+                      onChange={(e) => {
+                        setNewActRole(e.target.value);
+                        if (e.target.value === 'MULTI') {
+                          if (selectedRolesForNewAct.length === 0) setSelectedRolesForNewAct(existingRoles);
+                        }
+                      }}
+                      className="w-full p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs focus:outline-none focus:border-[#007BFF]"
+                    >
+                      <option value="ALL">⭐ [TODOS OS CARGOS] ({existingRoles.length})</option>
+                      <option value="MULTI">☑️ [MÚLTIPLOS CARGOS ({selectedRolesForNewAct.length})]...</option>
+                      <optgroup label="── Cargos Individuais ──">
+                        {existingRoles.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  )}
                 </div>
 
                 <div className="sm:col-span-2">
@@ -994,9 +1241,17 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   <input
                     type="text"
                     placeholder="Ex: SETUP DE MÁQUINA"
-                    value={newActName}
-                    onChange={(e) => setNewActName(e.target.value)}
-                    className="w-full p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs focus:outline-none focus:border-[#007BFF]"
+                    value={editingActId ? editActForm.name || '' : newActName}
+                    onChange={(e) => {
+                      if (editingActId) {
+                        setEditActForm({ ...editActForm, name: e.target.value });
+                      } else {
+                        setNewActName(e.target.value);
+                      }
+                    }}
+                    className={`w-full p-2 bg-[#111111] text-white rounded text-xs focus:outline-none ${
+                      editingActId ? 'border border-[#007BFF] font-bold' : 'border border-[#555555] focus:border-[#007BFF]'
+                    }`}
                     required
                   />
                 </div>
@@ -1007,9 +1262,18 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                     type="number"
                     min="1"
                     max="50"
-                    value={newActPriority}
-                    onChange={(e) => setNewActPriority(parseInt(e.target.value, 10) || 1)}
-                    className="w-full p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs font-mono focus:outline-none focus:border-[#007BFF]"
+                    value={editingActId ? editActForm.priority || 1 : newActPriority}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10) || 1;
+                      if (editingActId) {
+                        setEditActForm({ ...editActForm, priority: val });
+                      } else {
+                        setNewActPriority(val);
+                      }
+                    }}
+                    className={`w-full p-2 bg-[#111111] text-white rounded text-xs font-mono focus:outline-none ${
+                      editingActId ? 'border border-[#007BFF] text-[#00E676] font-bold' : 'border border-[#555555] focus:border-[#007BFF]'
+                    }`}
                     required
                   />
                 </div>
@@ -1025,9 +1289,18 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                       min="1"
                       max="999"
                       placeholder="Ex: 45"
-                      value={newActMinutes}
-                      onChange={(e) => setNewActMinutes(parseInt(e.target.value, 10) || 30)}
-                      className="w-full p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs font-mono focus:outline-none focus:border-[#007BFF] pl-7"
+                      value={editingActId ? editActForm.standardMinutes || 30 : newActMinutes}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10) || 30;
+                        if (editingActId) {
+                          setEditActForm({ ...editActForm, standardMinutes: val });
+                        } else {
+                          setNewActMinutes(val);
+                        }
+                      }}
+                      className={`w-full p-2 bg-[#111111] text-white rounded text-xs font-mono pl-7 focus:outline-none ${
+                        editingActId ? 'border border-[#007BFF] text-[#00E676] font-bold' : 'border border-[#555555] focus:border-[#007BFF]'
+                      }`}
                       required
                     />
                     <Clock className="w-3.5 h-3.5 text-[#00E676] absolute left-2 top-2.5 pointer-events-none" />
@@ -1037,9 +1310,18 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                 <div>
                   <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Categoria:</label>
                   <select
-                    value={newActCategory}
-                    onChange={(e) => setNewActCategory(e.target.value as ActivityCategory)}
-                    className="w-full p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs focus:outline-none focus:border-[#007BFF]"
+                    value={editingActId ? editActForm.category || 'Operação' : newActCategory}
+                    onChange={(e) => {
+                      const val = e.target.value as ActivityCategory;
+                      if (editingActId) {
+                        setEditActForm({ ...editActForm, category: val });
+                      } else {
+                        setNewActCategory(val);
+                      }
+                    }}
+                    className={`w-full p-2 bg-[#111111] text-white rounded text-xs focus:outline-none ${
+                      editingActId ? 'border border-[#007BFF]' : 'border border-[#555555] focus:border-[#007BFF]'
+                    }`}
                   >
                     {CATEGORIAS.map((cat) => (
                       <option key={cat} value={cat}>
@@ -1049,20 +1331,55 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   </select>
                 </div>
 
-                <div className="sm:col-span-6 flex justify-end pt-1">
-                  <button
-                    type="submit"
-                    className="py-2.5 px-5 bg-[#0066CC] hover:bg-[#005bb5] text-white font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>
-                      {newActRole === 'ALL'
-                        ? `Vincular a TODOS os ${existingRoles.length} Cargos`
-                        : newActRole === 'MULTI'
-                        ? `Vincular a ${selectedRolesForNewAct.length} Cargos Selecionados`
-                        : 'Adicionar Atividade'}
-                    </span>
-                  </button>
+                <div className="sm:col-span-6 flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-[#333333]">
+                  {editingActId ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const curAct = activities.find((a) => a.id === editingActId);
+                          if (curAct) handleDeleteActivity(curAct);
+                        }}
+                        className="py-2.5 px-4 bg-[#FF3D00]/20 hover:bg-[#FF3D00] text-[#FF5252] hover:text-white border border-[#FF3D00]/50 font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span>Excluir Atividade da Matriz</span>
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditingActId(null)}
+                          className="py-2.5 px-4 bg-[#2A2A2A] hover:bg-[#333333] text-[#AAAAAA] hover:text-white font-bold rounded text-xs transition cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="submit"
+                          className="py-2.5 px-6 bg-[#00E676] hover:bg-[#00c853] text-black font-extrabold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
+                        >
+                          <Save className="w-4 h-4" />
+                          <span>Salvar Alterações na Atividade</span>
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="w-full flex justify-end">
+                      <button
+                        type="submit"
+                        className="py-2.5 px-5 bg-[#0066CC] hover:bg-[#005bb5] text-white font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>
+                          {newActRole === 'ALL'
+                            ? `Vincular a TODOS os ${existingRoles.length} Cargos`
+                            : newActRole === 'MULTI'
+                            ? `Vincular a ${selectedRolesForNewAct.length} Cargos Selecionados`
+                            : 'Adicionar Atividade'}
+                        </span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </form>
             </div>
@@ -1281,11 +1598,27 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         {/* 3. ABA CARGOS & CORES                                      */}
         {/* ========================================================= */}
         {subTab === 'cargos' && (
-          <div className="space-y-4">
+          <div className="space-y-5">
+            {/* Header explicativo com contadores */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-[#111111] p-3.5 rounded-xl border border-[#333333]">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Palette className="w-4 h-4 text-[#007BFF]" />
+                  <span>Gestão de Cargos e Identidade Visual</span>
+                </h3>
+                <p className="text-xs text-[#888888]">
+                  Crie, renomeie, personalize cores ou exclua cargos. As alterações refletem automaticamente em todos os operadores e atividades.
+                </p>
+              </div>
+              <div className="text-xs font-mono font-bold text-[#00E676] bg-[#00E676]/10 px-3 py-1.5 rounded-lg border border-[#00E676]/30">
+                {existingRoles.length} Cargos Ativos
+              </div>
+            </div>
+
             {/* Form para Adicionar Novo Cargo */}
             <form
               onSubmit={handleAddNewRole}
-              className="p-4 bg-[#1E1E1E] rounded-lg border border-[#333333] grid grid-cols-1 sm:grid-cols-3 gap-3 items-end"
+              className="p-4 bg-[#1E1E1E] rounded-xl border border-[#333333] grid grid-cols-1 sm:grid-cols-3 gap-3 items-end shadow-md"
             >
               <div>
                 <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
@@ -1296,7 +1629,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   placeholder="Ex: OPERADOR DE RETÍFICA"
                   value={newRoleName}
                   onChange={(e) => setNewRoleName(e.target.value)}
-                  className="w-full p-2.5 bg-[#111111] text-white border border-[#555555] rounded text-xs focus:outline-none focus:border-[#007BFF]"
+                  className="w-full p-2.5 bg-[#111111] text-white border border-[#555555] rounded-lg text-xs focus:outline-none focus:border-[#007BFF]"
                   required
                 />
               </div>
@@ -1310,52 +1643,175 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                     type="color"
                     value={newRoleColor}
                     onChange={(e) => setNewRoleColor(e.target.value)}
-                    className="w-10 h-9 p-0.5 bg-[#111111] border border-[#555555] rounded cursor-pointer"
+                    className="w-10 h-9 p-0.5 bg-[#111111] border border-[#555555] rounded-lg cursor-pointer"
                   />
                   <input
                     type="text"
                     value={newRoleColor}
                     onChange={(e) => setNewRoleColor(e.target.value)}
-                    className="flex-1 p-2 bg-[#111111] text-white border border-[#555555] rounded text-xs font-mono"
+                    className="flex-1 p-2 bg-[#111111] text-white border border-[#555555] rounded-lg text-xs font-mono"
                   />
                 </div>
               </div>
 
               <button
                 type="submit"
-                className="py-2.5 px-4 bg-[#0066CC] hover:bg-[#005bb5] text-white font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                className="py-2.5 px-4 bg-[#0066CC] hover:bg-[#005bb5] text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
               >
                 <Plus className="w-4 h-4" />
                 <span>Salvar Cargo & Cor</span>
               </button>
             </form>
 
-            {/* Grid dos Cargos Atuais com Seletor de Cores */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {/* Grid dos Cargos Atuais com Edição, Exclusão e Seletor de Cores */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
               {existingRoles.map((role) => {
+                const isEditing = editingRole === role;
                 const corAtual = getRoleColor(role);
-                const colabsCount = collaborators.filter((c) => c.role === role).length;
-                const actsCount = activities.filter((a) => a.role === role).length;
+                const colabsCount = collaborators.filter(
+                  (c) => c.role.toUpperCase().trim() === role.toUpperCase().trim()
+                ).length;
+                const actsCount = activities.filter(
+                  (a) => a.role.toUpperCase().trim() === role.toUpperCase().trim()
+                ).length;
+
+                if (isEditing) {
+                  return (
+                    <div
+                      key={role}
+                      className="p-4 bg-[#141A28] border-2 border-[#007BFF] rounded-xl space-y-3 shadow-xl animate-in fade-in"
+                    >
+                      <div className="flex items-center justify-between border-b border-[#007BFF]/30 pb-2">
+                        <span className="text-xs font-black text-[#007BFF] uppercase tracking-wider flex items-center gap-1.5">
+                          <Edit2 className="w-3.5 h-3.5" />
+                          Editando Cargo
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setEditingRole(null)}
+                          className="text-[#888888] hover:text-white text-xs cursor-pointer p-1"
+                          title="Cancelar edição"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-[#CCCCCC] mb-1">
+                          Nome do Cargo / Setor:
+                        </label>
+                        <input
+                          type="text"
+                          value={editRoleName}
+                          onChange={(e) => setEditRoleName(e.target.value)}
+                          className="w-full p-2 bg-[#111111] text-white border border-[#007BFF] rounded text-xs font-bold focus:outline-none"
+                          placeholder="Ex: OPERADOR DE TORNO CNC"
+                          autoFocus
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-[#CCCCCC] mb-1">
+                          Cor de Destaque:
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={editRoleColor}
+                            onChange={(e) => setEditRoleColor(e.target.value)}
+                            className="w-9 h-8 p-0.5 bg-[#111111] border border-[#555555] rounded cursor-pointer shrink-0"
+                          />
+                          <input
+                            type="text"
+                            value={editRoleColor}
+                            onChange={(e) => setEditRoleColor(e.target.value)}
+                            className="flex-1 p-1.5 bg-[#111111] text-white border border-[#555555] rounded text-xs font-mono"
+                          />
+                          <div className="flex items-center gap-1">
+                            {PRESET_CORES.slice(0, 4).map((preset) => (
+                              <button
+                                key={preset.hex}
+                                type="button"
+                                onClick={() => setEditRoleColor(preset.hex)}
+                                className="w-5 h-5 rounded-full border border-black/50 hover:scale-125 transition cursor-pointer"
+                                style={{ backgroundColor: preset.hex }}
+                                title={preset.nome}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-[10px] text-[#00E676] bg-[#00E676]/10 p-2 rounded border border-[#00E676]/20 leading-tight">
+                        💡 Ao renomear, os {colabsCount} operadores e {actsCount} atividades vinculadas serão automaticamente atualizados.
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditingRole(null)}
+                          className="py-1.5 px-3 bg-[#2A2A2A] hover:bg-[#333333] text-[#AAAAAA] hover:text-white rounded text-xs font-bold transition cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveEditedRole(role)}
+                          className="py-1.5 px-4 bg-[#00E676] hover:bg-[#00c853] text-black rounded text-xs font-black flex items-center gap-1.5 transition cursor-pointer shadow-md"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>Salvar Cargo</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
 
                 return (
                   <div
                     key={role}
-                    className="p-3.5 bg-[#111111] border border-[#333333] rounded-lg space-y-2.5 shadow-md"
+                    className="p-3.5 bg-[#111111] border border-[#333333] hover:border-[#555555] rounded-xl space-y-3 shadow-md transition group"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="font-bold text-xs sm:text-sm text-white truncate max-w-[70%]">
-                        {role}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span
+                          className="w-3.5 h-3.5 rounded-full border border-[#555555] shrink-0 mt-0.5"
+                          style={{ backgroundColor: corAtual }}
+                          title={`Cor: ${corAtual}`}
+                        />
+                        <div className="font-bold text-xs sm:text-sm text-white truncate" title={role}>
+                          {role}
+                        </div>
                       </div>
-                      <span
-                        className="w-5 h-5 rounded-full border border-[#555555] shrink-0"
-                        style={{ backgroundColor: corAtual }}
-                        title={`Cor atual: ${corAtual}`}
-                      />
+
+                      {/* Botões de Ação: Editar e Excluir */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditRole(role)}
+                          className="p-1.5 bg-[#1E1E1E] hover:bg-[#007BFF] text-[#AAAAAA] hover:text-white border border-[#333333] hover:border-[#007BFF] rounded-md transition cursor-pointer"
+                          title={`Editar ou Renomear "${role}"`}
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRole(role)}
+                          className="p-1.5 bg-[#1E1E1E] hover:bg-[#FF3D00] text-[#888888] hover:text-white border border-[#333333] hover:border-[#FF3D00] rounded-md transition cursor-pointer"
+                          title={`Excluir cargo "${role}"`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="text-[11px] text-[#888888] flex items-center gap-3">
-                      <span>👥 {colabsCount} operadores</span>
-                      <span>📋 {actsCount} atividades Pn</span>
+                    <div className="text-[11px] text-[#888888] flex items-center gap-3 bg-[#181818] p-2 rounded-lg">
+                      <span className="flex items-center gap-1">
+                        👥 <strong className="text-white font-mono">{colabsCount}</strong> operadores
+                      </span>
+                      <span className="flex items-center gap-1">
+                        📋 <strong className="text-[#00E676] font-mono">{actsCount}</strong> atividades Pn
+                      </span>
                     </div>
 
                     <div className="pt-2 border-t border-[#222222] flex items-center justify-between gap-2">

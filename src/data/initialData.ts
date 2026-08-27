@@ -1,16 +1,20 @@
 import { ActivityItem, Collaborator, ShiftConfig } from '../types';
 
 export const INITIAL_COLLABORATORS: Collaborator[] = [
-  { id: 'col-1', name: 'Carlos Silva', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
-  { id: 'col-2', name: 'Marcos Oliveira', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
-  { id: 'col-3', name: 'Robson Santos', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 1', active: true },
-  { id: 'col-4', name: 'Anderson Souza', role: 'AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true },
-  { id: 'col-5', name: 'Danilo Costa', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
-  { id: 'col-6', name: 'Felipe Almeida', role: 'INSPETOR / OPERADOR TA', shift: 'Turno 2', active: true },
-  { id: 'col-7', name: 'Lucas Mendes', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 2', active: true },
-  { id: 'col-8', name: 'Thiago Ferreira', role: 'SISTEMA / AREA DO CAVACO E OLEO', shift: 'Turno 2', active: true },
-  { id: 'col-9', name: 'Gabriel Lima', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 3', active: true },
-  { id: 'col-10', name: 'Valter Ribeiro (Líder)', role: 'LÍDER DE PRODUÇÃO', shift: 'Turno 1', active: true },
+  { id: 'col-1', name: 'GERALDO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-2', name: 'DIEGO', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
+  { id: 'col-3', name: 'CARLOS', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 2', active: true },
+  { id: 'col-4', name: 'EVANDRO', role: 'AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true },
+  { id: 'col-5', name: 'GABRIEL', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
+  { id: 'col-6', name: 'ALEXANDER', role: 'INSPETOR / OPERADOR TA', shift: 'Turno 2', active: true },
+  { id: 'col-7', name: 'WANDERSON', role: 'SISTEMA / AREA DO CAVACO E OLEO', shift: 'Turno 2', active: true },
+  { id: 'col-8', name: 'ANSELMO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-9', name: 'CRISTIAN', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 1', active: true },
+  { id: 'col-10', name: 'IGOR', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
+  { id: 'col-11', name: 'CLEMILSON', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
+  { id: 'col-12', name: 'JULIO', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-13', name: 'VITOR', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-14', name: 'DANIEL', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
 ];
 
 export const INITIAL_SHIFTS: ShiftConfig[] = [
@@ -18,10 +22,10 @@ export const INITIAL_SHIFTS: ShiftConfig[] = [
     id: 's1',
     name: 'Turno 1',
     code: 't1',
-    entrada: '08:00',
+    entrada: '07:00',
     saidaAlmoco: '12:00',
     retornoAlmoco: '13:00',
-    saida: '17:48',
+    saida: '17:30',
     dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
     color: '#007BFF',
   },
@@ -29,10 +33,10 @@ export const INITIAL_SHIFTS: ShiftConfig[] = [
     id: 's2',
     name: 'Turno 2',
     code: 't2',
-    entrada: '18:00',
-    saidaAlmoco: '22:00',
-    retornoAlmoco: '23:00',
-    saida: '03:00',
+    entrada: '15:30',
+    saidaAlmoco: '20:00',
+    retornoAlmoco: '21:00',
+    saida: '01:30',
     dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
     color: '#FF8C00',
   },
@@ -158,6 +162,23 @@ export const INITIAL_OBSERVATIONS = [
   'Retrabalho de Lote Fora do Dimensional',
   'Parada Programada / Reunião 5S',
   'Queda de Energia / Ar Comprimido',
+];
+
+export const INITIAL_ROLES: string[] = [
+  'PREPARADOR TORNO AUTOMATICO',
+  'INSPETOR TCNC / OPERADOR',
+  'PREPARADOR DE FERRAMENTAS',
+  'AREA DO CAVACO E OLEO',
+  'PREPARADOR PROGAMADOR',
+  'INSPETOR / OPERADOR TA',
+  'SISTEMA / AREA DO CAVACO E OLEO',
+  'SERVIÇOS GERAIS TORNO AUTOMATICO',
+  'LÍDER DE PRODUÇÃO',
+  'OPERADOR DE TORNO CNC',
+  'OPERADOR DE CENTRO DE USINAGEM',
+  'AUXILIAR DE PRODUÇÃO',
+  'MANUTENÇÃO MECÂNICA',
+  'SOLDADOR TIG/MIG',
 ];
 
 /**

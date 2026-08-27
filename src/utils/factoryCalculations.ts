@@ -464,3 +464,36 @@ export function obterTurnoDoLog(log: ProductionLog, collaborators: Collaborator[
   const colab = collaborators.find(c => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase());
   return padronizarNomeTurno(colab?.shift || 'Turno 1');
 }
+
+/**
+ * Returns the currently active ShiftConfig based on current clock time and active days
+ */
+export function obterTurnoAtual(shifts: ShiftConfig[], date: Date = new Date()): ShiftConfig | undefined {
+  if (!shifts || shifts.length === 0) return undefined;
+  const DIAS_SIGLAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+  const currentDayName = DIAS_SIGLAS[date.getDay()];
+  const currentHourMin = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+
+  const found = shifts.find((s) => {
+    // If shift has days configured, check if active today
+    if (s.dias && s.dias.length > 0 && !s.dias.includes(currentDayName)) {
+      return false;
+    }
+    if (s.entrada <= s.saida) {
+      return currentHourMin >= s.entrada && currentHourMin <= s.saida;
+    } else {
+      // Overnight shift
+      return currentHourMin >= s.entrada || currentHourMin <= s.saida;
+    }
+  });
+
+  return found || shifts[0];
+}
+
+/**
+ * Returns the standardized name of the currently active shift (e.g. "Turno 1", "Turno 2", "Turno 3")
+ */
+export function obterNomeTurnoAtual(shifts: ShiftConfig[], date: Date = new Date()): string {
+  const t = obterTurnoAtual(shifts, date);
+  return t ? padronizarNomeTurno(t.name) : 'Turno 1';
+}

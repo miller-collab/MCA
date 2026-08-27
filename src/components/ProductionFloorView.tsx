@@ -16,7 +16,9 @@ import {
   calcularDiferencaMinutos, 
   formatarHoraPtBr,
   playFactoryChime,
-  padronizarNomeTurno
+  padronizarNomeTurno,
+  obterTurnoAtual,
+  obterNomeTurnoAtual
 } from '../utils/factoryCalculations';
 import { QuickCollaboratorModal } from './QuickCollaboratorModal';
 import { findSavedCollaboratorsInBrowser } from '../utils/recoveryUtils';
@@ -94,6 +96,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     });
   }, [allActiveLogs, selectedShiftFilter, collaborators]);
 
+  // Active shift for the current time
+  const currentActiveShift = useMemo(() => obterTurnoAtual(shifts, new Date()), [shifts, secondsTick]);
+  const currentActiveShiftName = currentActiveShift ? padronizarNomeTurno(currentActiveShift.name) : 'Turno 1';
+
   // Set of busy collaborators
   const busyCollaborators = new Set(allActiveLogs.map(l => l.collaboratorName));
 
@@ -102,14 +108,18 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     c => c.active && !busyCollaborators.has(c.name)
   );
 
-  // Filtered available collaborators by search and shift filter
+  // Filtered available collaborators by search and shift filter (Foto 5)
   const filteredAvailableColabs = availableCollaborators.filter(c => {
     const matchSearch = 
       c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
       c.role.toLowerCase().includes(colabSearch.toLowerCase());
-    const matchShift = 
-      colabShiftFilter === 'TODOS' || 
-      padronizarNomeTurno(c.shift) === padronizarNomeTurno(colabShiftFilter);
+    
+    let matchShift = true;
+    if (colabShiftFilter === 'TURNO_ATUAL') {
+      matchShift = padronizarNomeTurno(c.shift) === currentActiveShiftName;
+    } else if (colabShiftFilter !== 'TODOS') {
+      matchShift = padronizarNomeTurno(c.shift) === padronizarNomeTurno(colabShiftFilter);
+    }
     return matchSearch && matchShift;
   });
 
@@ -180,8 +190,8 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setSelectedColab(null);
     setColabSearch('');
     setActivitySearch('');
-    // Align colab shift filter with main floor filter
-    setColabShiftFilter(selectedShiftFilter);
+    // Default strictly to the current active shift according to current time (Foto 5)
+    setColabShiftFilter('TURNO_ATUAL');
     setCurrentScreen('colab');
     if (soundEnabled) playFactoryChime('beep');
   };
@@ -214,8 +224,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
   const handleConfirmFinish = () => {
     if (!logToFinish) return;
+    const targetId = logToFinish.id;
+    setLogToFinish(null);
     onFinishActivity(
-      logToFinish.id,
+      targetId,
       finishObs,
       finishNotes,
       partsProduced ? parseInt(partsProduced, 10) : undefined,
@@ -455,14 +467,28 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             </div>
           )}
 
-          {/* Quick Shift Filter for Operator List on Tablet */}
+          {/* Quick Shift Filter for Operator List on Tablet (Foto 5: Filtrar por Turno Atual) */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1 bg-[#161616] p-1 rounded-xl border border-[#333333] overflow-x-auto">
-              {['TODOS', 'Turno 1', 'Turno 2', 'Turno 3'].map((shiftOpt) => {
+              <button
+                type="button"
+                onClick={() => setColabShiftFilter('TURNO_ATUAL')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[36px] flex items-center gap-1.5 ${
+                  colabShiftFilter === 'TURNO_ATUAL'
+                    ? 'bg-[#00E676] text-black shadow-md'
+                    : 'text-[#00E676] hover:bg-[#00E676]/10'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-current animate-pulse"></span>
+                <span>Turno Atual ({currentActiveShiftName})</span>
+              </button>
+
+              {['Turno 1', 'Turno 2', 'Turno 3', 'TODOS'].map((shiftOpt) => {
                 const isActive = colabShiftFilter === shiftOpt;
                 return (
                   <button
                     key={shiftOpt}
+                    type="button"
                     onClick={() => setColabShiftFilter(shiftOpt)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[36px] ${
                       isActive

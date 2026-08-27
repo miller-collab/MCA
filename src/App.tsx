@@ -21,6 +21,7 @@ import {
   INITIAL_SHIFTS,
   INITIAL_ACTIVITIES,
   INITIAL_OBSERVATIONS,
+  INITIAL_ROLES,
 } from './data/initialData';
 
 import {
@@ -54,6 +55,7 @@ import {
   dismissAutoCloseNotifInFirestore,
   clearAllNotifsInFirestore,
   seedInitialFirestoreDataIfEmpty,
+  fetchAllDataFromFirestore,
 } from './services/firestoreSync';
 
 export type TabKey = 'painel' | 'eficiencia' | 'historico' | 'indicadores' | 'turnos';
@@ -68,46 +70,46 @@ function gerarLogsIniciais(
     {
       id: 'log-seed-1',
       date: hoje,
-      collaboratorName: 'Carlos Silva',
+      collaboratorName: 'GERALDO',
       role: 'PREPARADOR TORNO AUTOMATICO',
       shift: 'Turno 1',
       activity: 'SETUP DE MAQUINA',
       category: 'Setup',
-      startTime: '08:00:00',
+      startTime: '07:00:00',
       status: 'Em Execução',
     },
     {
       id: 'log-seed-2',
       date: hoje,
-      collaboratorName: 'Marcos Oliveira',
+      collaboratorName: 'DIEGO',
       role: 'INSPETOR TCNC / OPERADOR',
       shift: 'Turno 1',
       activity: 'MEDIR PEÇAS',
       category: 'Qualidade / Inspeção',
-      startTime: '08:15:00',
+      startTime: '07:15:00',
       status: 'Em Execução',
     },
     {
       id: 'log-seed-3',
       date: hoje,
-      collaboratorName: 'Anderson Souza',
+      collaboratorName: 'EVANDRO',
       role: 'AREA DO CAVACO E OLEO',
       shift: 'Turno 1',
       activity: 'LIMPEZA DO CAVACO',
       category: '5S & Limpeza',
-      startTime: '07:50:00',
+      startTime: '07:20:00',
       status: 'Em Execução',
     },
     {
       id: 'log-seed-4',
       date: hoje,
-      collaboratorName: 'Robson Santos',
+      collaboratorName: 'CRISTIAN',
       role: 'PREPARADOR DE FERRAMENTAS',
       shift: 'Turno 1',
       activity: 'AFIAR FERRAMENTAS',
       category: 'Setup',
-      startTime: '07:30:00',
-      endTime: '08:15:00',
+      startTime: '07:00:00',
+      endTime: '07:45:00',
       durationMinutes: 45,
       status: 'Concluída',
       observation: 'Operação Concluída com Sucesso sem Anomalias',
@@ -123,7 +125,21 @@ export function App() {
       return recovered.collaborators;
     }
     const saved = localStorage.getItem('mca_collaborators_v3');
-    return saved ? JSON.parse(saved) : INITIAL_COLLABORATORS;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (
+          Array.isArray(parsed) &&
+          parsed.length > 0 &&
+          !parsed.some((p: any) => p.name === 'Valter Ribeiro (Líder)' || p.name === 'Carlos Silva' || p.name === 'Marcos Oliveira')
+        ) {
+          return parsed;
+        }
+      } catch {
+        // Use default
+      }
+    }
+    return INITIAL_COLLABORATORS;
   });
 
   const [activities, setActivities] = useState<ActivityItem[]>(() => {
@@ -144,6 +160,16 @@ export function App() {
   const [customRoleColors, setCustomRoleColors] = useState<Record<string, string>>(() => {
     const saved = localStorage.getItem('mca_role_colors_v3');
     return saved ? JSON.parse(saved) : {};
+  });
+
+  const [customRoles, setCustomRoles] = useState<string[]>(() => {
+    const saved = localStorage.getItem('mca_roles_v3');
+    return saved ? JSON.parse(saved) : INITIAL_ROLES;
+  });
+
+  const [deletedRoles, setDeletedRoles] = useState<string[]>(() => {
+    const saved = localStorage.getItem('mca_deleted_roles_v3');
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [logs, setLogs] = useState<ProductionLog[]>(() => {
@@ -191,7 +217,7 @@ export function App() {
 
     // Subscribe to real-time logs from Firestore
     const unsubLogs = subscribeToLogs((cloudLogs) => {
-      if (cloudLogs && cloudLogs.length > 0) {
+      if (cloudLogs) {
         setLogs(cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) })));
       }
     });
@@ -199,7 +225,19 @@ export function App() {
     // Subscribe to collaborators
     const unsubColabs = subscribeToCollaborators((cloudColabs) => {
       if (cloudColabs && cloudColabs.length > 0) {
-        setCollaborators(cloudColabs);
+        const hasLegacyDummy = cloudColabs.some(
+          (c) =>
+            c.name === 'Valter Ribeiro (Líder)' ||
+            c.name === 'Carlos Silva' ||
+            c.name === 'Marcos Oliveira' ||
+            c.name === 'Lucas Mendes'
+        );
+        if (hasLegacyDummy) {
+          saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
+          setCollaborators(INITIAL_COLLABORATORS);
+        } else {
+          setCollaborators(cloudColabs);
+        }
       }
     });
 
@@ -227,6 +265,12 @@ export function App() {
         if (cloudConfig.customRoleColors) {
           setCustomRoleColors(cloudConfig.customRoleColors);
         }
+        if (cloudConfig.customRoles && cloudConfig.customRoles.length > 0) {
+          setCustomRoles(cloudConfig.customRoles);
+        }
+        if (cloudConfig.deletedRoles) {
+          setDeletedRoles(cloudConfig.deletedRoles);
+        }
       }
     });
 
@@ -245,6 +289,60 @@ export function App() {
     };
   }, []);
 
+  // 3.1 Background Polling Sync Loop (Foto 1, 2, 3: Mantém sincronismo contínuo entre Studio e Link externo)
+  useEffect(() => {
+    let isFetching = false;
+    const syncWithCloud = async () => {
+      if (isFetching) return;
+      isFetching = true;
+      try {
+        const cloudData = await fetchAllDataFromFirestore();
+        if (cloudData) {
+          if (cloudData.collaborators && cloudData.collaborators.length > 0) {
+            const hasLegacyDummy = cloudData.collaborators.some(
+              (c) =>
+                c.name === 'Valter Ribeiro (Líder)' ||
+                c.name === 'Carlos Silva' ||
+                c.name === 'Marcos Oliveira' ||
+                c.name === 'Lucas Mendes'
+            );
+            if (hasLegacyDummy) {
+              saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
+              setCollaborators(INITIAL_COLLABORATORS);
+            } else {
+              setCollaborators(cloudData.collaborators);
+            }
+          }
+          if (cloudData.activities && cloudData.activities.length > 0) {
+            setActivities(cloudData.activities);
+          }
+          if (cloudData.shifts && cloudData.shifts.length > 0) {
+            setShifts(cloudData.shifts);
+          }
+          if (cloudData.logs && cloudData.logs.length > 0) {
+            setLogs(cloudData.logs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) })));
+          }
+        }
+      } catch (err) {
+        console.warn('Background sync loop notice:', err);
+      } finally {
+        isFetching = false;
+      }
+    };
+
+    // Run every 4 seconds in background when idle
+    const interval = setInterval(syncWithCloud, 4000);
+    // Also sync immediately when window gains focus or online
+    window.addEventListener('focus', syncWithCloud);
+    window.addEventListener('online', syncWithCloud);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', syncWithCloud);
+      window.removeEventListener('online', syncWithCloud);
+    };
+  }, []);
+
   // 4. LocalStorage Backup Mirroring & Multi-key redundancy
   useEffect(() => {
     localStorage.setItem('mca_tolerance_minutes_v3', toleranceMinutes.toString());
@@ -259,6 +357,12 @@ export function App() {
     localStorage.setItem('mca_role_colors_v3', JSON.stringify(customRoleColors));
   }, [customRoleColors]);
   useEffect(() => {
+    localStorage.setItem('mca_roles_v3', JSON.stringify(customRoles));
+  }, [customRoles]);
+  useEffect(() => {
+    localStorage.setItem('mca_deleted_roles_v3', JSON.stringify(deletedRoles));
+  }, [deletedRoles]);
+  useEffect(() => {
     localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(autoCloseNotifs));
   }, [autoCloseNotifs]);
 
@@ -269,13 +373,17 @@ export function App() {
     setShifts(INITIAL_SHIFTS);
     setObservations(INITIAL_OBSERVATIONS);
     setCustomRoleColors({});
+    setCustomRoles(INITIAL_ROLES);
+    setDeletedRoles([]);
     saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
     saveActivitiesToFirestore(INITIAL_ACTIVITIES);
     saveShiftsToFirestore(INITIAL_SHIFTS);
     saveFactoryConfigToFirestore({
       toleranceMinutes: 60,
       observations: INITIAL_OBSERVATIONS,
-      customRoleColors: {}
+      customRoleColors: {},
+      customRoles: INITIAL_ROLES,
+      deletedRoles: [],
     });
   }, []);
 
@@ -488,9 +596,9 @@ export function App() {
               durationMinutes: dur,
               status: 'Concluída',
               observation: observation || 'Operação Concluída com Sucesso sem Anomalias',
-              notes: notes.trim() || undefined,
-              partsProduced,
-              scrapCount,
+              notes: notes && notes.trim() ? notes.trim() : undefined,
+              partsProduced: partsProduced !== undefined && !isNaN(partsProduced) ? partsProduced : undefined,
+              scrapCount: scrapCount !== undefined && !isNaN(scrapCount) ? scrapCount : undefined,
             };
             saveLogToFirestore(finishedLog);
             return finishedLog;
@@ -631,6 +739,19 @@ export function App() {
     saveFactoryConfigToFirestore({ customRoleColors: newColors });
   }, []);
 
+  const handleUpdateRoles = useCallback((newRoles: string[], newDeletedRoles?: string[]) => {
+    setCustomRoles(newRoles);
+    localStorage.setItem('mca_roles_v3', JSON.stringify(newRoles));
+    if (newDeletedRoles !== undefined) {
+      setDeletedRoles(newDeletedRoles);
+      localStorage.setItem('mca_deleted_roles_v3', JSON.stringify(newDeletedRoles));
+    }
+    saveFactoryConfigToFirestore({
+      customRoles: newRoles,
+      deletedRoles: newDeletedRoles !== undefined ? newDeletedRoles : deletedRoles,
+    });
+  }, [deletedRoles]);
+
   const handleUpdateActivities = useCallback((newActivities: ActivityItem[]) => {
     setActivities(newActivities);
     saveActivitiesToFirestore(newActivities);
@@ -736,6 +857,8 @@ export function App() {
             shifts={shifts}
             observations={observations}
             customRoleColors={customRoleColors}
+            customRoles={customRoles}
+            deletedRoles={deletedRoles}
             isUnlocked={isLeaderUnlocked}
             toleranceMinutes={toleranceMinutes}
             onUpdateToleranceMinutes={handleUpdateToleranceMinutes}
@@ -750,11 +873,12 @@ export function App() {
               setDrilldownFilter(filterName || '');
               setActiveTab('historico');
             }}
-            onUpdateCollaborators={setCollaborators}
+            onUpdateCollaborators={handleSaveCollaborators}
             onUpdateActivities={handleUpdateActivities}
             onUpdateShifts={handleUpdateShifts}
             onUpdateObservations={handleUpdateObservations}
             onUpdateRoleColors={handleUpdateRoleColors}
+            onUpdateRoles={handleUpdateRoles}
             onResetToDefaults={handleResetToDefaults}
           />
         )}

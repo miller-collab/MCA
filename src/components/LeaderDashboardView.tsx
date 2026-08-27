@@ -34,6 +34,8 @@ interface LeaderDashboardViewProps {
   shifts: ShiftConfig[];
   observations: string[];
   customRoleColors?: Record<string, string>;
+  customRoles?: string[];
+  deletedRoles?: string[];
   isUnlocked: boolean;
   toleranceMinutes?: number;
   onUpdateToleranceMinutes?: (newMin: number) => void;
@@ -50,6 +52,7 @@ interface LeaderDashboardViewProps {
   onUpdateShifts: (shifts: ShiftConfig[]) => void;
   onUpdateObservations: (obs: string[]) => void;
   onUpdateRoleColors?: (colors: Record<string, string>) => void;
+  onUpdateRoles?: (roles: string[], deletedRoles?: string[]) => void;
   onResetToDefaults: () => void;
 }
 
@@ -60,6 +63,8 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   shifts,
   observations,
   customRoleColors,
+  customRoles,
+  deletedRoles,
   isUnlocked,
   toleranceMinutes: propToleranceMinutes = 60,
   onUpdateToleranceMinutes,
@@ -76,6 +81,7 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   onUpdateShifts,
   onUpdateObservations,
   onUpdateRoleColors,
+  onUpdateRoles,
   onResetToDefaults,
 }) => {
   const [pinInput, setPinInput] = useState('');
@@ -338,11 +344,14 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
           shifts={shifts}
           observations={observations}
           customRoleColors={customRoleColors}
+          customRoles={customRoles}
+          deletedRoles={deletedRoles}
           onUpdateCollaborators={onUpdateCollaborators}
           onUpdateActivities={onUpdateActivities}
           onUpdateShifts={onUpdateShifts}
           onUpdateObservations={onUpdateObservations}
           onUpdateRoleColors={onUpdateRoleColors}
+          onUpdateRoles={onUpdateRoles}
           onResetToDefaults={onResetToDefaults}
         />
       )}
