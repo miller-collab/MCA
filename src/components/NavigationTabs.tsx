@@ -23,7 +23,7 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
     { id: 'eficiencia' as TabKey, label: 'EFICIÊNCIA', icon: BarChart2 },
     { id: 'historico' as TabKey, label: 'HISTÓRICO', icon: History },
     { id: 'indicadores' as TabKey, label: 'INDICADORES LÍDER', icon: BarChart3, isProtected: true, alertCount: leaderAlertCount },
-    { id: 'turnos' as TabKey, label: 'TURNOS', icon: Clock },
+    { id: 'turnos' as TabKey, label: 'TURNOS', icon: Clock, isProtected: true },
   ];
 
   return (

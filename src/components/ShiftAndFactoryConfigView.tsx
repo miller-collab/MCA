@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, Save, UserPlus, Users, Check, AlertCircle, Trash2, Plus, Download, Upload, Moon, Sun, AlertTriangle } from 'lucide-react';
+import { Clock, Save, UserPlus, Users, Check, AlertCircle, Trash2, Plus, Download, Upload, Moon, Sun, AlertTriangle, Lock, Unlock, KeyRound } from 'lucide-react';
 import { ShiftConfig, Collaborator } from '../types';
 import { calcularDiferencaMinutos, formatarHorasMinutos } from '../utils/factoryCalculations';
 import { definirCorFuncao } from '../data/initialData';
@@ -13,6 +13,9 @@ interface ShiftAndFactoryConfigViewProps {
   onToggleCollaboratorActive?: (id: string) => void;
   onExportBackup?: () => void;
   onImportBackup?: (jsonStr: string) => void;
+  isUnlocked?: boolean;
+  onUnlock?: (pin: string) => boolean;
+  leaderPin?: string;
 }
 
 const DIAS_SEMANA = [
@@ -34,9 +37,14 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   onToggleCollaboratorActive,
   onExportBackup,
   onImportBackup,
+  isUnlocked = true,
+  onUnlock,
+  leaderPin = '8619',
 }) => {
   const [localShifts, setLocalShifts] = useState<ShiftConfig[]>(shifts);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -49,6 +57,63 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   useEffect(() => {
     setLocalShifts(shifts);
   }, [shifts]);
+
+  // Handle PIN Unlock
+  const handlePinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const correctPin = leaderPin || '8619';
+    if (pinInput.trim() === correctPin || (onUnlock && onUnlock(pinInput.trim()))) {
+      setPinError(false);
+      setPinInput('');
+    } else {
+      setPinError(true);
+    }
+  };
+
+  // If locked, show PIN lock screen
+  if (!isUnlocked) {
+    return (
+      <div className="max-w-md mx-auto p-6 mt-8 bg-[#1E1E1E] border border-[#333333] rounded-xl text-center space-y-4 shadow-2xl animate-in fade-in">
+        <div className="w-14 h-14 bg-[#222222] border border-[#444444] rounded-full flex items-center justify-center mx-auto text-[#007BFF]">
+          <Lock className="w-7 h-7" />
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-white">Acesso Restrito do Líder</h2>
+          <p className="text-xs text-[#888888] mt-1">
+            Digite a senha PIN para configurar horários de turnos e colaboradores da fábrica.
+          </p>
+        </div>
+
+        <form onSubmit={handlePinSubmit} className="space-y-3">
+          <input
+            type="password"
+            maxLength={10}
+            placeholder="Digite a Senha PIN"
+            value={pinInput}
+            onChange={(e) => {
+              setPinInput(e.target.value);
+              setPinError(false);
+            }}
+            className="w-full p-3.5 bg-[#111111] text-white border border-[#555555] rounded-lg text-center text-lg font-mono tracking-widest focus:outline-none focus:border-[#007BFF]"
+            autoFocus
+          />
+
+          {pinError && (
+            <p className="text-[#FF3D00] text-xs font-bold animate-shake">
+              🚨 Senha incorreta! Tente novamente.
+            </p>
+          )}
+
+          <button
+            type="submit"
+            className="w-full py-3.5 bg-[#0066CC] hover:bg-[#005bb5] text-white font-bold rounded-lg transition cursor-pointer"
+          >
+            DESBLOQUEAR CONFIGURAÇÃO DE TURNOS
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   // New collaborator form state
   const [newColabName, setNewColabName] = useState('');

@@ -31,6 +31,7 @@ import {
   playFactoryChime,
   verificarTurnoEncerrado,
   padronizarNomeTurno,
+  desduplicarLogsAtivos,
 } from './utils/factoryCalculations';
 
 import {
@@ -218,7 +219,13 @@ export function App() {
     // Subscribe to real-time logs from Firestore
     const unsubLogs = subscribeToLogs((cloudLogs) => {
       if (cloudLogs) {
-        setLogs(cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) })));
+        const formatted = cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+        const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(formatted);
+        setLogs(sanitizedLogs);
+        // Se houver duplicatas de atividades abertas para o mesmo colaborador no banco, salva a finalização segura
+        if (logsParaFinalizar.length > 0) {
+          logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
+        }
       }
     });
 
@@ -320,7 +327,12 @@ export function App() {
             setShifts(cloudData.shifts);
           }
           if (cloudData.logs && cloudData.logs.length > 0) {
-            setLogs(cloudData.logs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) })));
+            const formatted = cloudData.logs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+            const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(formatted);
+            setLogs(sanitizedLogs);
+            if (logsParaFinalizar.length > 0) {
+              logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
+            }
           }
         }
       } catch (err) {
@@ -554,21 +566,44 @@ export function App() {
       machineId?: string
     ) => {
       const now = new Date();
+      const nowTimeStr = formatarHoraPtBr(now);
       const colab = collaborators.find((c) => c.name.trim().toLowerCase() === collaboratorName.trim().toLowerCase());
       const newLog: ProductionLog = {
         id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         date: formatarDataPtBr(now),
-        collaboratorName,
+        collaboratorName: collaboratorName.trim(),
         role,
         shift: padronizarNomeTurno(colab?.shift || 'Turno 1'),
         activity: activityName,
         category,
-        startTime: formatarHoraPtBr(now),
+        startTime: nowTimeStr,
         status: 'Em Execução',
         machineId: machineId || 'TORNO-01',
       };
 
-      setLogs((prev) => [newLog, ...prev]);
+      setLogs((prev) => {
+        // Encerra com segurança qualquer atividade anterior que estivesse aberta para este operador (1 por vez)
+        const updated = prev.map((l) => {
+          if (
+            l.status === 'Em Execução' &&
+            l.collaboratorName.trim().toLowerCase() === collaboratorName.trim().toLowerCase()
+          ) {
+            const dur = calcularDiferencaMinutos(l.startTime, nowTimeStr);
+            const finishedOld: ProductionLog = {
+              ...l,
+              endTime: nowTimeStr,
+              durationMinutes: dur > 0 ? dur : 1,
+              status: 'Concluída',
+              observation: l.observation || 'Finalizada automaticamente por nova atividade iniciada',
+            };
+            saveLogToFirestore(finishedOld);
+            return finishedOld;
+          }
+          return l;
+        });
+        return [newLog, ...updated];
+      });
+
       saveLogToFirestore(newLog);
       if (soundEnabled) playFactoryChime('start');
     },
@@ -772,7 +807,9 @@ export function App() {
     setDrilldownFilter(operatorName);
   }, []);
 
-  const activeCount = logs.filter((l) => l.status === 'Em Execução').length;
+  const activeCount = new Set(
+    logs.filter((l) => l.status === 'Em Execução').map((l) => l.collaboratorName.trim().toLowerCase())
+  ).size;
   const unreadLeaderAlertCount = autoCloseNotifs.filter((n) => !n.readByLeader).length;
 
   return (
@@ -813,6 +850,10 @@ export function App() {
             onFinishActivity={handleFinishActivity}
             onQuickChangeover={handleQuickChangeover}
             onSaveCollaborators={handleSaveCollaborators}
+            isLeaderUnlocked={isLeaderUnlocked}
+            onUnlockLeader={handleUnlockLeader}
+            leaderPin={leaderPin}
+            onLockLeader={handleLockLeader}
           />
         )}
 
@@ -891,6 +932,9 @@ export function App() {
             onAddCollaborator={handleAddCollaborator}
             onDeleteCollaborator={handleDeleteCollaborator}
             onToggleCollaboratorActive={handleToggleCollaboratorActive}
+            isUnlocked={isLeaderUnlocked}
+            onUnlock={handleUnlockLeader}
+            leaderPin={leaderPin}
           />
         )}
       </main>

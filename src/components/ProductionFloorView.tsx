@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, CheckCircle2, Play, AlertTriangle, Search, Filter, 
   Clock, User, Wrench, ChevronRight, X, ArrowRight, RotateCcw,
@@ -37,6 +37,10 @@ interface ProductionFloorViewProps {
   onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number) => void;
   onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string) => void;
   onSaveCollaborators?: (colabs: Collaborator[]) => void;
+  isLeaderUnlocked?: boolean;
+  onUnlockLeader?: (pin: string) => boolean;
+  leaderPin?: string;
+  onLockLeader?: () => void;
 }
 
 export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
@@ -53,6 +57,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   onFinishActivity,
   onQuickChangeover,
   onSaveCollaborators,
+  isLeaderUnlocked = false,
+  onUnlockLeader,
+  leaderPin = '8619',
+  onLockLeader,
 }) => {
   // Screen state: 'painel' | 'colab' | 'ativ' | 'fechamento' | 'changeover'
   const [currentScreen, setCurrentScreen] = useState<'painel' | 'colab' | 'ativ' | 'fechamento' | 'changeover'>('painel');
@@ -83,14 +91,24 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter active logs (Em Execução)
-  const allActiveLogs = logs.filter(l => l.status === 'Em Execução');
+  // Filter active logs (Em Execução) - Garante ESTRITAMENTE 1 cartão ativo por colaborador
+  const allActiveLogs = useMemo(() => {
+    const activeMap = new Map<string, ProductionLog>();
+    const rawActive = logs.filter(l => l.status === 'Em Execução');
+    for (const log of rawActive) {
+      const key = log.collaboratorName.trim().toLowerCase();
+      if (!activeMap.has(key)) {
+        activeMap.set(key, log);
+      }
+    }
+    return Array.from(activeMap.values());
+  }, [logs]);
 
   // Filter active logs by selected shift if desired (for multi-tablet stationing)
   const activeLogs = useMemo(() => {
     if (selectedShiftFilter === 'TODOS') return allActiveLogs;
     return allActiveLogs.filter((log) => {
-      const colab = collaborators.find((c) => c.name === log.collaboratorName);
+      const colab = collaborators.find((c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase());
       const shiftName = colab?.shift || log.shift || '';
       return padronizarNomeTurno(shiftName) === padronizarNomeTurno(selectedShiftFilter);
     });
@@ -100,13 +118,17 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const currentActiveShift = useMemo(() => obterTurnoAtual(shifts, new Date()), [shifts, secondsTick]);
   const currentActiveShiftName = currentActiveShift ? padronizarNomeTurno(currentActiveShift.name) : 'Turno 1';
 
-  // Set of busy collaborators
-  const busyCollaborators = new Set(allActiveLogs.map(l => l.collaboratorName));
+  // Set of busy collaborators (1 collaborator = 1 task at a time)
+  const busyCollaborators = useMemo(() => {
+    return new Set(allActiveLogs.map(l => l.collaboratorName.trim().toLowerCase()));
+  }, [allActiveLogs]);
 
   // Available collaborators
-  const availableCollaborators = collaborators.filter(
-    c => c.active && !busyCollaborators.has(c.name)
-  );
+  const availableCollaborators = useMemo(() => {
+    return collaborators.filter(
+      c => c.active && !busyCollaborators.has(c.name.trim().toLowerCase())
+    );
+  }, [collaborators, busyCollaborators]);
 
   // Filtered available collaborators by search and shift filter (Foto 5)
   const filteredAvailableColabs = availableCollaborators.filter(c => {
@@ -202,8 +224,14 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setCurrentScreen('ativ');
   };
 
+  const isStartingRef = useRef(false);
+
   const handleConfirmStart = (activity: ActivityItem) => {
-    if (!selectedColab) return;
+    if (!selectedColab || isStartingRef.current) return;
+    isStartingRef.current = true;
+    setTimeout(() => {
+      isStartingRef.current = false;
+    }, 1000);
     onStartActivity(
       selectedColab.name,
       selectedColab.role,
@@ -442,10 +470,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 type="button"
                 onClick={() => setIsQuickManageOpen(true)}
                 className="px-3.5 py-2 rounded-xl bg-[#007BFF]/20 hover:bg-[#007BFF]/30 border border-[#007BFF]/50 text-[#007BFF] text-xs font-bold transition flex items-center gap-1.5 cursor-pointer min-h-[40px]"
-                title="Cadastrar, editar ou colar lista de colaboradores"
+                title="Cadastrar, editar ou restaurar lista de colaboradores (Requer Senha do Líder)"
               >
                 <Users className="w-4 h-4" />
-                <span>⚙️ Gerenciar / Cadastrar Equipe</span>
+                <span>🔒 Gestão da Equipe (Líder)</span>
               </button>
 
               <button
@@ -839,6 +867,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
         collaborators={collaborators}
         shifts={shifts}
         customRoleColors={customRoleColors}
+        isLeaderUnlocked={isLeaderUnlocked}
+        onUnlockLeader={onUnlockLeader}
+        leaderPin={leaderPin}
+        onLockLeader={onLockLeader}
         onSaveCollaborators={(newColabs) => {
           if (onSaveCollaborators) {
             onSaveCollaborators(newColabs);

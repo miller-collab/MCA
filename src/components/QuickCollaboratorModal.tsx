@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Users, UserPlus, Trash2, Edit2, Check, X, RotateCcw, 
-  Upload, Download, FileText, AlertCircle, Save, Sparkles, Plus, ClipboardCheck
+  Upload, Download, FileText, AlertCircle, Save, Sparkles, Plus, ClipboardCheck,
+  Lock, Unlock, KeyRound, AlertTriangle, ShieldCheck
 } from 'lucide-react';
 import { Collaborator, ShiftConfig } from '../types';
 import { definirCorFuncao } from '../data/initialData';
@@ -15,6 +16,10 @@ interface QuickCollaboratorModalProps {
   customRoleColors?: Record<string, string>;
   onSaveCollaborators: (colabs: Collaborator[]) => void;
   onRestoreFromBackup?: () => boolean;
+  isLeaderUnlocked?: boolean;
+  onUnlockLeader?: (pin: string) => boolean;
+  leaderPin?: string;
+  onLockLeader?: () => void;
 }
 
 const CARGOS_PADRAO = [
@@ -41,9 +46,18 @@ export const QuickCollaboratorModal: React.FC<QuickCollaboratorModalProps> = ({
   customRoleColors = {},
   onSaveCollaborators,
   onRestoreFromBackup,
+  isLeaderUnlocked = false,
+  onUnlockLeader,
+  leaderPin = '8619',
+  onLockLeader,
 }) => {
   const [localColabs, setLocalColabs] = useState<Collaborator[]>(collaborators);
   const [activeTab, setActiveTab] = useState<'lista' | 'adicionar' | 'massa' | 'backup'>('lista');
+
+  // PIN Unlock State for Leader Security
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(isLeaderUnlocked);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(false);
 
   // Single add form
   const [newName, setNewName] = useState('');
@@ -69,11 +83,36 @@ export const QuickCollaboratorModal: React.FC<QuickCollaboratorModalProps> = ({
     setLocalColabs(collaborators);
   }, [collaborators]);
 
+  useEffect(() => {
+    if (isLeaderUnlocked) {
+      setIsUnlocked(true);
+    }
+  }, [isLeaderUnlocked]);
+
   if (!isOpen) return null;
 
   const showMsg = (text: string, type: 'success' | 'error' = 'success') => {
     setMsg({ text, type });
     setTimeout(() => setMsg(null), 3000);
+  };
+
+  const handleVerifyPin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const correctPin = leaderPin || '8619';
+    if (pinInput.trim() === correctPin || (onUnlockLeader && onUnlockLeader(pinInput.trim()))) {
+      setIsUnlocked(true);
+      setPinError(false);
+      setPinInput('');
+    } else {
+      setPinError(true);
+    }
+  };
+
+  const handleLock = () => {
+    setIsUnlocked(false);
+    if (onLockLeader) {
+      onLockLeader();
+    }
   };
 
   const handleAddSingle = (e: React.FormEvent) => {
@@ -217,6 +256,97 @@ export const QuickCollaboratorModal: React.FC<QuickCollaboratorModalProps> = ({
     showMsg('Nenhum backup adicional detectado no armazenamento local.', 'error');
   };
 
+  // Se não estiver desbloqueado, exibir a tela de Senha / PIN do Líder
+  if (!isUnlocked) {
+    return (
+      <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
+        <div className="bg-[#161616] border border-[#3A3A3A] rounded-2xl max-w-md w-full shadow-2xl overflow-hidden animate-in zoom-in-95">
+          {/* Header */}
+          <div className="p-4 sm:p-5 border-b border-[#2A2A2A] flex items-center justify-between bg-[#1E1E1E]">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-[#FF3D00]/20 border border-[#FF3D00]/40 text-[#FF3D00] rounded-xl">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-white">Acesso Restrito do Líder</h3>
+                <p className="text-[11px] text-[#888888]">
+                  Proteção de Edição, Exclusão e Restauração
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 hover:bg-[#2E2E2E] text-[#888888] hover:text-white rounded-lg transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="p-6 space-y-4 text-center">
+            <div className="w-14 h-14 bg-[#202020] border border-[#3A3A3A] rounded-full flex items-center justify-center mx-auto text-[#007BFF] shadow-inner">
+              <KeyRound className="w-7 h-7" />
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-xs text-[#CCCCCC] leading-relaxed">
+                As ações de <b>Restaurar</b>, <b>Editar</b>, <b>Excluir</b> ou <b>Cadastrar</b> operadores são restritas ao <b>Líder de Produção</b>.
+              </p>
+              <p className="text-[11px] text-[#888888]">
+                Digite a senha PIN para desbloquear o gerenciamento da equipe.
+              </p>
+            </div>
+
+            <form onSubmit={handleVerifyPin} className="space-y-3 pt-2">
+              <div className="relative">
+                <input
+                  type="password"
+                  maxLength={10}
+                  placeholder="Digite a Senha PIN"
+                  value={pinInput}
+                  onChange={(e) => {
+                    setPinInput(e.target.value);
+                    setPinError(false);
+                  }}
+                  className={`w-full p-3.5 bg-[#111111] text-white border rounded-xl text-center text-lg font-mono tracking-widest focus:outline-none ${
+                    pinError
+                      ? 'border-[#FF3D00] focus:border-[#FF3D00]'
+                      : 'border-[#555555] focus:border-[#007BFF]'
+                  }`}
+                  autoFocus
+                />
+              </div>
+
+              {pinError && (
+                <div className="p-2 bg-[#FF3D00]/15 border border-[#FF3D00]/40 rounded-lg text-[#FF5252] text-xs font-bold flex items-center justify-center gap-1.5 animate-bounce">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Senha incorreta! Apenas o líder pode gerenciar a equipe.</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex-1 py-3 bg-[#2A2A2A] hover:bg-[#333333] text-[#AAAAAA] hover:text-white font-bold rounded-xl text-xs transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 bg-[#007BFF] hover:bg-[#0066CC] text-white font-black rounded-xl text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-lg shadow-[#007BFF]/20"
+                >
+                  <Unlock className="w-4 h-4" />
+                  <span>Desbloquear</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
       <div className="bg-[#161616] border border-[#3A3A3A] rounded-2xl max-w-2xl w-full shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
@@ -227,18 +357,33 @@ export const QuickCollaboratorModal: React.FC<QuickCollaboratorModalProps> = ({
               <Users className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-black text-white">Gestão da Equipe & Operadores</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-black text-white">Gestão da Equipe & Operadores</h3>
+                <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676]/30 text-[#00E676] text-[10px] font-black rounded-md flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" />
+                  Líder Autenticado
+                </span>
+              </div>
               <p className="text-xs text-[#888888]">
                 Adicione, renomeie ou cole sua lista de colaboradores para nunca perder nada
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-[#2E2E2E] text-[#888888] hover:text-white rounded-lg transition cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleLock}
+              className="p-2 hover:bg-[#2E2E2E] text-[#888888] hover:text-[#FF9800] rounded-lg transition cursor-pointer"
+              title="Bloquear Acesso do Líder"
+            >
+              <Lock className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-[#2E2E2E] text-[#888888] hover:text-white rounded-lg transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Sub-Tabs */}

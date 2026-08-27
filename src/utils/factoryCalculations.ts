@@ -68,6 +68,48 @@ export function formatarHoraPtBr(date: Date): string {
 }
 
 /**
+ * Garante a regra fundamental de produção: cada colaborador executa apenas 1 atividade por vez.
+ * Se houver múltiplos registros em status 'Em Execução' para o mesmo colaborador (devido a toques rápidos ou concorrência),
+ * preserva o mais recente e finaliza os anteriores com segurança.
+ */
+export function desduplicarLogsAtivos(logs: ProductionLog[]): {
+  sanitizedLogs: ProductionLog[];
+  logsParaFinalizar: ProductionLog[];
+} {
+  const activeColabSeen = new Set<string>();
+  const sanitizedLogs: ProductionLog[] = [];
+  const logsParaFinalizar: ProductionLog[] = [];
+
+  for (const log of logs) {
+    if (log.status === 'Em Execução') {
+      const colabKey = log.collaboratorName.trim().toLowerCase();
+      if (activeColabSeen.has(colabKey)) {
+        // Já existe uma atividade mais recente aberta para este mesmo operador!
+        // Finaliza com segurança este registro duplicado
+        const fallbackEnd = log.endTime || formatarHoraPtBr(new Date());
+        const dur = calcularDiferencaMinutos(log.startTime, fallbackEnd);
+        const autoFinished: ProductionLog = {
+          ...log,
+          status: 'Concluída',
+          endTime: fallbackEnd,
+          durationMinutes: dur > 0 ? dur : 1,
+          observation: log.observation || 'Finalizada automaticamente por nova atividade do colaborador',
+        };
+        sanitizedLogs.push(autoFinished);
+        logsParaFinalizar.push(autoFinished);
+      } else {
+        activeColabSeen.add(colabKey);
+        sanitizedLogs.push(log);
+      }
+    } else {
+      sanitizedLogs.push(log);
+    }
+  }
+
+  return { sanitizedLogs, logsParaFinalizar };
+}
+
+/**
  * Calculates the net expected working minutes in a shift
  */
 export function calcularCargaHorariaTurno(shift: ShiftConfig): number {
