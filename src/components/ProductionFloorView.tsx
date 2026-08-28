@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, CheckCircle2, Play, AlertTriangle, Search, Filter, 
   Clock, User, Wrench, ChevronRight, X, ArrowRight, RotateCcw,
-  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles
+  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles,
+  Utensils, Pause, Coffee
 } from 'lucide-react';
 import { ActivityItem, Collaborator, ProductionLog, ShiftConfig, ActivityCategory, AutoCloseNotification } from '../types';
 import { 
@@ -18,7 +19,11 @@ import {
   playFactoryChime,
   padronizarNomeTurno,
   obterTurnoAtual,
-  obterNomeTurnoAtual
+  obterNomeTurnoAtual,
+  obterTurnosAtivosNoMomento,
+  obterConfiguracaoRefeicao,
+  colaboradorJaUsouRefeicaoHoje,
+  calcularEstadoTempoRefeicao
 } from '../utils/factoryCalculations';
 import { QuickCollaboratorModal } from './QuickCollaboratorModal';
 import { findSavedCollaboratorsInBrowser } from '../utils/recoveryUtils';
@@ -35,6 +40,8 @@ interface ProductionFloorViewProps {
   onDismissOperatorNotif?: (id: string) => void;
   onStartActivity: (collaboratorName: string, role: string, activityName: string, category: ActivityCategory, machineId?: string) => void;
   onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number) => void;
+  onPauseMeal?: (logId: string) => void;
+  onResumeActivity?: (logId: string) => void;
   onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string) => void;
   onSaveCollaborators?: (colabs: Collaborator[]) => void;
   isLeaderUnlocked?: boolean;
@@ -55,6 +62,8 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   onDismissOperatorNotif,
   onStartActivity,
   onFinishActivity,
+  onPauseMeal,
+  onResumeActivity,
   onQuickChangeover,
   onSaveCollaborators,
   isLeaderUnlocked = false,
@@ -80,6 +89,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [finishNotes, setFinishNotes] = useState('');
   const [partsProduced, setPartsProduced] = useState<string>('');
   const [scrapCount, setScrapCount] = useState<string>('');
+  const [mealConfirmModal, setMealConfirmModal] = useState<ProductionLog | null>(null);
 
   // Real-time ticking state (updates every second)
   const [secondsTick, setSecondsTick] = useState(0);
@@ -91,10 +101,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter active logs (Em Execução) - Garante ESTRITAMENTE 1 cartão ativo por colaborador
+  // Filter active logs (Em Execução e Pausada) - Garante ESTRITAMENTE 1 cartão ativo por colaborador
   const allActiveLogs = useMemo(() => {
     const activeMap = new Map<string, ProductionLog>();
-    const rawActive = logs.filter(l => l.status === 'Em Execução');
+    const rawActive = logs.filter(l => l.status === 'Em Execução' || l.status === 'Pausada');
     for (const log of rawActive) {
       const key = log.collaboratorName.trim().toLowerCase();
       if (!activeMap.has(key)) {
@@ -114,9 +124,13 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     });
   }, [allActiveLogs, selectedShiftFilter, collaborators]);
 
-  // Active shift for the current time
-  const currentActiveShift = useMemo(() => obterTurnoAtual(shifts, new Date()), [shifts, secondsTick]);
-  const currentActiveShiftName = currentActiveShift ? padronizarNomeTurno(currentActiveShift.name) : 'Turno 1';
+  // Active shifts for the current time (supports overlapping shifts - Foto 3)
+  const currentActiveShifts = useMemo(() => obterTurnosAtivosNoMomento(shifts, new Date()), [shifts, secondsTick]);
+  const currentActiveShiftNames = useMemo(
+    () => currentActiveShifts.map((s) => padronizarNomeTurno(s.name)),
+    [currentActiveShifts]
+  );
+  const currentActiveShiftName = currentActiveShiftNames[0] || 'Turno 1';
 
   // Set of busy collaborators (1 collaborator = 1 task at a time)
   const busyCollaborators = useMemo(() => {
@@ -130,7 +144,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     );
   }, [collaborators, busyCollaborators]);
 
-  // Filtered available collaborators by search and shift filter (Foto 5)
+  // Filtered available collaborators by search and shift filter (Foto 3 & Foto 5)
   const filteredAvailableColabs = availableCollaborators.filter(c => {
     const matchSearch = 
       c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
@@ -138,15 +152,30 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     
     let matchShift = true;
     if (colabShiftFilter === 'TURNO_ATUAL') {
-      matchShift = padronizarNomeTurno(c.shift) === currentActiveShiftName;
+      const colabShiftNorm = padronizarNomeTurno(c.shift);
+      // Se há turnos coincidentes ativos no momento, exibe colaboradores de todos os turnos ativos!
+      matchShift = currentActiveShiftNames.length > 0
+        ? currentActiveShiftNames.includes(colabShiftNorm)
+        : colabShiftNorm === currentActiveShiftName;
     } else if (colabShiftFilter !== 'TODOS') {
       matchShift = padronizarNomeTurno(c.shift) === padronizarNomeTurno(colabShiftFilter);
     }
     return matchSearch && matchShift;
   });
 
-  // Unread operator notifications
-  const unreadOperatorNotifs = autoCloseNotifs.filter(n => !n.readByOperator);
+  // Unread operator notifications (strictly deduplicated by logId to prevent duplicate cards)
+  const unreadOperatorNotifs = useMemo(() => {
+    const map = new Map<string, AutoCloseNotification>();
+    autoCloseNotifs
+      .filter((n) => !n.readByOperator)
+      .forEach((n) => {
+        const key = `${n.collaboratorName.trim().toLowerCase()}_${n.date}_${n.shiftEnd}_${n.logId || n.id}`;
+        if (!map.has(key)) {
+          map.set(key, n);
+        }
+      });
+    return Array.from(map.values());
+  }, [autoCloseNotifs]);
 
   // Filtered activities for selected collaborator's role
   const roleActivities = selectedColab
@@ -239,6 +268,28 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       activity.category
     );
     setCurrentScreen('painel');
+  };
+
+  const handleOpenMealModal = (log: ProductionLog) => {
+    setMealConfirmModal(log);
+  };
+
+  const handleConfirmMealPause = () => {
+    if (!mealConfirmModal) return;
+    const targetId = mealConfirmModal.id;
+    setMealConfirmModal(null);
+    setLogToFinish(null);
+    if (onPauseMeal) {
+      onPauseMeal(targetId);
+    }
+    setCurrentScreen('painel');
+  };
+
+  const handleResumeCard = (e: React.MouseEvent, logId: string) => {
+    e.stopPropagation();
+    if (onResumeActivity) {
+      onResumeActivity(logId);
+    }
   };
 
   const handleCardClick = (log: ProductionLog) => {
@@ -403,24 +454,33 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               {activeLogs.map((tarefa) => {
                 const corBase = getRoleColor(tarefa.role);
                 const corTextoHead = definirCorTextoHeader(corBase);
-                const elapsedSec = getElapsedSeconds(tarefa.startTime);
                 const flashing = isCardFlashing(tarefa);
+                const isPausedMeal = tarefa.status === 'Pausada' || !!tarefa.isMealPause;
+                const mealState = calcularEstadoTempoRefeicao(tarefa, new Date(), shifts);
 
                 return (
                   <div
                     key={tarefa.id}
                     onClick={() => handleCardClick(tarefa)}
                     className={`card bg-[#141414] border rounded-xl overflow-hidden cursor-pointer flex flex-col transition-all hover:scale-[1.02] hover:border-[#666666] active:scale-[0.98] shadow-lg select-none min-h-[160px] ${
-                      flashing ? 'card-piscar border-[#FF3D00]' : 'border-[#2D2D2D]'
+                      isPausedMeal
+                        ? 'border-[#FF9800] bg-[#1A1200] ring-1 ring-[#FF9800]/50'
+                        : flashing
+                        ? 'card-piscar border-[#FF3D00]'
+                        : 'border-[#2D2D2D]'
                     }`}
                   >
-                    {/* Header com a cor do cargo */}
+                    {/* Header com a cor do cargo ou indicação de refeição */}
                     <div
-                      className="card-header p-2.5 sm:p-3 font-black text-center text-xs sm:text-sm uppercase tracking-wide truncate"
-                      style={{ backgroundColor: corBase, color: corTextoHead }}
+                      className="card-header p-2.5 sm:p-3 font-black text-center text-xs sm:text-sm uppercase tracking-wide truncate flex items-center justify-center gap-1.5"
+                      style={{
+                        backgroundColor: isPausedMeal ? '#FF8C00' : corBase,
+                        color: isPausedMeal ? '#000000' : corTextoHead,
+                      }}
                       title={tarefa.collaboratorName}
                     >
-                      {tarefa.collaboratorName}
+                      {isPausedMeal && <Utensils className="w-3.5 h-3.5 text-black shrink-0" />}
+                      <span className="truncate">{tarefa.collaboratorName}</span>
                     </div>
 
                     {/* Body do Card */}
@@ -432,21 +492,55 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                         {tarefa.activity}
                       </div>
 
-                      <div>
-                        <div className="timer text-xl sm:text-2xl font-black text-[#00E676] font-mono tracking-wider tabular-nums">
-                          {formatarTempoSegundos(elapsedSec)}
-                        </div>
-                        <div className="text-[10px] text-[#777777] font-mono mt-0.5 flex items-center justify-center gap-1">
-                          <Clock className="w-3 h-3 text-[#555555]" />
-                          <span>Início: {tarefa.startTime}</span>
-                        </div>
-                        {flashing && (
-                          <div className="mt-1 text-[10px] font-bold text-[#FF3D00] flex items-center justify-center gap-1">
-                            <AlertTriangle className="w-3 h-3" />
-                            <span>Fim de Turno!</span>
+                      {isPausedMeal ? (
+                        <div className="space-y-2">
+                          <div className="text-[11px] font-mono font-bold text-[#FFB74D] bg-[#2D1B00] p-1.5 rounded-lg border border-[#FF9800]/40">
+                            <div className="flex items-center justify-center gap-1">
+                              <Utensils className="w-3.5 h-3.5 text-[#FF9800]" />
+                              <span>EM REFEIÇÃO ({mealState.duracaoPausaMinutos} MIN)</span>
+                            </div>
+                            <div className="text-sm font-black text-[#00E676] mt-0.5 tabular-nums">
+                              {formatarTempoSegundos(mealState.tempoRestantePausaSegundos)} restantes
+                            </div>
+                            <div className="text-[9px] text-[#AAAAAA] mt-0.5">
+                              Trabalho: {formatarTempoSegundos(mealState.tempoTrabalhadoSegundos)}
+                            </div>
                           </div>
-                        )}
-                      </div>
+                          {onResumeActivity && (
+                            <button
+                              type="button"
+                              onClick={(e) => handleResumeCard(e, tarefa.id)}
+                              className="w-full py-1.5 px-2 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-xs rounded-lg flex items-center justify-center gap-1 cursor-pointer transition shadow"
+                              title="Retomar atividade manualmente antes de vencer o tempo"
+                            >
+                              <Play className="w-3 h-3 fill-black text-black" />
+                              <span>RETOMAR ANTES</span>
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="timer text-xl sm:text-2xl font-black text-[#00E676] font-mono tracking-wider tabular-nums">
+                            {formatarTempoSegundos(mealState.tempoTrabalhadoSegundos)}
+                          </div>
+                          <div className="text-[10px] text-[#777777] font-mono mt-0.5 flex items-center justify-center gap-1">
+                            <Clock className="w-3 h-3 text-[#555555]" />
+                            <span>Início: {tarefa.startTime}</span>
+                          </div>
+                          {mealState.pausaVenceuRetomou && (
+                            <div className="mt-1 text-[9px] font-bold text-[#FFB74D] flex items-center justify-center gap-1 bg-[#2B1B00] px-1.5 py-0.5 rounded border border-[#FF9800]/30">
+                              <Utensils className="w-2.5 h-2.5" />
+                              <span>Refeição debitada ({mealState.duracaoPausaMinutos}m)</span>
+                            </div>
+                          )}
+                          {flashing && (
+                            <div className="mt-1 text-[10px] font-bold text-[#FF3D00] flex items-center justify-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>Fim de Turno!</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -702,118 +796,164 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       )}
 
       {/* TELA 4: FECHAMENTO / CONCLUIR ATIVIDADE */}
-      {currentScreen === 'fechamento' && logToFinish && (
-        <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
-          <div className="border-b border-[#333333] pb-3">
-            <h2 className="text-xl sm:text-2xl font-bold text-white">Concluir Atividade</h2>
-            <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2 text-xs sm:text-sm space-y-1.5">
-              <p className="text-[#BBB]">
-                Colaborador: <b className="text-white text-base">{logToFinish.collaboratorName}</b>
-              </p>
-              <p className="text-[#BBB]">
-                Operação: <b className="text-[#007BFF]">{logToFinish.activity}</b>
-              </p>
-              <p className="text-[#BBB]">
-                Hora Início: <b className="text-white font-mono">{logToFinish.startTime}</b> • Tempo Total:{' '}
-                <b className="text-[#00E676] font-mono text-base">
-                  {formatarTempoSegundos(getElapsedSeconds(logToFinish.startTime))}
-                </b>
-              </p>
+      {currentScreen === 'fechamento' && logToFinish && (() => {
+        const colab = collaborators.find(
+          (c) => c.name.trim().toLowerCase() === logToFinish.collaboratorName.trim().toLowerCase()
+        );
+        const mealConfig = obterConfiguracaoRefeicao(colab?.shift || logToFinish.shift || 'Turno 1', shifts);
+        const jaUsouRefeicaoHoje = colaboradorJaUsouRefeicaoHoje(logToFinish.collaboratorName, logToFinish.date, logs);
+        const isPausedMeal = logToFinish.status === 'Pausada' || !!logToFinish.isMealPause;
+
+        return (
+          <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
+            <div className="border-b border-[#333333] pb-3">
+              <h2 className="text-xl sm:text-2xl font-bold text-white">
+                {isPausedMeal ? 'Atividade em Pausa de Refeição' : 'Concluir Atividade'}
+              </h2>
+
+              {/* Box de Informações com Botão de Refeição (Foto 1) */}
+              <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+                <div className="text-xs sm:text-sm space-y-1.5 flex-1">
+                  <p className="text-[#BBB]">
+                    Colaborador: <b className="text-white text-base">{logToFinish.collaboratorName}</b>
+                  </p>
+                  <p className="text-[#BBB]">
+                    Operação: <b className="text-[#007BFF]">{logToFinish.activity}</b>
+                  </p>
+                  <p className="text-[#BBB]">
+                    Hora Início: <b className="text-white font-mono">{logToFinish.startTime}</b> • Tempo Total:{' '}
+                    <b className="text-[#00E676] font-mono text-base">
+                      {formatarTempoSegundos(getElapsedSeconds(logToFinish.startTime))}
+                    </b>
+                  </p>
+                </div>
+
+                {/* BOTÃO DE REFEIÇÃO INDICADO NA FOTO 1 (1x ao dia) */}
+                <div className="flex flex-col items-center justify-center shrink-0">
+                  {jaUsouRefeicaoHoje ? (
+                    <div className="px-3.5 py-2.5 bg-[#1E1E1E] border border-[#3A3A3A] text-[#888888] rounded-xl flex items-center gap-2 select-none">
+                      <Check className="w-4 h-4 text-[#00E676] shrink-0" />
+                      <div className="text-left">
+                        <div className="text-xs font-bold text-[#EEEEEE]">Refeição Registrada</div>
+                        <div className="text-[10px] text-[#777777]">1/1 do dia utilizada</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      id="btn-refeicao-fechamento"
+                      onClick={() => handleOpenMealModal(logToFinish)}
+                      className="w-full sm:w-auto px-4 py-3 bg-[#FF6D00]/20 hover:bg-[#FF6D00]/30 active:bg-[#FF6D00]/40 border-2 border-[#FF6D00] text-[#FF9E40] hover:text-white rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2.5 transition cursor-pointer shadow-lg shadow-[#FF6D00]/20 hover:scale-[1.02] active:scale-[0.98] min-h-[48px]"
+                      title={`Pausar atividade para Refeição (${mealConfig.duracaoMinutos} min). Limite: 1x ao dia.`}
+                    >
+                      <Utensils className="w-5 h-5 text-[#FF9E40] shrink-0" />
+                      <div className="text-left">
+                        <div className="font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1">
+                          <span>PAUSAR REFEIÇÃO</span>
+                        </div>
+                        <div className="text-[11px] text-[#FFB74D] font-mono font-bold">
+                          {mealConfig.duracaoMinutos} MINUTOS
+                        </div>
+                      </div>
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
 
-          {/* Observação Padrão */}
-          <div>
-            <label className="block text-xs font-bold text-white mb-1.5">
-              Observação de Produção (Opcional):
-            </label>
-            <select
-              id="select-obs"
-              value={finishObs}
-              onChange={(e) => setFinishObs(e.target.value)}
-              className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] min-h-[48px]"
-            >
-              <option value="">Sem observação padrão</option>
-              {sanitizedObservations.map((obs, idx) => (
-                <option key={idx} value={obs}>
-                  {obs}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Quantidade de Peças e Refugo */}
-          <div className="grid grid-cols-2 gap-3">
+            {/* Observação Padrão */}
             <div>
-              <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
-                Peças Boas Produzidas:
+              <label className="block text-xs font-bold text-white mb-1.5">
+                Observação de Produção (Opcional):
               </label>
-              <input
-                type="number"
-                min="0"
-                placeholder="Ex: 50"
-                value={partsProduced}
-                onChange={(e) => setPartsProduced(e.target.value)}
-                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
+              <select
+                id="select-obs"
+                value={finishObs}
+                onChange={(e) => setFinishObs(e.target.value)}
+                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] min-h-[48px]"
+              >
+                <option value="">Sem observação padrão</option>
+                {sanitizedObservations.map((obs, idx) => (
+                  <option key={idx} value={obs}>
+                    {obs}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Quantidade de Peças e Refugo */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
+                  Peças Boas Produzidas:
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="Ex: 50"
+                  value={partsProduced}
+                  onChange={(e) => setPartsProduced(e.target.value)}
+                  className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
+                  Peças Refugo / NC:
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="Ex: 0"
+                  value={scrapCount}
+                  onChange={(e) => setScrapCount(e.target.value)}
+                  className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
+                />
+              </div>
+            </div>
+
+            {/* Notas Adicionais Livres */}
+            <div>
+              <label className="block text-xs font-bold text-white mb-1.5">
+                Notas Adicionais Livres:
+              </label>
+              <textarea
+                id="texto-notas"
+                rows={2}
+                placeholder="Digite uma anotação extra se necessário..."
+                value={finishNotes}
+                onChange={(e) => setFinishNotes(e.target.value)}
+                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] resize-none"
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
-                Peças Refugo / NC:
-              </label>
-              <input
-                type="number"
-                min="0"
-                placeholder="Ex: 0"
-                value={scrapCount}
-                onChange={(e) => setScrapCount(e.target.value)}
-                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
-              />
-            </div>
-          </div>
 
-          {/* Notas Adicionais Livres */}
-          <div>
-            <label className="block text-xs font-bold text-white mb-1.5">
-              Notas Adicionais Livres:
-            </label>
-            <textarea
-              id="texto-notas"
-              rows={2}
-              placeholder="Digite uma anotação extra se necessário..."
-              value={finishNotes}
-              onChange={(e) => setFinishNotes(e.target.value)}
-              className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] resize-none"
-            />
-          </div>
+            {/* Botão de Troca Rápida de Setup */}
+            {onQuickChangeover && (
+              <button
+                onClick={handleOpenChangeover}
+                className="w-full py-3 bg-[#4A148C] hover:bg-[#6A1B9A] text-white font-bold rounded-xl border border-[#7B1FA2] text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer transition min-h-[46px]"
+              >
+                <Zap className="w-4 h-4 text-[#FFD700]" />
+                <span>TROCA RÁPIDA (ENCERRAR E INICIAR PRÓXIMA)</span>
+              </button>
+            )}
 
-          {/* Botão de Troca Rápida de Setup */}
-          {onQuickChangeover && (
+            {/* Botões de Ação */}
             <button
-              onClick={handleOpenChangeover}
-              className="w-full py-3 bg-[#4A148C] hover:bg-[#6A1B9A] text-white font-bold rounded-xl border border-[#7B1FA2] text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer transition min-h-[46px]"
+              onClick={handleConfirmFinish}
+              className="w-full py-4 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-base sm:text-lg rounded-xl border border-[#00c853] shadow-lg transition-transform active:scale-[0.99] cursor-pointer min-h-[54px]"
             >
-              <Zap className="w-4 h-4 text-[#FFD700]" />
-              <span>TROCA RÁPIDA (ENCERRAR E INICIAR PRÓXIMA)</span>
+              CONFIRMAR ENCERRAMENTO
             </button>
-          )}
 
-          {/* Botões de Ação */}
-          <button
-            onClick={handleConfirmFinish}
-            className="w-full py-4 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-base sm:text-lg rounded-xl border border-[#00c853] shadow-lg transition-transform active:scale-[0.99] cursor-pointer min-h-[54px]"
-          >
-            CONFIRMAR ENCERRAMENTO
-          </button>
-
-          <button
-            onClick={() => setCurrentScreen('painel')}
-            className="w-full py-3 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-xl border border-[#555555] transition cursor-pointer min-h-[46px]"
-          >
-            Cancelar
-          </button>
-        </div>
-      )}
+            <button
+              onClick={() => setCurrentScreen('painel')}
+              className="w-full py-3 bg-[#333333] hover:bg-[#444444] text-white font-bold rounded-xl border border-[#555555] transition cursor-pointer min-h-[46px]"
+            >
+              Cancelar
+            </button>
+          </div>
+        );
+      })()}
 
       {/* TELA 5: TROCA RÁPIDA (CHANGEOVER) */}
       {currentScreen === 'changeover' && logToFinish && selectedColab && (
@@ -886,6 +1026,71 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
           return false;
         }}
       />
+
+      {/* MODAL DE CONFIRMAÇÃO DE PAUSA PARA REFEIÇÃO (1X AO DIA) */}
+      {mealConfirmModal && (() => {
+        const colab = collaborators.find(
+          (c) => c.name.trim().toLowerCase() === mealConfirmModal.collaboratorName.trim().toLowerCase()
+        );
+        const mealConfig = obterConfiguracaoRefeicao(colab?.shift || mealConfirmModal.shift || 'Turno 1', shifts);
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div className="bg-[#181818] border-2 border-[#FF8C00] rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+              <div className="flex items-center gap-3 text-[#FF9800] border-b border-[#FF8C00]/30 pb-3">
+                <div className="p-3 bg-[#FF8C00]/20 rounded-xl">
+                  <Utensils className="w-6 h-6 text-[#FF9800]" />
+                </div>
+                <div>
+                  <h3 className="font-black text-lg text-white">Confirmar Pausa para Refeição</h3>
+                  <p className="text-xs text-[#AAAAAA]">{mealConfig.shiftName} • Almoço / Janta</p>
+                </div>
+              </div>
+
+              <div className="p-4 bg-[#221800] border border-[#FF8C00]/40 rounded-xl space-y-2 text-sm text-[#DDDDDD]">
+                <p>
+                  Colaborador: <b className="text-white text-base">{mealConfirmModal.collaboratorName}</b>
+                </p>
+                <p>
+                  Operação atual: <b className="text-[#007BFF]">{mealConfirmModal.activity}</b>
+                </p>
+                <div className="pt-2 border-t border-[#FF8C00]/20 flex items-center justify-between text-xs font-mono">
+                  <span className="text-[#FFB74D] font-bold">Duração do Intervalo:</span>
+                  <span className="text-white font-black text-sm bg-[#FF8C00]/30 px-2.5 py-1 rounded border border-[#FF8C00]/40">
+                    {mealConfig.duracaoMinutos} MINUTOS
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-[#111111] rounded-xl text-xs text-[#999999] space-y-1">
+                <p className="font-bold text-[#FFB74D]">⏱️ Como funciona a contagem:</p>
+                <p>• A contagem inicia a partir do momento em que a pausa for confirmada.</p>
+                <p>• Ao vencer os <b>{mealConfig.duracaoMinutos} minutos</b>, o sistema volta a contar o tempo de trabalho automaticamente na mesma atividade (tipo PAUSE), ou você pode clicar em RETOMAR a qualquer momento.</p>
+                <p>• Limite: <b>1 única vez ao dia</b> por colaborador.</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setMealConfirmModal(null)}
+                  className="py-3 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold rounded-xl border border-[#444444] transition cursor-pointer min-h-[46px]"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  id="btn-confirmar-pausa-refeicao"
+                  onClick={handleConfirmMealPause}
+                  className="py-3 bg-[#FF8C00] hover:bg-[#FFA000] active:bg-[#F57C00] text-black font-black text-sm rounded-xl border border-[#FFA000] shadow-lg transition cursor-pointer flex items-center justify-center gap-1.5 min-h-[46px]"
+                >
+                  <Utensils className="w-4 h-4 text-black" />
+                  <span>CONFIRMAR PAUSA</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

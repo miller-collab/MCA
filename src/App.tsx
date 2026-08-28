@@ -32,6 +32,9 @@ import {
   verificarTurnoEncerrado,
   padronizarNomeTurno,
   desduplicarLogsAtivos,
+  obterConfiguracaoRefeicao,
+  colaboradorJaUsouRefeicaoHoje,
+  calcularDuracaoComDeducaoRefeicao,
 } from './utils/factoryCalculations';
 
 import {
@@ -399,17 +402,53 @@ export function App() {
     });
   }, []);
 
-  // 5. Auto Shift Closure Engine (Closes forgotten operations when shift ends)
+  // 5. Auto Shift Closure & Auto Meal Resume Engine
   useEffect(() => {
-    const checkAndAutoCloseShifts = () => {
+    const checkEngine = () => {
+      const now = new Date();
+      const nowMs = now.getTime();
+
       setLogs((prevLogs) => {
         let changed = false;
         const newNotifs: AutoCloseNotification[] = [];
 
         const updated = prevLogs.map((log) => {
-          if (log.status === 'Em Execução') {
-            const colab = collaborators.find((c) => c.name === log.collaboratorName);
-            const colabShiftName = (colab?.shift || 'Turno 1').toUpperCase();
+          // A. Retomada Automática de Refeição ao Vencer os Minutos Configurados (ex: 90 min)
+          if (log.status === 'Pausada' && (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime)) {
+            const mealMinutes = log.mealPauseDurationMinutes || log.mealBreakMinutes || 90;
+            let pauseStartMs = log.mealPauseTimestampMs;
+            if (!pauseStartMs && log.mealPauseStartTime) {
+              const pParts = log.mealPauseStartTime.split(':');
+              const pDate = new Date(now);
+              pDate.setHours(
+                parseInt(pParts[0], 10) || 0,
+                parseInt(pParts[1], 10) || 0,
+                parseInt(pParts[2] || '0', 10) || 0,
+                0
+              );
+              if (pDate.getTime() > nowMs) pDate.setDate(pDate.getDate() - 1);
+              pauseStartMs = pDate.getTime();
+            }
+
+            if (pauseStartMs && (nowMs - pauseStartMs) >= mealMinutes * 60 * 1000) {
+              // Venceu o tempo de refeição! Retoma automaticamente a contagem na mesma atividade
+              changed = true;
+              const resumedLog: ProductionLog = {
+                ...log,
+                status: 'Em Execução',
+                mealResumedAt: formatarHoraPtBr(now),
+              };
+              saveLogToFirestore(resumedLog);
+              return resumedLog;
+            }
+          }
+
+          // B. Encerramento Automático no Fim do Turno Específico do Colaborador
+          if ((log.status === 'Em Execução' || log.status === 'Pausada') && !log.autoClosed) {
+            const colab = collaborators.find(
+              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+            );
+            const colabShiftName = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
             const shift = shifts.find(
               (s) =>
                 s.name.toUpperCase() === colabShiftName ||
@@ -417,13 +456,26 @@ export function App() {
                 colabShiftName.includes(s.name.toUpperCase())
             );
 
+            // Verifica se o turno DO COLABORADOR encerrou (respeitando turnos múltiplos/sobrepostos)
             if (shift && verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias)) {
-              // Auto-close at shift end
               changed = true;
-              const dur = calcularDiferencaMinutos(log.startTime, shift.saida);
+              const mealConfig = obterConfiguracaoRefeicao(shift.name, shifts);
+              const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs);
+              let dur = calcularDiferencaMinutos(log.startTime, shift.saida);
+              let debitouRefeicaoAuto = false;
+              let minsRefeicao = 0;
+
+              // Se o colaborador não acionou pausa de refeição durante o dia, deduz automaticamente a refeição do turno no final do turno
+              if (!jaTeveRefeicao && dur > mealConfig.duracaoMinutos) {
+                dur = Math.max(1, dur - mealConfig.duracaoMinutos);
+                debitouRefeicaoAuto = true;
+                minsRefeicao = mealConfig.duracaoMinutos;
+              }
               
+              // ID estável e determinístico para garantir ZERO duplicações
+              const notifId = `autoclose-${log.id}`;
               const notif: AutoCloseNotification = {
-                id: `autoclose-${Date.now()}-${log.id}`,
+                id: notifId,
                 logId: log.id,
                 collaboratorName: log.collaboratorName,
                 role: log.role,
@@ -439,16 +491,25 @@ export function App() {
               newNotifs.push(notif);
               saveAutoCloseNotifToFirestore(notif);
 
+              const obsBase = log.observation
+                ? `${log.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida})`
+                : `⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida}) - Colaborador esqueceu de fechar`;
+
+              const obsFinal = debitouRefeicaoAuto
+                ? `${obsBase} | 🍽️ Refeição debitada automaticamente (${minsRefeicao} min)`
+                : obsBase;
+
               const closedLog: ProductionLog = {
                 ...log,
                 endTime: shift.saida,
                 durationMinutes: dur,
                 status: 'Concluída' as const,
-                observation: log.observation
-                  ? `${log.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida})`
-                  : `⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida}) - Colaborador esqueceu de fechar`,
+                observation: obsFinal,
                 autoClosed: true,
                 autoClosedAtShiftEnd: true,
+                mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
+                mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
+                mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
               };
 
               saveLogToFirestore(closedLog);
@@ -459,7 +520,14 @@ export function App() {
         });
 
         if (newNotifs.length > 0) {
-          setAutoCloseNotifs((prev) => [...newNotifs, ...prev]);
+          setAutoCloseNotifs((prev) => {
+            const map = new Map<string, AutoCloseNotification>();
+            [...newNotifs, ...prev].forEach((n) => {
+              const key = n.logId || n.id;
+              if (!map.has(key)) map.set(key, n);
+            });
+            return Array.from(map.values());
+          });
           if (soundEnabled) playFactoryChime('alert');
         }
 
@@ -468,8 +536,8 @@ export function App() {
     };
 
     // Run check on mount and periodic interval
-    checkAndAutoCloseShifts();
-    const interval = setInterval(checkAndAutoCloseShifts, 10000); // Check every 10s
+    checkEngine();
+    const interval = setInterval(checkEngine, 10000); // Check every 10s
 
     return () => clearInterval(interval);
   }, [collaborators, shifts, soundEnabled]);
@@ -479,9 +547,9 @@ export function App() {
     setLogs((prevLogs) => {
       const newNotifs: AutoCloseNotification[] = [];
       const updated = prevLogs.map((log) => {
-        if (log.status === 'Em Execução' && (!targetLogId || log.id === targetLogId)) {
-          const colab = collaborators.find((c) => c.name === log.collaboratorName);
-          const colabShiftName = (colab?.shift || 'Turno 1').toUpperCase();
+        if ((log.status === 'Em Execução' || log.status === 'Pausada') && (!targetLogId || log.id === targetLogId)) {
+          const colab = collaborators.find((c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase());
+          const colabShiftName = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
           const shift = shifts.find(
             (s) =>
               s.name.toUpperCase() === colabShiftName ||
@@ -490,10 +558,21 @@ export function App() {
           ) || shifts[0];
 
           const endHour = shift?.saida || '17:30:00';
-          const dur = calcularDiferencaMinutos(log.startTime, endHour);
+          const mealConfig = obterConfiguracaoRefeicao(shift?.name || 'Turno 1', shifts);
+          const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs);
+          let dur = calcularDiferencaMinutos(log.startTime, endHour);
+          let debitouRefeicaoAuto = false;
+          let minsRefeicao = 0;
 
+          if (!jaTeveRefeicao && dur > mealConfig.duracaoMinutos) {
+            dur = Math.max(1, dur - mealConfig.duracaoMinutos);
+            debitouRefeicaoAuto = true;
+            minsRefeicao = mealConfig.duracaoMinutos;
+          }
+
+          const notifId = `autoclose-${log.id}`;
           const notif: AutoCloseNotification = {
-            id: `autoclose-${Date.now()}-${log.id}`,
+            id: notifId,
             logId: log.id,
             collaboratorName: log.collaboratorName,
             role: log.role,
@@ -509,16 +588,25 @@ export function App() {
           newNotifs.push(notif);
           saveAutoCloseNotifToFirestore(notif);
 
+          const obsBase = log.observation
+            ? `${log.observation} | ⚠️ Encerrado Automaticamente (Fim de Turno ${endHour})`
+            : `⚠️ Encerrado Automaticamente (Fim de Turno ${endHour}) - Colaborador não fechou`;
+
+          const obsFinal = debitouRefeicaoAuto
+            ? `${obsBase} | 🍽️ Refeição debitada automaticamente (${minsRefeicao} min)`
+            : obsBase;
+
           const closedLog: ProductionLog = {
             ...log,
             endTime: endHour,
             durationMinutes: dur,
             status: 'Concluída' as const,
-            observation: log.observation
-              ? `${log.observation} | ⚠️ Encerrado Automaticamente (Fim de Turno ${endHour})`
-              : `⚠️ Encerrado Automaticamente (Fim de Turno ${endHour}) - Colaborador não fechou`,
+            observation: obsFinal,
             autoClosed: true,
             autoClosedAtShiftEnd: true,
+            mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
+            mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
+            mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
           };
 
           saveLogToFirestore(closedLog);
@@ -528,7 +616,14 @@ export function App() {
       });
 
       if (newNotifs.length > 0) {
-        setAutoCloseNotifs((prev) => [...newNotifs, ...prev]);
+        setAutoCloseNotifs((prev) => {
+          const map = new Map<string, AutoCloseNotification>();
+          [...newNotifs, ...prev].forEach((n) => {
+            const key = n.logId || n.id;
+            if (!map.has(key)) map.set(key, n);
+          });
+          return Array.from(map.values());
+        });
         if (soundEnabled) playFactoryChime('alert');
       }
 
@@ -610,6 +705,75 @@ export function App() {
     [collaborators, soundEnabled]
   );
 
+  const handlePauseMeal = useCallback(
+    (logId: string) => {
+      const now = new Date();
+      const timeStr = formatarHoraPtBr(now);
+      const dateStr = formatarDataPtBr(now);
+
+      setLogs((prev) =>
+        prev.map((log) => {
+          if (log.id === logId) {
+            const colab = collaborators.find(
+              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+            );
+            const mealConfig = obterConfiguracaoRefeicao(colab?.shift || log.shift || 'Turno 1', shifts);
+
+            // Garante regra de 1x ao dia
+            const jaUsou = colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date || dateStr, prev);
+            if (jaUsou) {
+              return log;
+            }
+
+            const durAtual = calcularDiferencaMinutos(log.startTime, timeStr);
+            const durLiquida = Math.max(1, durAtual);
+
+            const pausedLog: ProductionLog = {
+              ...log,
+              status: 'Pausada',
+              isMealPause: true,
+              mealBreakDeducted: true,
+              mealBreakMinutes: mealConfig.duracaoMinutos,
+              mealBreakSource: 'manual',
+              mealPauseStartTime: timeStr,
+              mealPauseTimestampMs: now.getTime(),
+              mealPauseDurationMinutes: mealConfig.duracaoMinutos,
+              durationMinutes: durLiquida,
+              observation: log.observation
+                ? `${log.observation} | 🍽️ Pausa para Refeição (${mealConfig.duracaoMinutos} min)`
+                : `🍽️ Pausa para Refeição (${mealConfig.duracaoMinutos} min)`,
+            };
+            saveLogToFirestore(pausedLog);
+            return pausedLog;
+          }
+          return log;
+        })
+      );
+      if (soundEnabled) playFactoryChime('finish');
+    },
+    [collaborators, shifts, soundEnabled]
+  );
+
+  const handleResumeActivity = useCallback(
+    (logId: string) => {
+      setLogs((prev) =>
+        prev.map((log) => {
+          if (log.id === logId) {
+            const resumedLog: ProductionLog = {
+              ...log,
+              status: 'Em Execução',
+            };
+            saveLogToFirestore(resumedLog);
+            return resumedLog;
+          }
+          return log;
+        })
+      );
+      if (soundEnabled) playFactoryChime('start');
+    },
+    [soundEnabled]
+  );
+
   const handleFinishActivity = useCallback(
     (
       logId: string,
@@ -624,16 +788,32 @@ export function App() {
       setLogs((prev) =>
         prev.map((log) => {
           if (log.id === logId) {
-            const dur = calcularDiferencaMinutos(log.startTime, endTimeStr);
+            const colab = collaborators.find(
+              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+            );
+            const colabShift = colab?.shift || log.shift || 'Turno 1';
+            const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
+
+            const { duracaoLiquida, minutosRefeicaoDeduzidos, deveDebitarRefeicao } =
+              calcularDuracaoComDeducaoRefeicao(log.startTime, endTimeStr, colabShift, shifts, !!jaTeveRefeicao);
+
+            let obsFinal = observation || 'Operação Concluída com Sucesso sem Anomalias';
+            if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
+              obsFinal = `${obsFinal} | 🍽️ Refeição debitada automaticamente (${minutosRefeicaoDeduzidos} min)`;
+            }
+
             const finishedLog: ProductionLog = {
               ...log,
               endTime: endTimeStr,
-              durationMinutes: dur,
+              durationMinutes: duracaoLiquida,
               status: 'Concluída',
-              observation: observation || 'Operação Concluída com Sucesso sem Anomalias',
+              observation: obsFinal,
               notes: notes && notes.trim() ? notes.trim() : undefined,
               partsProduced: partsProduced !== undefined && !isNaN(partsProduced) ? partsProduced : undefined,
               scrapCount: scrapCount !== undefined && !isNaN(scrapCount) ? scrapCount : undefined,
+              mealBreakDeducted: log.mealBreakDeducted || deveDebitarRefeicao,
+              mealBreakMinutes: log.mealBreakMinutes || (deveDebitarRefeicao ? minutosRefeicaoDeduzidos : undefined),
+              mealBreakSource: log.mealBreakSource || (deveDebitarRefeicao ? 'automatic' : undefined),
             };
             saveLogToFirestore(finishedLog);
             return finishedLog;
@@ -643,7 +823,7 @@ export function App() {
       );
       if (soundEnabled) playFactoryChime('finish');
     },
-    [soundEnabled]
+    [collaborators, shifts, soundEnabled]
   );
 
   const handleQuickChangeover = useCallback(
@@ -666,13 +846,29 @@ export function App() {
           if (log.id === finishLogId) {
             targetColab = log.collaboratorName;
             targetRole = log.role;
-            const dur = calcularDiferencaMinutos(log.startTime, timeStr);
+            const colab = collaborators.find(
+              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+            );
+            const colabShift = colab?.shift || log.shift || 'Turno 1';
+            const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
+
+            const { duracaoLiquida, minutosRefeicaoDeduzidos, deveDebitarRefeicao } =
+              calcularDuracaoComDeducaoRefeicao(log.startTime, timeStr, colabShift, shifts, !!jaTeveRefeicao);
+
+            let obsFinal = observation || 'Setup / Troca Rápida de Operação';
+            if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
+              obsFinal = `${obsFinal} | 🍽️ Refeição debitada automaticamente (${minutosRefeicaoDeduzidos} min)`;
+            }
+
             const finishedLog: ProductionLog = {
               ...log,
               endTime: timeStr,
-              durationMinutes: dur,
+              durationMinutes: duracaoLiquida,
               status: 'Concluída' as const,
-              observation: observation || 'Setup / Troca Rápida de Operação',
+              observation: obsFinal,
+              mealBreakDeducted: log.mealBreakDeducted || deveDebitarRefeicao,
+              mealBreakMinutes: log.mealBreakMinutes || (deveDebitarRefeicao ? minutosRefeicaoDeduzidos : undefined),
+              mealBreakSource: log.mealBreakSource || (deveDebitarRefeicao ? 'automatic' : undefined),
             };
             saveLogToFirestore(finishedLog);
             return finishedLog;
@@ -687,7 +883,7 @@ export function App() {
             date: dateStr,
             collaboratorName: targetColab,
             role: targetRole,
-            shift: colab?.shift || 'Turno 1',
+            shift: padronizarNomeTurno(colab?.shift || 'Turno 1'),
             activity: newActivityName,
             category: newCategory,
             startTime: timeStr,
@@ -703,7 +899,7 @@ export function App() {
 
       if (soundEnabled) playFactoryChime('start');
     },
-    [collaborators, soundEnabled]
+    [collaborators, shifts, soundEnabled]
   );
 
   const handleDeleteLog = useCallback((id: string) => {
@@ -848,6 +1044,8 @@ export function App() {
             onDismissOperatorNotif={handleDismissOperatorNotif}
             onStartActivity={handleStartActivity}
             onFinishActivity={handleFinishActivity}
+            onPauseMeal={handlePauseMeal}
+            onResumeActivity={handleResumeActivity}
             onQuickChangeover={handleQuickChangeover}
             onSaveCollaborators={handleSaveCollaborators}
             isLeaderUnlocked={isLeaderUnlocked}

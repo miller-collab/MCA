@@ -190,19 +190,22 @@ export function subscribeToFactoryConfig(
   }
 }
 
-// 6. Subscribe to Auto-Close Notifications
+// 6. Subscribe to Auto-Close Notifications (with strict deduplication)
 export function subscribeToAutoCloseNotifs(
   onUpdate: (notifs: AutoCloseNotification[]) => void
 ) {
   try {
     const notifsCol = collection(db, 'autoclose_notifs');
     return onSnapshot(notifsCol, (snapshot) => {
-      const items: AutoCloseNotification[] = [];
+      const mapByLog = new Map<string, AutoCloseNotification>();
+      const duplicateDocIdsToDelete: string[] = [];
+
       snapshot.forEach((d) => {
         const data = d.data();
-        items.push({
+        const logId = data.logId || d.id;
+        const notifItem: AutoCloseNotification = {
           id: d.id,
-          logId: data.logId || '',
+          logId: data.logId || d.id,
           collaboratorName: data.collaboratorName || '',
           role: data.role || '',
           activity: data.activity || '',
@@ -210,10 +213,30 @@ export function subscribeToAutoCloseNotifs(
           shiftEnd: data.shiftEnd || '',
           date: data.date || '',
           timestamp: Number(data.timestamp) || Date.now(),
-          readByOperator: data.readByOperator,
-          readByLeader: data.readByLeader,
-        });
+          readByOperator: !!data.readByOperator,
+          readByLeader: !!data.readByLeader,
+        };
+
+        const dedupeKey = `${notifItem.collaboratorName.trim().toLowerCase()}_${notifItem.date}_${notifItem.shiftEnd}_${notifItem.logId}`;
+
+        if (!mapByLog.has(dedupeKey)) {
+          mapByLog.set(dedupeKey, notifItem);
+        } else {
+          // Already have a notification for this exact event; mark older/redundant doc for batch deletion
+          duplicateDocIdsToDelete.push(d.id);
+        }
       });
+
+      // Silently clean up redundant duplicate documents in Firestore if found
+      if (duplicateDocIdsToDelete.length > 0) {
+        const batch = writeBatch(db);
+        duplicateDocIdsToDelete.forEach((dupId) => {
+          batch.delete(doc(db, 'autoclose_notifs', dupId));
+        });
+        batch.commit().catch(() => {});
+      }
+
+      const items = Array.from(mapByLog.values());
       items.sort((a, b) => b.timestamp - a.timestamp);
       onUpdate(items);
     });

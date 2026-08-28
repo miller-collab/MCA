@@ -10,7 +10,7 @@ import {
   Sparkles 
 } from 'lucide-react';
 import { ShiftConfig } from '../types';
-import { formatarDataPtBr, formatarHoraPtBr } from '../utils/factoryCalculations';
+import { formatarDataPtBr, formatarHoraPtBr, obterTurnosAtivosNoMomento } from '../utils/factoryCalculations';
 
 interface HeaderProps {
   shifts: ShiftConfig[];
@@ -37,23 +37,14 @@ export const Header: React.FC<HeaderProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Determine current active shift respecting days and configured hours
-  const DIAS_SIGLAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
-  const currentDayName = DIAS_SIGLAS[currentTime.getDay()];
-  const currentHourMin = `${String(currentTime.getHours()).padStart(2, '0')}:${String(currentTime.getMinutes()).padStart(2, '0')}`;
-  
-  const activeShift = shifts.find(s => {
-    // If shift has no days or today is not an operating day, it is inactive
-    if (!s.dias || s.dias.length === 0 || !s.dias.includes(currentDayName)) {
-      return false;
-    }
-    if (s.entrada <= s.saida) {
-      return currentHourMin >= s.entrada && currentHourMin <= s.saida;
-    } else {
-      // Overnight shift
-      return currentHourMin >= s.entrada || currentHourMin <= s.saida;
-    }
-  });
+  // Determine all active shifts respecting days and configured hours (supports overlapping shifts - Foto 3)
+  const activeShifts = obterTurnosAtivosNoMomento(shifts, currentTime);
+  const activeShift = activeShifts[0];
+  const shiftsLabel = activeShifts.length > 1
+    ? activeShifts.map(s => s.code || s.name).join(' + ')
+    : activeShift
+    ? `${activeShift.name} (${activeShift.entrada}-${activeShift.saida})`
+    : 'Fora de Turno';
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -108,18 +99,18 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={onQuickShiftAccess}
               className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#252525] hover:bg-[#333333] text-[11px] font-bold border border-[#444444] text-[#CCCCCC] transition cursor-pointer"
               title={
-                activeShift
-                  ? `Turno Ativo: ${activeShift.name} (${activeShift.entrada} - ${activeShift.saida}) • Clique para ver/configurar`
+                activeShifts.length > 0
+                  ? `Turno(s) Ativo(s): ${activeShifts.map(s => `${s.name} (${s.entrada}-${s.saida})`).join(' | ')} • Clique para ver/configurar`
                   : `Nenhum turno em operação no momento • Clique para ver/configurar horários`
               }
             >
               <span
                 className={`w-2 h-2 rounded-full ${
-                  activeShift ? 'bg-[#00E676] animate-pulse' : 'bg-[#FF8C00]'
+                  activeShifts.length > 0 ? 'bg-[#00E676] animate-pulse' : 'bg-[#FF8C00]'
                 }`}
               />
-              <span className="truncate max-w-[140px]">
-                {activeShift ? `${activeShift.name} (${activeShift.entrada}-${activeShift.saida})` : 'Fora de Turno'}
+              <span className="truncate max-w-[180px]">
+                {shiftsLabel}
               </span>
             </button>
           </div>

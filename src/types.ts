@@ -56,6 +56,17 @@ export interface ProductionLog {
   scrapCount?: number;
   autoClosed?: boolean;
   autoClosedAtShiftEnd?: boolean;
+  
+  // Refeição (Almoço / Janta)
+  isMealPause?: boolean;
+  mealBreakDeducted?: boolean;
+  mealBreakMinutes?: number;
+  mealBreakSource?: 'manual' | 'automatic';
+  mealPauseStartTime?: string;
+  mealPauseTimestampMs?: number;
+  mealPauseDurationMinutes?: number;
+  totalPausedSeconds?: number;
+  mealResumedAt?: string;
 }
 
 export interface AutoCloseNotification {
