@@ -414,7 +414,7 @@ export function App() {
 
         const updated = prevLogs.map((log) => {
           // A. Retomada Automática de Refeição ao Vencer os Minutos Configurados (ex: 90 min)
-          if (log.status === 'Pausada' && (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime)) {
+          if (log.status === 'Pausada' && (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime || log.observation?.includes('Refeição'))) {
             const mealMinutes = log.mealPauseDurationMinutes || log.mealBreakMinutes || 90;
             let pauseStartMs = log.mealPauseTimestampMs;
             if (!pauseStartMs && log.mealPauseStartTime) {
@@ -429,6 +429,13 @@ export function App() {
               if (pDate.getTime() > nowMs) pDate.setDate(pDate.getDate() - 1);
               pauseStartMs = pDate.getTime();
             }
+            if (!pauseStartMs && log.durationMinutes !== undefined && log.durationMinutes > 0 && log.startTime) {
+              const [hI, mI, sI] = log.startTime.split(':').map((v) => parseInt(v, 10) || 0);
+              const dI = new Date(now);
+              dI.setHours(hI, mI, sI, 0);
+              if (dI.getTime() > nowMs) dI.setDate(dI.getDate() - 1);
+              pauseStartMs = dI.getTime() + (log.durationMinutes * 60 * 1000);
+            }
 
             if (pauseStartMs && (nowMs - pauseStartMs) >= mealMinutes * 60 * 1000) {
               // Venceu o tempo de refeição! Retoma automaticamente a contagem na mesma atividade
@@ -436,6 +443,9 @@ export function App() {
               const resumedLog: ProductionLog = {
                 ...log,
                 status: 'Em Execução',
+                isMealPause: false,
+                mealBreakDeducted: true,
+                mealBreakMinutes: mealMinutes,
                 mealResumedAt: formatarHoraPtBr(now),
               };
               saveLogToFirestore(resumedLog);
@@ -756,12 +766,16 @@ export function App() {
 
   const handleResumeActivity = useCallback(
     (logId: string) => {
+      const now = new Date();
       setLogs((prev) =>
         prev.map((log) => {
           if (log.id === logId) {
             const resumedLog: ProductionLog = {
               ...log,
               status: 'Em Execução',
+              isMealPause: false,
+              mealBreakDeducted: true,
+              mealResumedAt: formatarHoraPtBr(now),
             };
             saveLogToFirestore(resumedLog);
             return resumedLog;

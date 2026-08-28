@@ -59,6 +59,15 @@ export function subscribeToLogs(
             scrapCount: data.scrapCount,
             autoClosed: data.autoClosed,
             autoClosedAtShiftEnd: data.autoClosedAtShiftEnd,
+            isMealPause: data.isMealPause,
+            mealBreakDeducted: data.mealBreakDeducted,
+            mealBreakMinutes: data.mealBreakMinutes,
+            mealBreakSource: data.mealBreakSource,
+            mealPauseStartTime: data.mealPauseStartTime,
+            mealPauseTimestampMs: data.mealPauseTimestampMs,
+            mealPauseDurationMinutes: data.mealPauseDurationMinutes,
+            totalPausedSeconds: data.totalPausedSeconds,
+            mealResumedAt: data.mealResumedAt,
           });
         });
         onUpdate(logs);
@@ -392,6 +401,15 @@ export async function fetchAllDataFromFirestore(): Promise<{
         scrapCount: data.scrapCount,
         autoClosed: data.autoClosed,
         autoClosedAtShiftEnd: data.autoClosedAtShiftEnd,
+        isMealPause: data.isMealPause,
+        mealBreakDeducted: data.mealBreakDeducted,
+        mealBreakMinutes: data.mealBreakMinutes,
+        mealBreakSource: data.mealBreakSource,
+        mealPauseStartTime: data.mealPauseStartTime,
+        mealPauseTimestampMs: data.mealPauseTimestampMs,
+        mealPauseDurationMinutes: data.mealPauseDurationMinutes,
+        totalPausedSeconds: data.totalPausedSeconds,
+        mealResumedAt: data.mealResumedAt,
       });
     });
 

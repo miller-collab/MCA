@@ -907,14 +907,14 @@ export function calcularEstadoTempoRefeicao(
     pauseStartMs = dataPausa.getTime();
   }
 
+  // Fallback 1: Se duracaoMinutes foi gravado no momento da pausa
+  if (!pauseStartMs && log.durationMinutes !== undefined && log.durationMinutes > 0 && dataInicio) {
+    pauseStartMs = dataInicio.getTime() + (log.durationMinutes * 60 * 1000);
+  }
+
+  // Fallback 2: Se ainda assim for indefinido mas o status for 'Pausada' ou isMealPause
   if (!pauseStartMs) {
-    return {
-      emPausaRefeicao: log.status === 'Pausada',
-      tempoRestantePausaSegundos: 0,
-      duracaoPausaMinutos: duracaoMinutos,
-      tempoTrabalhadoSegundos: (log.durationMinutes || 0) * 60,
-      pausaVenceuRetomou: false,
-    };
+    pauseStartMs = now.getTime();
   }
 
   const decorridoPausaSegundos = Math.max(0, Math.floor((now.getTime() - pauseStartMs) / 1000));

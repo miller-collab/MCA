@@ -455,8 +455,8 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 const corBase = getRoleColor(tarefa.role);
                 const corTextoHead = definirCorTextoHeader(corBase);
                 const flashing = isCardFlashing(tarefa);
-                const isPausedMeal = tarefa.status === 'Pausada' || !!tarefa.isMealPause;
                 const mealState = calcularEstadoTempoRefeicao(tarefa, new Date(), shifts);
+                const isPausedMeal = mealState.emPausaRefeicao;
 
                 return (
                   <div
