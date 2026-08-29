@@ -56,6 +56,8 @@ export interface ProductionLog {
   scrapCount?: number;
   autoClosed?: boolean;
   autoClosedAtShiftEnd?: boolean;
+  pendingNextShiftResume?: boolean;
+  resumedFromPreviousLogId?: string;
   
   // Refeição (Almoço / Janta)
   isMealPause?: boolean;
@@ -81,6 +83,11 @@ export interface AutoCloseNotification {
   timestamp: number;
   readByOperator?: boolean;
   readByLeader?: boolean;
+}
+
+export interface EfficiencyThresholds {
+  green: number; // Ex: 85 (Meta Excelente >= 85%)
+  yellow: number; // Ex: 70 (Faixa de Atenção 70% - 84%)
 }
 
 export interface OperatorEfficiency {

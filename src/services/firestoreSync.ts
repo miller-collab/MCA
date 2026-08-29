@@ -25,6 +25,8 @@ export interface FactoryConfigState {
   customRoleColors: Record<string, string>;
   customRoles?: string[];
   deletedRoles?: string[];
+  efficiencyThresholdGreen?: number;
+  efficiencyThresholdYellow?: number;
 }
 
 // 1. Subscribe to Production Logs
@@ -59,6 +61,8 @@ export function subscribeToLogs(
             scrapCount: data.scrapCount,
             autoClosed: data.autoClosed,
             autoClosedAtShiftEnd: data.autoClosedAtShiftEnd,
+            pendingNextShiftResume: data.pendingNextShiftResume,
+            resumedFromPreviousLogId: data.resumedFromPreviousLogId,
             isMealPause: data.isMealPause,
             mealBreakDeducted: data.mealBreakDeducted,
             mealBreakMinutes: data.mealBreakMinutes,
@@ -190,6 +194,8 @@ export function subscribeToFactoryConfig(
           customRoleColors: data.customRoleColors || {},
           customRoles: Array.isArray(data.customRoles) ? data.customRoles : undefined,
           deletedRoles: Array.isArray(data.deletedRoles) ? data.deletedRoles : undefined,
+          efficiencyThresholdGreen: data.efficiencyThresholdGreen !== undefined ? Number(data.efficiencyThresholdGreen) : 85,
+          efficiencyThresholdYellow: data.efficiencyThresholdYellow !== undefined ? Number(data.efficiencyThresholdYellow) : 70,
         });
       }
     });
@@ -401,6 +407,8 @@ export async function fetchAllDataFromFirestore(): Promise<{
         scrapCount: data.scrapCount,
         autoClosed: data.autoClosed,
         autoClosedAtShiftEnd: data.autoClosedAtShiftEnd,
+        pendingNextShiftResume: data.pendingNextShiftResume,
+        resumedFromPreviousLogId: data.resumedFromPreviousLogId,
         isMealPause: data.isMealPause,
         mealBreakDeducted: data.mealBreakDeducted,
         mealBreakMinutes: data.mealBreakMinutes,

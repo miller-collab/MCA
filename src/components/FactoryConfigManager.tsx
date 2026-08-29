@@ -3,7 +3,7 @@ import {
   Users, Briefcase, ListOrdered, MessageSquare, Clock, 
   Plus, Trash2, Edit2, Check, X, Upload, Download, RotateCcw, 
   Save, AlertCircle, Palette, Sparkles, Filter, Copy, FileSpreadsheet,
-  CheckSquare, Square, Layers, Info, HelpCircle
+  CheckSquare, Square, Layers, Info, HelpCircle, TrendingUp
 } from 'lucide-react';
 import { Collaborator, ActivityItem, ShiftConfig, ActivityCategory } from '../types';
 import { INITIAL_COLLABORATORS, INITIAL_ACTIVITIES, INITIAL_SHIFTS, INITIAL_OBSERVATIONS, INITIAL_ROLES, definirCorFuncao } from '../data/initialData';
@@ -17,16 +17,19 @@ interface FactoryConfigManagerProps {
   customRoleColors?: Record<string, string>;
   customRoles?: string[];
   deletedRoles?: string[];
+  efficiencyThresholdGreen?: number;
+  efficiencyThresholdYellow?: number;
   onUpdateCollaborators: (colabs: Collaborator[]) => void;
   onUpdateActivities: (activities: ActivityItem[]) => void;
   onUpdateShifts: (shifts: ShiftConfig[]) => void;
   onUpdateObservations: (obs: string[]) => void;
   onUpdateRoleColors?: (colors: Record<string, string>) => void;
   onUpdateRoles?: (roles: string[], deletedRoles?: string[]) => void;
+  onUpdateEfficiencyThresholds?: (green: number, yellow: number) => void;
   onResetToDefaults: () => void;
 }
 
-type ConfigSubTab = 'colaboradores' | 'atividades' | 'cargos' | 'observacoes' | 'turnos' | 'importar';
+type ConfigSubTab = 'colaboradores' | 'atividades' | 'cargos' | 'observacoes' | 'metas' | 'turnos' | 'importar';
 
 const CATEGORIAS: ActivityCategory[] = [
   'Setup',
@@ -61,16 +64,51 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   customRoleColors = {},
   customRoles,
   deletedRoles = [],
+  efficiencyThresholdGreen: propGreen = 85,
+  efficiencyThresholdYellow: propYellow = 70,
   onUpdateCollaborators,
   onUpdateActivities,
   onUpdateShifts,
   onUpdateObservations,
   onUpdateRoleColors,
   onUpdateRoles,
+  onUpdateEfficiencyThresholds,
   onResetToDefaults,
 }) => {
   const [subTab, setSubTab] = useState<ConfigSubTab>('colaboradores');
   const [feedbackMsg, setFeedbackMsg] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  // Efficiency thresholds state
+  const [localGreen, setLocalGreen] = useState<number>(propGreen);
+  const [localYellow, setLocalYellow] = useState<number>(propYellow);
+
+  React.useEffect(() => {
+    setLocalGreen(propGreen);
+  }, [propGreen]);
+
+  React.useEffect(() => {
+    setLocalYellow(propYellow);
+  }, [propYellow]);
+
+  const handleSaveThresholds = () => {
+    const validGreen = Math.max(1, Math.min(100, Number(localGreen) || 85));
+    const validYellow = Math.max(0, Math.min(validGreen - 1, Number(localYellow) || 70));
+    setLocalGreen(validGreen);
+    setLocalYellow(validYellow);
+    if (onUpdateEfficiencyThresholds) {
+      onUpdateEfficiencyThresholds(validGreen, validYellow);
+    }
+    showNotification('Metas e percentuais de cores salvos com sucesso!');
+  };
+
+  const handleResetThresholds = () => {
+    setLocalGreen(85);
+    setLocalYellow(70);
+    if (onUpdateEfficiencyThresholds) {
+      onUpdateEfficiencyThresholds(85, 70);
+    }
+    showNotification('Metas restauradas para o padrão de fábrica (85% Verde / 70% Amarelo)!');
+  };
 
   // In-App Confirm Dialog State (avoids window.confirm which is blocked in iframes)
   const [confirmModal, setConfirmModal] = useState<{
@@ -102,7 +140,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   const [newActRole, setNewActRole] = useState('OPERADOR');
   const [selectedRolesForNewAct, setSelectedRolesForNewAct] = useState<string[]>([]);
   const [isMultiRoleSelectOpen, setIsMultiRoleSelectOpen] = useState(false);
-  const [newActPriority, setNewActPriority] = useState<number>(1);
+  const [newActPriority, setNewActPriority] = useState<number | string>(1);
   const [newActCategory, setNewActCategory] = useState<ActivityCategory>('Operação');
   const [newActMinutes, setNewActMinutes] = useState<number>(30);
   const [editingActId, setEditingActId] = useState<string | null>(null);
@@ -234,14 +272,15 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   };
 
   // -------------------------------------------------------------
-  // 2. ACTIVITIES HANDLERS (P1 a P14)
+  // 2. ACTIVITIES HANDLERS (P1, P2, P3.12, etc.)
   // -------------------------------------------------------------
   const handleAddActivity = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newActName.trim()) return;
 
     const trimmedName = newActName.trim().toUpperCase();
-    const parsedPriority = Number(newActPriority) || 1;
+    const rawPriorityStr = typeof newActPriority === 'string' ? newActPriority.replace(',', '.') : String(newActPriority);
+    const parsedPriority = isNaN(parseFloat(rawPriorityStr)) ? 1 : parseFloat(rawPriorityStr);
     const parsedMinutes = Number(newActMinutes) || 30;
 
     // Determine target roles
@@ -299,18 +338,24 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   const handleSaveEditAct = (id: string) => {
     if (!editActForm.name?.trim()) return;
     onUpdateActivities(
-      activities.map((a) =>
-        a.id === id
-          ? {
-              ...a,
-              name: editActForm.name?.trim().toUpperCase() || a.name,
-              role: editActForm.role?.trim().toUpperCase() || a.role,
-              priority: Number(editActForm.priority) || a.priority,
-              category: editActForm.category || a.category,
-              standardMinutes: Number(editActForm.standardMinutes) || a.standardMinutes || 30,
-            }
-          : a
-      )
+      activities.map((a) => {
+        if (a.id === id) {
+          const rawPriorityStr = editActForm.priority !== undefined 
+            ? (typeof editActForm.priority === 'string' ? String(editActForm.priority).replace(',', '.') : String(editActForm.priority))
+            : String(a.priority);
+          const parsedPriority = isNaN(parseFloat(rawPriorityStr)) ? a.priority : parseFloat(rawPriorityStr);
+
+          return {
+            ...a,
+            name: editActForm.name?.trim().toUpperCase() || a.name,
+            role: editActForm.role?.trim().toUpperCase() || a.role,
+            priority: parsedPriority,
+            category: editActForm.category || a.category,
+            standardMinutes: Number(editActForm.standardMinutes) || a.standardMinutes || 30,
+          };
+        }
+        return a;
+      })
     );
     setEditingActId(null);
     showNotification('Atividade e tempo padrão atualizados com sucesso!');
@@ -608,7 +653,8 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         if (parts.length >= 2 && parts[0] && parts[1]) {
           const role = parts[0].toUpperCase();
           const name = parts[1].toUpperCase();
-          const priority = parseInt(parts[2], 10) || (idx + 1);
+          const rawP = parts[2] ? parts[2].replace(',', '.') : '';
+          const priority = !isNaN(parseFloat(rawP)) ? parseFloat(rawP) : (idx + 1);
           const catStr = parts[3] || 'Operação';
           const catValid = CATEGORIAS.find((c) => c.toLowerCase() === catStr.toLowerCase()) || 'Operação';
 
@@ -652,7 +698,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     })
     .sort((a, b) => {
       if (a.role !== b.role) return a.role.localeCompare(b.role);
-      return a.priority - b.priority;
+      return Number(a.priority) - Number(b.priority);
     });
 
   return (
@@ -762,6 +808,18 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
           >
             <MessageSquare className="w-3.5 h-3.5" />
             <span>Observações de Fechamento ({observations.length})</span>
+          </button>
+
+          <button
+            onClick={() => setSubTab('metas')}
+            className={`px-3 py-2 rounded-md text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+              subTab === 'metas'
+                ? 'bg-[#007BFF] text-white shadow'
+                : 'text-[#AAAAAA] hover:text-white hover:bg-[#222222]'
+            }`}
+          >
+            <TrendingUp className="w-3.5 h-3.5 text-[#00E676]" />
+            <span>🎯 Metas & Cores de Eficiência</span>
           </button>
 
           <button
@@ -1257,16 +1315,21 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Prioridade (P1..P14):</label>
+                  <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Prioridade (P1, P2, P3.12...):</label>
                   <input
                     type="number"
-                    min="1"
-                    max="50"
-                    value={editingActId ? editActForm.priority || 1 : newActPriority}
+                    step="0.01"
+                    min="0.01"
+                    max="999"
+                    placeholder="Ex: 3.12"
+                    value={editingActId ? (editActForm.priority !== undefined ? editActForm.priority : '') : newActPriority}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value, 10) || 1;
+                      const val = e.target.value;
                       if (editingActId) {
-                        setEditActForm({ ...editActForm, priority: val });
+                        setEditActForm({
+                          ...editActForm,
+                          priority: val === '' ? ('' as unknown as number) : val,
+                        });
                       } else {
                         setNewActPriority(val);
                       }
@@ -1450,16 +1513,18 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                             <td className="p-2 text-center">
                               <input
                                 type="number"
-                                min="1"
-                                max="50"
-                                value={editActForm.priority}
-                                onChange={(e) =>
+                                step="0.01"
+                                min="0.01"
+                                max="999"
+                                value={editActForm.priority !== undefined ? editActForm.priority : ''}
+                                onChange={(e) => {
+                                  const val = e.target.value;
                                   setEditActForm({
                                     ...editActForm,
-                                    priority: parseInt(e.target.value, 10) || 1,
-                                  })
-                                }
-                                className="w-14 p-1 bg-[#111111] text-white text-center font-mono rounded border border-[#555555]"
+                                    priority: val === '' ? ('' as unknown as number) : val,
+                                  });
+                                }}
+                                className="w-16 p-1 bg-[#111111] text-white text-center font-mono rounded border border-[#555555] focus:border-[#007BFF] focus:outline-none"
                               />
                             </td>
                             <td className="p-2">
@@ -1904,7 +1969,168 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         )}
 
         {/* ========================================================= */}
-        {/* 5. ABA COLAR DA PLANILHA (EM MASSA)                        */}
+        {/* 5. ABA METAS & CORES DE EFICIÊNCIA                         */}
+        {/* ========================================================= */}
+        {subTab === 'metas' && (
+          <div className="p-4 bg-[#1E1E1E] rounded-lg border border-[#333333] space-y-6 animate-in fade-in duration-200">
+            <div>
+              <h4 className="text-sm font-bold text-[#00E676] flex items-center gap-2">
+                <TrendingUp className="w-4 h-4" />
+                Configuração Manual de Metas e Percentuais de Cores (Eficiência)
+              </h4>
+              <p className="text-xs text-[#888888] mt-1">
+                Ajuste os valores percentuais mínimos para definir a coloração dos gráficos de colunas, cartões operacionais e indicadores da liderança.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Card Meta Verde */}
+              <div className="p-4 bg-[#111111] border border-[#00E676]/40 rounded-xl space-y-3 shadow-md">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3.5 h-3.5 rounded-full bg-[#00E676]"></span>
+                    <span className="font-bold text-white text-sm">Meta Verde (Excelente)</span>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 bg-[#00E676]/20 text-[#00E676] font-mono font-bold rounded">
+                    ≥ {localGreen}%
+                  </span>
+                </div>
+
+                <p className="text-xs text-[#AAAAAA]">
+                  Operadores ou turnos com eficiência igual ou superior a este percentual serão exibidos em verde neon.
+                </p>
+
+                <div className="pt-2 border-t border-[#222222]">
+                  <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
+                    Percentual Mínimo (%):
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={localYellow + 1}
+                      max={100}
+                      value={localGreen}
+                      onChange={(e) => setLocalGreen(Math.max(localYellow + 1, Math.min(100, parseInt(e.target.value, 10) || 0)))}
+                      className="w-full p-2 bg-[#181818] text-white border border-[#00E676]/50 rounded text-center text-sm font-mono font-bold focus:outline-none focus:border-[#00E676]"
+                    />
+                    <span className="text-sm font-bold text-white">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card Meta Amarela */}
+              <div className="p-4 bg-[#111111] border border-[#FFD700]/40 rounded-xl space-y-3 shadow-md">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3.5 h-3.5 rounded-full bg-[#FFD700]"></span>
+                    <span className="font-bold text-white text-sm">Meta Amarela (Atenção)</span>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 bg-[#FFD700]/20 text-[#FFD700] font-mono font-bold rounded">
+                    {localYellow}% a {localGreen - 1}%
+                  </span>
+                </div>
+
+                <p className="text-xs text-[#AAAAAA]">
+                  Operadores ou turnos nesta faixa de rendimento serão exibidos em amarelo ouro, indicando atenção intermediária.
+                </p>
+
+                <div className="pt-2 border-t border-[#222222]">
+                  <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
+                    Percentual Mínimo (%):
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={localGreen - 1}
+                      value={localYellow}
+                      onChange={(e) => setLocalYellow(Math.max(1, Math.min(localGreen - 1, parseInt(e.target.value, 10) || 0)))}
+                      className="w-full p-2 bg-[#181818] text-white border border-[#FFD700]/50 rounded text-center text-sm font-mono font-bold focus:outline-none focus:border-[#FFD700]"
+                    />
+                    <span className="text-sm font-bold text-white">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card Meta Vermelha */}
+              <div className="p-4 bg-[#111111] border border-[#E91E63]/40 rounded-xl space-y-3 shadow-md">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3.5 h-3.5 rounded-full bg-[#E91E63]"></span>
+                    <span className="font-bold text-white text-sm">Meta Vermelha (Crítica)</span>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 bg-[#E91E63]/20 text-[#E91E63] font-mono font-bold rounded">
+                    &lt; {localYellow}%
+                  </span>
+                </div>
+
+                <p className="text-xs text-[#AAAAAA]">
+                  Qualquer rendimento abaixo do limite amarelo é automaticamente enquadrado como crítico em vermelho / rosa forte.
+                </p>
+
+                <div className="pt-2 border-t border-[#222222]">
+                  <label className="block text-xs font-bold text-[#888888] mb-1">
+                    Cálculo Automático:
+                  </label>
+                  <div className="p-2 bg-[#181818] text-[#888888] rounded text-center text-xs font-mono font-bold border border-[#333333]">
+                    Menor que {localYellow}%
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Barra de Amostra Visual / Preview */}
+            <div className="p-4 bg-[#111111] rounded-xl border border-[#333333] space-y-2">
+              <span className="text-xs font-bold text-[#AAAAAA] uppercase tracking-wider">
+                Pré-visualização da Régua de Eficiência:
+              </span>
+              <div className="h-6 w-full rounded-lg overflow-hidden flex font-mono text-[11px] font-bold text-black text-center leading-6">
+                <div
+                  style={{ width: `${localYellow}%` }}
+                  className="bg-[#E91E63] text-white flex items-center justify-center truncate px-1"
+                >
+                  Crítico (&lt;{localYellow}%)
+                </div>
+                <div
+                  style={{ width: `${localGreen - localYellow}%` }}
+                  className="bg-[#FFD700] text-black flex items-center justify-center truncate px-1"
+                >
+                  Atenção ({localYellow}%-{localGreen - 1}%)
+                </div>
+                <div
+                  style={{ width: `${100 - localGreen}%` }}
+                  className="bg-[#00E676] text-black flex items-center justify-center truncate px-1"
+                >
+                  Excelente (≥{localGreen}%)
+                </div>
+              </div>
+            </div>
+
+            {/* Botões de Ação */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#333333]">
+              <button
+                type="button"
+                onClick={handleResetThresholds}
+                className="py-2.5 px-4 bg-[#222222] hover:bg-[#333333] text-[#AAAAAA] hover:text-white rounded-lg text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Restaurar Padrão de Fábrica (85% e 70%)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveThresholds}
+                className="py-2.5 px-6 bg-[#00E676] hover:bg-[#00C853] text-black font-black rounded-lg text-xs transition flex items-center gap-2 shadow-lg cursor-pointer active:scale-95"
+              >
+                <Check className="w-4 h-4" />
+                <span>Salvar Metas de Eficiência</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* 6. ABA COLAR DA PLANILHA (EM MASSA)                        */}
         {/* ========================================================= */}
         {subTab === 'importar' && (
           <div className="p-4 bg-[#1E1E1E] rounded-lg border border-[#333333] space-y-4">

@@ -496,7 +496,311 @@ export function calcularMetricasKPI(logs: ProductionLog[]): {
 }
 
 /**
- * Calculates team efficiency per operator (mirroring Código.gs: obterEficienciaEquipe)
+ * Converte string de data ("DD/MM/YYYY" ou "YYYY-MM-DD") para objeto Date sem fuso horário
+ */
+export function parseDataParaDate(dataStr: string): Date | null {
+  if (!dataStr) return null;
+  try {
+    const trimmed = dataStr.trim();
+    if (trimmed.includes('/')) {
+      const parts = trimmed.split('/');
+      if (parts.length === 3) {
+        return new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10), 12, 0, 0);
+      }
+    } else if (trimmed.includes('-')) {
+      const parts = trimmed.split('-');
+      if (parts.length === 3) {
+        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
+      }
+    }
+    const d = new Date(trimmed);
+    return isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Converte qualquer formato de data para "DD/MM/YYYY"
+ */
+export function padronizarDataPtBr(dataStr: string): string {
+  const d = parseDataParaDate(dataStr);
+  return d ? formatarDataPtBr(d) : dataStr;
+}
+
+/**
+ * Converte qualquer formato de data para "YYYY-MM-DD" para uso em <input type="date">
+ */
+export function padronizarDataIso(dataStr: string): string {
+  const d = parseDataParaDate(dataStr);
+  if (!d) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dia = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dia}`;
+}
+
+/**
+ * Gera lista de datas no intervalo (inclusivo)
+ */
+export function gerarDatasNoIntervalo(dataInicioStr: string, dataFimStr: string): { date: Date; datePtBr: string; dayOfWeek: string }[] {
+  const dInicio = parseDataParaDate(dataInicioStr);
+  const dFim = parseDataParaDate(dataFimStr || dataInicioStr);
+  if (!dInicio || !dFim) return [];
+
+  const DIAS_MAP = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
+  const start = dInicio.getTime() <= dFim.getTime() ? dInicio : dFim;
+  const end = dInicio.getTime() <= dFim.getTime() ? dFim : dInicio;
+
+  const lista: { date: Date; datePtBr: string; dayOfWeek: string }[] = [];
+  const cur = new Date(start);
+
+  // Evita loops infinitos limitando a 366 dias
+  let count = 0;
+  while (cur.getTime() <= end.getTime() && count < 366) {
+    const dCopy = new Date(cur);
+    lista.push({
+      date: dCopy,
+      datePtBr: formatarDataPtBr(dCopy),
+      dayOfWeek: DIAS_MAP[dCopy.getDay()],
+    });
+    cur.setDate(cur.getDate() + 1);
+    count++;
+  }
+
+  return lista;
+}
+
+/**
+ * Calculates team efficiency across a custom Date Range (e.g. from 2026-08-20 to 2026-08-28)
+ * Guaranteed mathematical consistency: Global efficiency = (Total Occupied / Total Expected) * 100
+ */
+export function calcularEficienciaEquipePeriodo(
+  logs: ProductionLog[],
+  collaborators: Collaborator[],
+  shifts: ShiftConfig[],
+  dataInicioStr: string,
+  dataFimStr: string,
+  toleranciaMinutos: number = 60
+): OperatorEfficiency[] {
+  const diasIntervalo = gerarDatasNoIntervalo(dataInicioStr, dataFimStr);
+  const setDatasPtBr = new Set(diasIntervalo.map((d) => d.datePtBr));
+  const hojePtBr = formatarDataPtBr(new Date());
+
+  // 1. Mapa de turnos e horas úteis por turno
+  const turnosMap: Record<string, { shift: ShiftConfig; min: number; ent: string; sai: string; dias: string[] }> = {};
+  shifts.forEach((s) => {
+    const minCalculado = calcularCargaHorariaTurno(s);
+    const shiftData = {
+      shift: s,
+      min: minCalculado,
+      ent: s.entrada,
+      sai: s.saida,
+      dias: s.dias || [],
+    };
+    turnosMap[s.name.toUpperCase().trim()] = shiftData;
+    turnosMap[s.code.toUpperCase().trim()] = shiftData;
+    const numOnly = s.code.replace(/\D/g, '');
+    if (numOnly) {
+      turnosMap[`TURNO ${numOnly}`] = shiftData;
+      turnosMap[`T${numOnly}`] = shiftData;
+    }
+  });
+
+  // 2. Mapeamento de Colaboradores e cálculo da Carga Esperada no Intervalo
+  const colabMap: Record<
+    string,
+    {
+      collaborator: Collaborator;
+      shiftName: string;
+      shiftEntrada: string;
+      shiftSaida: string;
+      esperadoTotalMinutos: number;
+      trabalhadoTotalMinutos: number;
+      trabalhadoPorDia: Record<string, number>;
+      operacoes: Record<string, { tempoMinutos: number; category?: string }>;
+      isFimDoTurno: boolean;
+    }
+  > = {};
+
+  collaborators.forEach((c) => {
+    const turnoKey = (c.shift || 'Turno 1').toUpperCase().trim();
+    const tData =
+      turnosMap[turnoKey] ||
+      shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))
+        ? {
+            shift: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!,
+            min: calcularCargaHorariaTurno(
+              shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!
+            ),
+            ent: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.entrada,
+            sai: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.saida,
+            dias: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.dias,
+          }
+        : {
+            shift: shifts[0],
+            min: 540,
+            ent: '07:00',
+            sai: '17:30',
+            dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+          };
+
+    // Calcula esperado no período somando os dias em que o turno trabalha
+    let esperadoMinutosPeriodo = 0;
+    diasIntervalo.forEach((diaInfo) => {
+      const trabalhaNesteDia = tData.dias && tData.dias.includes(diaInfo.dayOfWeek);
+      if (trabalhaNesteDia) {
+        esperadoMinutosPeriodo += tData.min;
+      }
+    });
+
+    const isFim = verificarTurnoEncerrado(tData.sai, tData.ent, tData.dias);
+
+    colabMap[c.name.trim().toLowerCase()] = {
+      collaborator: c,
+      shiftName: c.shift || 'Turno 1',
+      shiftEntrada: tData.ent,
+      shiftSaida: tData.sai,
+      esperadoTotalMinutos: esperadoMinutosPeriodo,
+      trabalhadoTotalMinutos: 0,
+      trabalhadoPorDia: {},
+      operacoes: {},
+      isFimDoTurno: isFim,
+    };
+  });
+
+  // 3. Processamento dos logs dentro do período
+  logs.forEach((log) => {
+    const logDatePtBr = padronizarDataPtBr(log.date);
+    if (!setDatasPtBr.has(logDatePtBr)) return; // Fora do intervalo
+
+    const colabKey = log.collaboratorName.trim().toLowerCase();
+    if (!colabMap[colabKey]) {
+      // Colaborador não cadastrado explicitamente
+      colabMap[colabKey] = {
+        collaborator: {
+          id: `temp-${colabKey}`,
+          name: log.collaboratorName,
+          role: log.role || 'OPERADOR',
+          shift: log.shift || 'Turno 1',
+          active: true,
+        },
+        shiftName: log.shift || 'Turno 1',
+        shiftEntrada: '07:00',
+        shiftSaida: '17:30',
+        esperadoTotalMinutos: diasIntervalo.length * 540,
+        trabalhadoTotalMinutos: 0,
+        trabalhadoPorDia: {},
+        operacoes: {},
+        isFimDoTurno: true,
+      };
+    }
+
+    const colabEntry = colabMap[colabKey];
+    let duracaoLogMin = 0;
+
+    if (log.status === 'Concluída') {
+      if (log.durationMinutes !== undefined && log.durationMinutes > 0) {
+        duracaoLogMin = log.durationMinutes;
+      } else if (log.startTime && log.endTime) {
+        duracaoLogMin = calcularDiferencaMinutos(log.startTime, log.endTime);
+        if (log.mealBreakDeducted && log.mealBreakMinutes) {
+          duracaoLogMin = Math.max(0, duracaoLogMin - log.mealBreakMinutes);
+        }
+      }
+    } else if (log.status === 'Em Execução' && log.startTime) {
+      if (logDatePtBr === hojePtBr && !colabEntry.isFimDoTurno) {
+        // Atividade em andamento hoje dentro do turno
+        const parts = log.startTime.split(':');
+        const h = parseInt(parts[0], 10) || 0;
+        const m = parseInt(parts[1], 10) || 0;
+        const agora = new Date();
+        const inicio = new Date();
+        inicio.setHours(h, m, 0, 0);
+        const diffMs = agora.getTime() - inicio.getTime();
+        duracaoLogMin = diffMs > 0 ? diffMs / 60000 : 0;
+      } else {
+        // Data passada ou turno já encerrado: calcula estritamente até a saída do turno
+        duracaoLogMin = calcularDiferencaMinutos(log.startTime, colabEntry.shiftSaida);
+        const meal = obterConfiguracaoRefeicao(colabEntry.shiftName, shifts);
+        if (duracaoLogMin > meal.duracaoMinutos) {
+          duracaoLogMin = Math.max(0, duracaoLogMin - meal.duracaoMinutos);
+        }
+      }
+    } else if (log.status === 'Pausada') {
+      duracaoLogMin = log.durationMinutes || 0;
+    }
+
+    // Registra tempo por dia para respeitar o limite máximo diário de turno
+    if (!colabEntry.trabalhadoPorDia[logDatePtBr]) {
+      colabEntry.trabalhadoPorDia[logDatePtBr] = 0;
+    }
+    colabEntry.trabalhadoPorDia[logDatePtBr] += duracaoLogMin;
+
+    // Agrupa operações
+    const actName = log.activity || 'Atividade';
+    if (!colabEntry.operacoes[actName]) {
+      colabEntry.operacoes[actName] = { tempoMinutos: 0, category: log.category };
+    }
+    colabEntry.operacoes[actName].tempoMinutos += duracaoLogMin;
+  });
+
+  // 4. Monta resultado consolidado por operador
+  const arrayFinal: OperatorEfficiency[] = [];
+
+  Object.values(colabMap).forEach((cData) => {
+    // Soma tempo trabalhado (capando cada dia à carga diária normal para evitar distorções)
+    let totalTrabalhado = 0;
+    Object.entries(cData.trabalhadoPorDia).forEach(([, tempoDia]) => {
+      // Carga padrão diária de referência = 540 min (9h) ou proporcional ao turno
+      const cargaDiariaReferencia = cData.esperadoTotalMinutos > 0 && diasIntervalo.length > 0
+        ? cData.esperadoTotalMinutos / diasIntervalo.length
+        : 540;
+      
+      // Limita o tempo normal de um dia para a carga máxima útil diária
+      const tempoAjustadoDia = Math.min(tempoDia, Math.max(cargaDiariaReferencia, 540));
+      totalTrabalhado += tempoAjustadoDia;
+    });
+
+    const esperado = cData.esperadoTotalMinutos;
+    
+    // Se o turno não tem esperado (ex: folga em todos os dias do filtro), eficiência é 100% se trabalhou
+    const efi = esperado > 0 ? (totalTrabalhado / esperado) * 100 : totalTrabalhado > 0 ? 100 : 0;
+    const semApontar = esperado > 0 ? Math.max(0, esperado - totalTrabalhado) : 0;
+    const isAlerta = cData.isFimDoTurno && semApontar > toleranciaMinutos;
+
+    const opsArray = Object.entries(cData.operacoes)
+      .map(([nome, opInfo]) => ({
+        nome,
+        tempoMinutos: opInfo.tempoMinutos,
+        category: opInfo.category,
+      }))
+      .sort((a, b) => b.tempoMinutos - a.tempoMinutos);
+
+    arrayFinal.push({
+      nome: cData.collaborator.name,
+      role: cData.collaborator.role,
+      turno: cData.shiftName,
+      turnoEntrada: cData.shiftEntrada,
+      turnoSaida: cData.shiftSaida,
+      esperadoMinutos: esperado,
+      trabalhadoMinutos: totalTrabalhado,
+      semApontarMinutos: semApontar,
+      eficienciaPct: parseFloat(Math.min(efi, 100).toFixed(1)),
+      eficienciaRaw: Math.min(efi, 100),
+      isFimDoTurno: cData.isFimDoTurno,
+      isAlertaSemApontar: isAlerta,
+      operacoes: opsArray,
+    });
+  });
+
+  // Ordena por eficiência decrescente
+  arrayFinal.sort((a, b) => b.eficienciaPct - a.eficienciaPct);
+  return arrayFinal;
+}
+
+/**
+ * Calculates team efficiency for a single target date (backwards-compatible wrapper)
  */
 export function calcularEficienciaEquipe(
   logs: ProductionLog[],
@@ -505,169 +809,14 @@ export function calcularEficienciaEquipe(
   dataAlvo: string,
   toleranciaMinutos: number = 60
 ): OperatorEfficiency[] {
-  // Determine day of the week for targeted date if available
-  let targetDayOfWeek = '';
-  if (dataAlvo) {
-    const parts = dataAlvo.includes('/') ? dataAlvo.split('/') : dataAlvo.split('-');
-    let d: Date | null = null;
-    if (dataAlvo.includes('/')) {
-      // DD/MM/YYYY
-      d = new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
-    } else {
-      // YYYY-MM-DD
-      d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
-    }
-    if (d && !isNaN(d.getTime())) {
-      const DIAS_MAP = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
-      targetDayOfWeek = DIAS_MAP[d.getDay()];
-    }
-  }
-
-  // 1. Shift minutes map dynamically built from shifts prop
-  const turnosMap: Record<string, { min: number; ent: string; sai: string; dias: string[]; isInactive: boolean }> = {};
-
-  shifts.forEach((s) => {
-    const isInactive = !s.dias || s.dias.length === 0;
-    const isOffDay = targetDayOfWeek ? (!s.dias || !s.dias.includes(targetDayOfWeek)) : isInactive;
-    const minCalculado = isOffDay ? 0 : calcularCargaHorariaTurno(s);
-
-    const shiftData = {
-      min: minCalculado,
-      ent: s.entrada,
-      sai: s.saida,
-      dias: s.dias || [],
-      isInactive: isInactive || isOffDay,
-    };
-
-    const keyName = s.name.toUpperCase().trim();
-    const keyCode = s.code.toUpperCase().trim();
-    turnosMap[keyName] = shiftData;
-    turnosMap[keyCode] = shiftData;
-
-    const numOnly = s.code.replace(/\D/g, '');
-    if (numOnly) {
-      turnosMap[`TURNO ${numOnly}`] = shiftData;
-      turnosMap[`T${numOnly}`] = shiftData;
-    }
-  });
-
-  // 2. Collaborator info map
-  const colabInfo: Record<string, { role: string; turno: string; esperado: number; entrada: string; saida: string; dias: string[]; isInactive: boolean }> = {};
-  collaborators.forEach((c) => {
-    const turnoKey = (c.shift || 'Turno 1').toUpperCase().trim();
-    const tInfo =
-      turnosMap[turnoKey] ||
-      shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))?.dias
-        ? {
-            min: calcularCargaHorariaTurno(
-              shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!
-            ),
-            ent: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.entrada,
-            sai: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.saida,
-            dias: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.dias,
-            isInactive: false,
-          }
-        : {
-            min: 0,
-            ent: '07:00',
-            sai: '17:30',
-            dias: [],
-            isInactive: true,
-          };
-
-    colabInfo[c.name] = {
-      role: c.role,
-      turno: c.shift || 'Turno 1',
-      esperado: tInfo.min,
-      entrada: tInfo.ent,
-      saida: tInfo.sai,
-      dias: tInfo.dias,
-      isInactive: tInfo.isInactive,
-    };
-  });
-
-  // 3. Process logs for targeted date
-  const resultados: Record<string, { trabalhado: number; operacoes: Record<string, number> }> = {};
-
-  logs.forEach((log) => {
-    if (log.date === dataAlvo && (log.status === 'Concluída' || log.status === 'Em Execução')) {
-      let tempoMin = 0;
-      if (log.status === 'Concluída') {
-        tempoMin = log.durationMinutes !== undefined
-          ? log.durationMinutes
-          : calcularDiferencaMinutos(log.startTime, log.endTime);
-      } else if (log.status === 'Em Execução' && log.startTime) {
-        const parts = log.startTime.split(':');
-        if (parts.length >= 2) {
-          const agora = new Date();
-          const horaInicio = new Date();
-          horaInicio.setHours(parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2] || '0', 10), 0);
-          const diffMs = agora.getTime() - horaInicio.getTime();
-          if (diffMs > 0) {
-            tempoMin = diffMs / (1000 * 60);
-          }
-        }
-      }
-
-      if (!resultados[log.collaboratorName]) {
-        resultados[log.collaboratorName] = { trabalhado: 0, operacoes: {} };
-      }
-      resultados[log.collaboratorName].trabalhado += tempoMin;
-
-      if (!resultados[log.collaboratorName].operacoes[log.activity]) {
-        resultados[log.collaboratorName].operacoes[log.activity] = 0;
-      }
-      resultados[log.collaboratorName].operacoes[log.activity] += tempoMin;
-    }
-  });
-
-  // 4. Build final array
-  const arrayFinal: OperatorEfficiency[] = [];
-
-  for (const nomeColab in resultados) {
-    const info = colabInfo[nomeColab] || {
-      role: 'OPERADOR',
-      turno: 'Turno 1',
-      esperado: 0,
-      entrada: '07:00',
-      saida: '17:30',
-      dias: [],
-      isInactive: false,
-    };
-    const res = resultados[nomeColab];
-    
-    // If shift has 0 expected minutes (e.g. inactive shift or off day), efficiency is based on work done or 100%
-    const efi = info.esperado > 0 ? (res.trabalhado / info.esperado) * 100 : res.trabalhado > 0 ? 100 : 0;
-    let semApontar = info.esperado > 0 ? info.esperado - res.trabalhado : 0;
-    if (semApontar < 0) semApontar = 0;
-
-    const isFim = verificarTurnoEncerrado(info.saida, info.entrada, info.dias);
-    const isAlerta = isFim && semApontar > toleranciaMinutos;
-
-    const opsArray = Object.keys(res.operacoes).map((opNome) => ({
-      nome: opNome,
-      tempoMinutos: res.operacoes[opNome],
-    })).sort((a, b) => b.tempoMinutos - a.tempoMinutos);
-
-    arrayFinal.push({
-      nome: nomeColab,
-      role: info.role,
-      turno: info.turno,
-      turnoEntrada: info.entrada,
-      turnoSaida: info.saida,
-      esperadoMinutos: info.esperado,
-      trabalhadoMinutos: res.trabalhado,
-      semApontarMinutos: semApontar,
-      eficienciaPct: parseFloat(Math.min(efi, 100).toFixed(1)),
-      eficienciaRaw: efi,
-      isFimDoTurno: isFim,
-      isAlertaSemApontar: isAlerta,
-      operacoes: opsArray,
-    });
-  }
-
-  arrayFinal.sort((a, b) => b.eficienciaRaw - a.eficienciaRaw);
-  return arrayFinal;
+  return calcularEficienciaEquipePeriodo(
+    logs,
+    collaborators,
+    shifts,
+    dataAlvo,
+    dataAlvo,
+    toleranciaMinutos
+  );
 }
 
 /**

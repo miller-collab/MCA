@@ -206,6 +206,14 @@ export function App() {
     const saved = localStorage.getItem('mca_tolerance_minutes_v3');
     return saved ? parseInt(saved, 10) : 60;
   });
+  const [efficiencyThresholdGreen, setEfficiencyThresholdGreen] = useState<number>(() => {
+    const saved = localStorage.getItem('mca_eff_green_v3');
+    return saved ? parseInt(saved, 10) : 85;
+  });
+  const [efficiencyThresholdYellow, setEfficiencyThresholdYellow] = useState<number>(() => {
+    const saved = localStorage.getItem('mca_eff_yellow_v3');
+    return saved ? parseInt(saved, 10) : 70;
+  });
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [drilldownFilter, setDrilldownFilter] = useState('');
 
@@ -280,6 +288,14 @@ export function App() {
         }
         if (cloudConfig.deletedRoles) {
           setDeletedRoles(cloudConfig.deletedRoles);
+        }
+        if (cloudConfig.efficiencyThresholdGreen !== undefined) {
+          setEfficiencyThresholdGreen(cloudConfig.efficiencyThresholdGreen);
+          localStorage.setItem('mca_eff_green_v3', String(cloudConfig.efficiencyThresholdGreen));
+        }
+        if (cloudConfig.efficiencyThresholdYellow !== undefined) {
+          setEfficiencyThresholdYellow(cloudConfig.efficiencyThresholdYellow);
+          localStorage.setItem('mca_eff_yellow_v3', String(cloudConfig.efficiencyThresholdYellow));
         }
       }
     });
@@ -363,6 +379,12 @@ export function App() {
     localStorage.setItem('mca_tolerance_minutes_v3', toleranceMinutes.toString());
   }, [toleranceMinutes]);
   useEffect(() => {
+    localStorage.setItem('mca_eff_green_v3', efficiencyThresholdGreen.toString());
+  }, [efficiencyThresholdGreen]);
+  useEffect(() => {
+    localStorage.setItem('mca_eff_yellow_v3', efficiencyThresholdYellow.toString());
+  }, [efficiencyThresholdYellow]);
+  useEffect(() => {
     savePermanentLocalBackup(collaborators, activities, shifts, logs);
   }, [collaborators, activities, shifts, logs]);
   useEffect(() => {
@@ -390,6 +412,10 @@ export function App() {
     setCustomRoleColors({});
     setCustomRoles(INITIAL_ROLES);
     setDeletedRoles([]);
+    setEfficiencyThresholdGreen(85);
+    setEfficiencyThresholdYellow(70);
+    localStorage.setItem('mca_eff_green_v3', '85');
+    localStorage.setItem('mca_eff_yellow_v3', '70');
     saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
     saveActivitiesToFirestore(INITIAL_ACTIVITIES);
     saveShiftsToFirestore(INITIAL_SHIFTS);
@@ -399,22 +425,30 @@ export function App() {
       customRoleColors: {},
       customRoles: INITIAL_ROLES,
       deletedRoles: [],
+      efficiencyThresholdGreen: 85,
+      efficiencyThresholdYellow: 70,
     });
   }, []);
 
-  // 5. Auto Shift Closure & Auto Meal Resume Engine
+  // 5. Auto Shift Closure & Auto Next-Shift Resume Engine
   useEffect(() => {
     const checkEngine = () => {
       const now = new Date();
       const nowMs = now.getTime();
+      const todayDateStr = formatarDataPtBr(now);
 
       setLogs((prevLogs) => {
         let changed = false;
         const newNotifs: AutoCloseNotification[] = [];
+        const newResumedLogs: ProductionLog[] = [];
 
+        // 1. Process existing logs (meal resume, shift auto-close, and update pending resumes)
         const updated = prevLogs.map((log) => {
           // A. Retomada Automática de Refeição ao Vencer os Minutos Configurados (ex: 90 min)
-          if (log.status === 'Pausada' && (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime || log.observation?.includes('Refeição'))) {
+          if (
+            log.status === 'Pausada' &&
+            (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime || log.observation?.includes('Refeição'))
+          ) {
             const mealMinutes = log.mealPauseDurationMinutes || log.mealBreakMinutes || 90;
             let pauseStartMs = log.mealPauseTimestampMs;
             if (!pauseStartMs && log.mealPauseStartTime) {
@@ -503,7 +537,7 @@ export function App() {
 
               const obsBase = log.observation
                 ? `${log.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida})`
-                : `⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida}) - Colaborador esqueceu de fechar`;
+                : `⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida}) - Colaborador não finalizou`;
 
               const obsFinal = debitouRefeicaoAuto
                 ? `${obsBase} | 🍽️ Refeição debitada automaticamente (${minsRefeicao} min)`
@@ -517,6 +551,7 @@ export function App() {
                 observation: obsFinal,
                 autoClosed: true,
                 autoClosedAtShiftEnd: true,
+                pendingNextShiftResume: true, // Marca para continuar no próximo turno!
                 mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
                 mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
                 mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
@@ -527,6 +562,69 @@ export function App() {
             }
           }
           return log;
+        });
+
+        // C. Retomada Automática no Início do Próximo Turno (se não finalizou a tarefa no turno anterior)
+        updated.forEach((log) => {
+          if (log.pendingNextShiftResume && log.status === 'Concluída') {
+            const colab = collaborators.find(
+              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+            );
+            if (!colab || !colab.active) return;
+
+            const colabShiftName = (colab.shift || log.shift || 'Turno 1').toUpperCase();
+            const shift = shifts.find(
+              (s) =>
+                s.name.toUpperCase() === colabShiftName ||
+                s.code.toUpperCase() === colabShiftName ||
+                colabShiftName.includes(s.name.toUpperCase())
+            );
+
+            // Verifica se o turno está ativo agora (não está encerrado)
+            const turnoEstaAtivo = shift && !verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias);
+
+            if (turnoEstaAtivo && shift) {
+              // Verifica se o colaborador já possui qualquer atividade em andamento hoje
+              const jaTemAtividadeHoje = [...updated, ...newResumedLogs].some(
+                (l) =>
+                  l.date === todayDateStr &&
+                  l.collaboratorName.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase() &&
+                  (l.status === 'Em Execução' || l.status === 'Pausada')
+              );
+
+              // Verifica se este log específico já foi continuado hoje
+              const jaContinuadoHoje = [...updated, ...newResumedLogs].some(
+                (l) => l.date === todayDateStr && l.resumedFromPreviousLogId === log.id
+              );
+
+              if (!jaTemAtividadeHoje && !jaContinuadoHoje) {
+                // Inicia automaticamente onde parou no início do turno!
+                changed = true;
+                const resumedId = `log-resume-${log.id}-${todayDateStr.replace(/\//g, '-')}`;
+                const newActiveLog: ProductionLog = {
+                  id: resumedId,
+                  date: todayDateStr,
+                  collaboratorName: log.collaboratorName,
+                  role: log.role,
+                  shift: padronizarNomeTurno(shift.name),
+                  activity: log.activity,
+                  category: log.category || 'Operação',
+                  startTime: shift.entrada || formatarHoraPtBr(now),
+                  status: 'Em Execução',
+                  machineId: log.machineId || 'TORNO-01',
+                  observation: `🔄 Continuação automática do turno anterior (${log.date})`,
+                  resumedFromPreviousLogId: log.id,
+                };
+
+                // Desativa a flag pendente no log anterior
+                log.pendingNextShiftResume = false;
+                saveLogToFirestore(log);
+                saveLogToFirestore(newActiveLog);
+
+                newResumedLogs.push(newActiveLog);
+              }
+            }
+          }
         });
 
         if (newNotifs.length > 0) {
@@ -541,7 +639,11 @@ export function App() {
           if (soundEnabled) playFactoryChime('alert');
         }
 
-        return changed ? updated : prevLogs;
+        if (newResumedLogs.length > 0 && soundEnabled) {
+          playFactoryChime('start');
+        }
+
+        return changed ? [...newResumedLogs, ...updated] : prevLogs;
       });
     };
 
@@ -614,6 +716,7 @@ export function App() {
             observation: obsFinal,
             autoClosed: true,
             autoClosedAtShiftEnd: true,
+            pendingNextShiftResume: true, // Marca para continuar no próximo turno!
             mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
             mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
             mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
@@ -641,18 +744,14 @@ export function App() {
     });
   }, [collaborators, shifts, soundEnabled]);
 
-  // Notification dismissal handlers
+  // Notification dismissal handlers - Instant Firestore sync for all connected tablets
   const handleDismissOperatorNotif = useCallback((notifId: string) => {
-    setAutoCloseNotifs((prev) =>
-      prev.map((n) => (n.id === notifId ? { ...n, readByOperator: true } : n))
-    );
+    setAutoCloseNotifs((prev) => prev.filter((n) => n.id !== notifId));
     dismissAutoCloseNotifInFirestore(notifId);
   }, []);
 
   const handleDismissLeaderNotif = useCallback((notifId: string) => {
-    setAutoCloseNotifs((prev) =>
-      prev.map((n) => (n.id === notifId ? { ...n, readByLeader: true } : n))
-    );
+    setAutoCloseNotifs((prev) => prev.filter((n) => n.id !== notifId));
     dismissAutoCloseNotifInFirestore(notifId);
   }, []);
 
@@ -974,6 +1073,19 @@ export function App() {
     saveFactoryConfigToFirestore({ toleranceMinutes: newTol });
   }, []);
 
+  const handleUpdateEfficiencyThresholds = useCallback((green: number, yellow: number) => {
+    const validGreen = Math.max(1, Math.min(100, Math.round(green)));
+    const validYellow = Math.max(0, Math.min(validGreen - 1, Math.round(yellow)));
+    setEfficiencyThresholdGreen(validGreen);
+    setEfficiencyThresholdYellow(validYellow);
+    localStorage.setItem('mca_eff_green_v3', String(validGreen));
+    localStorage.setItem('mca_eff_yellow_v3', String(validYellow));
+    saveFactoryConfigToFirestore({
+      efficiencyThresholdGreen: validGreen,
+      efficiencyThresholdYellow: validYellow,
+    });
+  }, []);
+
   const handleUpdateObservations = useCallback((newObs: string[]) => {
     setObservations(newObs);
     saveFactoryConfigToFirestore({ observations: newObs });
@@ -1076,6 +1188,9 @@ export function App() {
             shifts={shifts}
             toleranceMinutes={toleranceMinutes}
             onUpdateToleranceMinutes={handleUpdateToleranceMinutes}
+            efficiencyThresholdGreen={efficiencyThresholdGreen}
+            efficiencyThresholdYellow={efficiencyThresholdYellow}
+            onUpdateEfficiencyThresholds={handleUpdateEfficiencyThresholds}
             isLeaderUnlocked={isLeaderUnlocked}
             onUnlockLeader={handleUnlockLeader}
             onDrilldownClick={(operatorName) => {
@@ -1115,6 +1230,9 @@ export function App() {
             isUnlocked={isLeaderUnlocked}
             toleranceMinutes={toleranceMinutes}
             onUpdateToleranceMinutes={handleUpdateToleranceMinutes}
+            efficiencyThresholdGreen={efficiencyThresholdGreen}
+            efficiencyThresholdYellow={efficiencyThresholdYellow}
+            onUpdateEfficiencyThresholds={handleUpdateEfficiencyThresholds}
             autoCloseNotifs={autoCloseNotifs}
             onDismissLeaderNotif={handleDismissLeaderNotif}
             onClearAllNotifs={handleClearAllNotifs}

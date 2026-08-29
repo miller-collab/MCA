@@ -337,62 +337,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
   return (
     <div className="max-w-[1200px] mx-auto p-3 sm:p-4 space-y-4">
-      {/* ALERTA DE FECHAMENTO AUTOMÁTICO DE TURNO PARA OPERADORES */}
-      {unreadOperatorNotifs.length > 0 && currentScreen === 'painel' && (
-        <div className="bg-[#1C1400] border-2 border-[#FF9800] rounded-xl p-4 shadow-xl animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="flex items-center justify-between border-b border-[#FF9800]/40 pb-2.5 mb-3">
-            <div className="flex items-center gap-2.5 text-[#FFB300]">
-              <div className="p-2 bg-[#FF9800]/20 rounded-lg animate-pulse">
-                <BellRing className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="font-bold text-sm text-white">
-                  Notificação ao Operador: Encerramento Automático no Fim do Turno
-                </h3>
-                <p className="text-xs text-[#FFCC80]">
-                  O sistema identificou operações que não foram fechadas antes da saída do turno e as finalizou automaticamente.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            {unreadOperatorNotifs.map((notif) => (
-              <div
-                key={notif.id}
-                className="bg-[#2A1E00] border border-[#FF9800]/50 rounded-lg p-3 flex items-center justify-between gap-3 text-xs"
-              >
-                <div className="space-y-0.5 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-white text-sm">{notif.collaboratorName}</span>
-                    <span className="text-[10px] px-1.5 py-0.2 bg-[#FF9800]/30 text-[#FFE082] rounded font-mono">
-                      {notif.shiftName} ({notif.shiftEnd})
-                    </span>
-                  </div>
-                  <p className="text-[#FFE082] truncate font-medium">
-                    Atividade: <span className="text-white font-bold">{notif.activity}</span>
-                  </p>
-                  <p className="text-[11px] text-[#FFB74D]">
-                    Data: {notif.date} • Encerrada automaticamente às {notif.shiftEnd}
-                  </p>
-                </div>
-
-                {onDismissOperatorNotif && (
-                  <button
-                    onClick={() => onDismissOperatorNotif(notif.id)}
-                    className="px-3 py-2 bg-[#FF9800] hover:bg-[#FFA726] text-black font-bold rounded-md shrink-0 flex items-center gap-1 transition cursor-pointer shadow-sm text-xs"
-                    title="Confirmar ciência da notificação"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Ciente</span>
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* TELA 1: PAINEL PRINCIPAL DE PRODUÇÃO */}
       {currentScreen === 'painel' && (
         <div className="space-y-4 animate-in fade-in duration-200">

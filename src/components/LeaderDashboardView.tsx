@@ -39,6 +39,9 @@ interface LeaderDashboardViewProps {
   isUnlocked: boolean;
   toleranceMinutes?: number;
   onUpdateToleranceMinutes?: (newMin: number) => void;
+  efficiencyThresholdGreen?: number;
+  efficiencyThresholdYellow?: number;
+  onUpdateEfficiencyThresholds?: (green: number, yellow: number) => void;
   autoCloseNotifs?: AutoCloseNotification[];
   onDismissLeaderNotif?: (notifId: string) => void;
   onClearAllNotifs?: () => void;
@@ -68,6 +71,9 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   isUnlocked,
   toleranceMinutes: propToleranceMinutes = 60,
   onUpdateToleranceMinutes,
+  efficiencyThresholdGreen: propGreen = 85,
+  efficiencyThresholdYellow: propYellow = 70,
+  onUpdateEfficiencyThresholds,
   autoCloseNotifs = [],
   onDismissLeaderNotif,
   onClearAllNotifs,
@@ -89,6 +95,41 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
 
   // Leader Top Section Switch: 'indicadores' | 'configuracao'
   const [leaderSection, setLeaderSection] = useState<'indicadores' | 'configuracao'>('indicadores');
+
+  // Efficiency thresholds state in Leader view
+  const [editGreen, setEditGreen] = useState<number>(propGreen);
+  const [editYellow, setEditYellow] = useState<number>(propYellow);
+  const [thresholdSavedMsg, setThresholdSavedMsg] = useState(false);
+
+  // Sync with prop changes
+  React.useEffect(() => {
+    setEditGreen(propGreen);
+  }, [propGreen]);
+  React.useEffect(() => {
+    setEditYellow(propYellow);
+  }, [propYellow]);
+
+  const handleSaveThresholds = () => {
+    const validGreen = Math.max(1, Math.min(100, Number(editGreen) || 85));
+    const validYellow = Math.max(0, Math.min(validGreen - 1, Number(editYellow) || 70));
+    setEditGreen(validGreen);
+    setEditYellow(validYellow);
+    if (onUpdateEfficiencyThresholds) {
+      onUpdateEfficiencyThresholds(validGreen, validYellow);
+    }
+    setThresholdSavedMsg(true);
+    setTimeout(() => setThresholdSavedMsg(false), 3500);
+  };
+
+  const handleResetThresholds = () => {
+    setEditGreen(85);
+    setEditYellow(70);
+    if (onUpdateEfficiencyThresholds) {
+      onUpdateEfficiencyThresholds(85, 70);
+    }
+    setThresholdSavedMsg(true);
+    setTimeout(() => setThresholdSavedMsg(false), 3500);
+  };
 
   // Filters state
   const [filterDate, setFilterDate] = useState(() => {
@@ -346,6 +387,9 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
           customRoleColors={customRoleColors}
           customRoles={customRoles}
           deletedRoles={deletedRoles}
+          efficiencyThresholdGreen={propGreen}
+          efficiencyThresholdYellow={propYellow}
+          onUpdateEfficiencyThresholds={onUpdateEfficiencyThresholds}
           onUpdateCollaborators={onUpdateCollaborators}
           onUpdateActivities={onUpdateActivities}
           onUpdateShifts={onUpdateShifts}
@@ -596,6 +640,119 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
               </span>
             </div>
 
+            {/* Painel de Configuração Manual de Metas & Faixas de Cores */}
+            <div className="bg-[#141414] border border-[#2D2D2D] rounded-xl p-4 space-y-3 shadow-lg">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#252525] pb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🎯</span>
+                  <div>
+                    <h4 className="text-xs sm:text-sm font-black text-white">
+                      Configuração Manual das Faixas e Percentuais de Cores (Eficiência)
+                    </h4>
+                    <p className="text-[11px] text-[#888888]">
+                      Defina os percentuais mínimos para coloração dos gráficos, cartões e metas de produção
+                    </p>
+                  </div>
+                </div>
+
+                {thresholdSavedMsg && (
+                  <span className="px-2.5 py-1 bg-[#00E676]/20 border border-[#00E676]/50 text-[#00E676] text-xs font-bold rounded-lg flex items-center gap-1 animate-in fade-in">
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Metas Salvas no Sistema!</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Faixa Verde */}
+                <div className="p-3 bg-[#00E676]/10 border border-[#00E676]/40 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-[#00E676] flex items-center gap-1.5">
+                      <span>🟢</span> Meta Excelente (Verde)
+                    </span>
+                    <span className="text-[10px] text-[#00E676] font-mono font-bold">
+                      ≥ {editGreen}%
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-[11px] text-[#AAAAAA] font-bold shrink-0">
+                      Mínimo (%):
+                    </label>
+                    <input
+                      type="number"
+                      min={editYellow + 1}
+                      max={100}
+                      value={editGreen}
+                      onChange={(e) => setEditGreen(Math.max(editYellow + 1, Math.min(100, parseInt(e.target.value, 10) || 0)))}
+                      className="w-full py-1.5 px-2 bg-[#111111] text-white border border-[#00E676]/50 rounded-lg text-xs font-bold font-mono text-center focus:outline-none focus:border-[#00E676]"
+                    />
+                  </div>
+                </div>
+
+                {/* Faixa Amarela */}
+                <div className="p-3 bg-[#FFD700]/10 border border-[#FFD700]/40 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-[#FFD700] flex items-center gap-1.5">
+                      <span>🟡</span> Faixa Atenção (Amarelo)
+                    </span>
+                    <span className="text-[10px] text-[#FFD700] font-mono font-bold">
+                      {editYellow}% a {editGreen - 1}%
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-[11px] text-[#AAAAAA] font-bold shrink-0">
+                      Mínimo (%):
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={editGreen - 1}
+                      value={editYellow}
+                      onChange={(e) => setEditYellow(Math.max(1, Math.min(editGreen - 1, parseInt(e.target.value, 10) || 0)))}
+                      className="w-full py-1.5 px-2 bg-[#111111] text-white border border-[#FFD700]/50 rounded-lg text-xs font-bold font-mono text-center focus:outline-none focus:border-[#FFD700]"
+                    />
+                  </div>
+                </div>
+
+                {/* Faixa Vermelha */}
+                <div className="p-3 bg-[#E91E63]/10 border border-[#E91E63]/40 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-black text-[#E91E63] flex items-center gap-1.5">
+                      <span>🔴</span> Faixa Crítica (Vermelho)
+                    </span>
+                    <span className="text-[10px] text-[#E91E63] font-mono font-bold">
+                      &lt; {editYellow}%
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[#888888] pt-1.5">
+                    Calculado automaticamente para qualquer colaborador com rendimento abaixo de {editYellow}%.
+                  </p>
+                </div>
+              </div>
+
+              {/* Botões de Ação para Salvar ou Resetar */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#252525]">
+                <button
+                  type="button"
+                  onClick={handleResetThresholds}
+                  className="px-3 py-1.5 bg-[#222222] hover:bg-[#333333] text-[#AAAAAA] hover:text-white border border-[#444444] rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  title="Restaurar padrão (85% verde / 70% amarelo)"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Restaurar Padrão (85% / 70%)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveThresholds}
+                  className="px-4 py-1.5 bg-[#00E676] hover:bg-[#00C853] text-black font-black rounded-lg text-xs transition flex items-center gap-1.5 shadow-md cursor-pointer"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Salvar Metas de Cores</span>
+                </button>
+              </div>
+            </div>
+
             {/* Grid de Cartões de Eficiência */}
             {efficiencyData.length === 0 ? (
               <div className="p-8 text-center bg-[#1E1E1E] border border-[#333333] rounded-lg">
@@ -608,7 +765,7 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
               >
                 {efficiencyData.map((d) => {
                   const corBarra =
-                    d.eficienciaRaw >= 80 ? '#00E676' : d.eficienciaRaw >= 50 ? '#FFD700' : '#E91E63';
+                    d.eficienciaRaw >= propGreen ? '#00E676' : d.eficienciaRaw >= propYellow ? '#FFD700' : '#E91E63';
 
                   const classePiscar = d.isAlertaSemApontar ? 'card-piscar' : '';
                   const hasAutoClosed = logs.some(
