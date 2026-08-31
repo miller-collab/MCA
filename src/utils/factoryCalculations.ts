@@ -381,22 +381,74 @@ export function calcularEstadoTempoAtividade(
  * Garante a regra fundamental de produção: cada colaborador executa apenas 1 atividade por vez.
  * Se houver múltiplos registros em status 'Em Execução' para o mesmo colaborador (devido a toques rápidos ou concorrência),
  * preserva o mais recente e finaliza os anteriores com segurança.
+ * Também encerra automaticamente qualquer atividade ativa cujo turno já tenha encerrado ou que seja de dias anteriores.
  */
-export function desduplicarLogsAtivos(logs: ProductionLog[]): {
+export function desduplicarLogsAtivos(
+  logs: ProductionLog[],
+  collaborators?: Collaborator[],
+  shifts?: ShiftConfig[]
+): {
   sanitizedLogs: ProductionLog[];
   logsParaFinalizar: ProductionLog[];
 } {
   const activeColabSeen = new Set<string>();
   const sanitizedLogs: ProductionLog[] = [];
   const logsParaFinalizar: ProductionLog[] = [];
+  const agora = new Date();
+  const hojePtBr = formatarDataPtBr(agora);
 
   for (const log of logs) {
-    if (log.status === 'Em Execução') {
+    if (log.status === 'Em Execução' || log.status === 'Pausada') {
       const colabKey = log.collaboratorName.trim().toLowerCase();
-      if (activeColabSeen.has(colabKey)) {
+
+      // Verifica se o turno já encerrou (ou se a atividade é de dias anteriores)
+      let shiftEnded = false;
+      let shiftSaida = '17:30';
+      let shiftName = 'Turno 1';
+
+      if (collaborators && shifts && shifts.length > 0) {
+        const colab = collaborators.find((c) => c.name.trim().toLowerCase() === colabKey);
+        const colabShift = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
+        const foundShift = shifts.find(
+          (s) =>
+            s.name.toUpperCase() === colabShift ||
+            s.code.toUpperCase() === colabShift ||
+            colabShift.includes(s.name.toUpperCase()) ||
+            s.name.toUpperCase().includes(colabShift)
+        ) || shifts[0];
+
+        shiftSaida = foundShift.saida;
+        shiftName = foundShift.name;
+
+        const isPreviousDay = log.date && log.date !== hojePtBr;
+        if (isPreviousDay || verificarTurnoEncerrado(foundShift.saida, foundShift.entrada, foundShift.dias, agora)) {
+          shiftEnded = true;
+        }
+      }
+
+      if (shiftEnded) {
+        // Encerramento automático por fim de turno
+        let dur = calcularDiferencaMinutos(log.startTime, shiftSaida);
+        if (dur <= 0) dur = 60;
+
+        const autoClosedLog: ProductionLog = {
+          ...log,
+          status: 'Concluída',
+          endTime: shiftSaida,
+          durationMinutes: dur,
+          autoClosed: true,
+          autoClosedAtShiftEnd: true,
+          pendingNextShiftResume: false,
+          observation: log.observation
+            ? `${log.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`
+            : `⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida}) - Colaborador não finalizou`,
+        };
+        sanitizedLogs.push(autoClosedLog);
+        logsParaFinalizar.push(autoClosedLog);
+      } else if (activeColabSeen.has(colabKey)) {
         // Já existe uma atividade mais recente aberta para este mesmo operador!
         // Finaliza com segurança este registro duplicado
-        const fallbackEnd = log.endTime || formatarHoraPtBr(new Date());
+        const fallbackEnd = log.endTime || formatarHoraPtBr(agora);
         const dur = calcularDiferencaMinutos(log.startTime, fallbackEnd);
         const autoFinished: ProductionLog = {
           ...log,
@@ -435,35 +487,36 @@ export function calcularCargaHorariaTurno(shift: ShiftConfig): number {
 }
 
 /**
- * Checks if current time is past the shift's end time
+ * Checks if current time is past the shift's end time (or outside working days)
  */
-export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: string[]): boolean {
+export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: string[], date: Date = new Date()): boolean {
   if (!saida || !entrada) return false;
-  const agora = new Date();
 
   // If shift working days are specified, verify if today is an active working day
   if (dias && dias.length > 0) {
     const DIAS_SIGLAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
-    const diaHoje = DIAS_SIGLAS[agora.getDay()];
-    if (!dias.includes(diaHoje)) {
-      return true; // Outside operating days
+    const diaHoje = DIAS_SIGLAS[date.getDay()];
+    const diasNorm = dias.map((d) => d.trim().toLowerCase().slice(0, 3));
+    const diaHojeNorm = diaHoje.trim().toLowerCase().slice(0, 3);
+    if (!diasNorm.includes(diaHojeNorm)) {
+      return true; // Outside operating days -> shift is closed!
     }
   }
 
-  const minAtual = agora.getHours() * 60 + agora.getMinutes();
+  const currentHourMin = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const ent = entrada.slice(0, 5);
+  const sai = saida.slice(0, 5);
 
-  const pS = saida.split(':');
-  const minSaida = parseInt(pS[0], 10) * 60 + parseInt(pS[1], 10);
-
-  const pE = entrada.split(':');
-  const minEntrada = parseInt(pE[0], 10) * 60 + parseInt(pE[1], 10);
-
-  if (minSaida >= minEntrada) {
-    // Day shift (e.g. 08:00 to 17:48)
-    return minAtual >= minSaida || minAtual < (minEntrada - 120);
+  if (ent <= sai) {
+    // Normal day shift (e.g. 07:00 to 17:30)
+    // Active if ent <= currentHourMin <= sai
+    // Closed if currentHourMin >= sai or currentHourMin < ent
+    return currentHourMin >= sai || currentHourMin < ent;
   } else {
-    // Night shift (e.g. 18:00 to 03:00)
-    return minAtual >= minSaida && minAtual < (minEntrada - 120);
+    // Overnight shift crossing midnight (e.g. 20:00 to 06:00 or 15:30 to 01:30)
+    // Active if currentHourMin >= ent || currentHourMin <= sai
+    // Closed if currentHourMin >= sai && currentHourMin < ent
+    return currentHourMin >= sai && currentHourMin < ent;
   }
 }
 

@@ -231,9 +231,9 @@ export function App() {
     const unsubLogs = subscribeToLogs((cloudLogs) => {
       if (cloudLogs) {
         const formatted = cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-        const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(formatted);
+        const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(formatted, collaborators, shifts);
         setLogs(sanitizedLogs);
-        // Se houver duplicatas de atividades abertas para o mesmo colaborador no banco, salva a finalização segura
+        // Se houver registros encerrados automaticamente ou duplicatas no banco, salva a finalização segura
         if (logsParaFinalizar.length > 0) {
           logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
         }
@@ -254,7 +254,7 @@ export function App() {
           saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
           setCollaborators(INITIAL_COLLABORATORS);
         } else {
-          setCollaborators(cloudColabs);
+          setCollaborators((prev) => (JSON.stringify(prev) === JSON.stringify(cloudColabs) ? prev : cloudColabs));
         }
       }
     });
@@ -262,14 +262,14 @@ export function App() {
     // Subscribe to activities
     const unsubActivities = subscribeToActivities((cloudActivities) => {
       if (cloudActivities && cloudActivities.length > 0) {
-        setActivities(cloudActivities);
+        setActivities((prev) => (JSON.stringify(prev) === JSON.stringify(cloudActivities) ? prev : cloudActivities));
       }
     });
 
     // Subscribe to shifts
     const unsubShifts = subscribeToShifts((cloudShifts) => {
       if (cloudShifts && cloudShifts.length > 0) {
-        setShifts(cloudShifts);
+        setShifts((prev) => (JSON.stringify(prev) === JSON.stringify(cloudShifts) ? prev : cloudShifts));
       }
     });
 
@@ -336,19 +336,23 @@ export function App() {
               saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
               setCollaborators(INITIAL_COLLABORATORS);
             } else {
-              setCollaborators(cloudData.collaborators);
+              setCollaborators((prev) => (JSON.stringify(prev) === JSON.stringify(cloudData.collaborators) ? prev : cloudData.collaborators!));
             }
           }
           if (cloudData.activities && cloudData.activities.length > 0) {
-            setActivities(cloudData.activities);
+            setActivities((prev) => (JSON.stringify(prev) === JSON.stringify(cloudData.activities) ? prev : cloudData.activities!));
           }
           if (cloudData.shifts && cloudData.shifts.length > 0) {
-            setShifts(cloudData.shifts);
+            setShifts((prev) => (JSON.stringify(prev) === JSON.stringify(cloudData.shifts) ? prev : cloudData.shifts!));
           }
           if (cloudData.logs && cloudData.logs.length > 0) {
             const formatted = cloudData.logs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-            const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(formatted);
-            setLogs(sanitizedLogs);
+            const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(
+              formatted,
+              cloudData.collaborators || collaborators,
+              cloudData.shifts || shifts
+            );
+            setLogs((prev) => (JSON.stringify(prev) === JSON.stringify(sanitizedLogs) ? prev : sanitizedLogs));
             if (logsParaFinalizar.length > 0) {
               logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
             }
@@ -488,7 +492,7 @@ export function App() {
           }
 
           // B. Encerramento Automático no Fim do Turno Específico do Colaborador
-          if ((log.status === 'Em Execução' || log.status === 'Pausada') && !log.autoClosed) {
+          if (log.status === 'Em Execução' || log.status === 'Pausada') {
             const colab = collaborators.find(
               (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
             );
@@ -497,15 +501,28 @@ export function App() {
               (s) =>
                 s.name.toUpperCase() === colabShiftName ||
                 s.code.toUpperCase() === colabShiftName ||
-                colabShiftName.includes(s.name.toUpperCase())
-            );
+                colabShiftName.includes(s.name.toUpperCase()) ||
+                s.name.toUpperCase().includes(colabShiftName)
+            ) || shifts[0] || {
+              id: 's1',
+              name: 'Turno 1',
+              code: 't1',
+              entrada: '07:00',
+              saida: '17:30',
+              dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+              color: '#007BFF',
+            };
 
-            // Verifica se o turno DO COLABORADOR encerrou (respeitando turnos múltiplos/sobrepostos)
-            if (shift && verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias)) {
+            // Verifica se a atividade é de dia anterior OU se o turno do colaborador já encerrou hoje
+            const isLogFromPreviousDay = Boolean(log.date && log.date !== todayDateStr);
+            const turnoEncerrou = isLogFromPreviousDay || verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias, now);
+
+            if (turnoEncerrou) {
               changed = true;
               const mealConfig = obterConfiguracaoRefeicao(shift.name, shifts);
               const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs);
               let dur = calcularDiferencaMinutos(log.startTime, shift.saida);
+              if (dur <= 0) dur = 60;
               let debitouRefeicaoAuto = false;
               let minsRefeicao = 0;
 
@@ -546,12 +563,12 @@ export function App() {
               const closedLog: ProductionLog = {
                 ...log,
                 endTime: shift.saida,
-                durationMinutes: dur,
+                durationMinutes: dur > 0 ? dur : 1,
                 status: 'Concluída' as const,
                 observation: obsFinal,
                 autoClosed: true,
                 autoClosedAtShiftEnd: true,
-                pendingNextShiftResume: true, // Marca para continuar no próximo turno!
+                pendingNextShiftResume: false,
                 mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
                 mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
                 mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
@@ -1122,8 +1139,12 @@ export function App() {
 
   const handleUpdateShifts = useCallback((newShifts: ShiftConfig[]) => {
     setShifts(newShifts);
+    try {
+      localStorage.setItem('mca_shifts_v3', JSON.stringify(newShifts));
+    } catch {}
     saveShiftsToFirestore(newShifts);
-  }, []);
+    savePermanentLocalBackup(collaborators, activities, newShifts, logs);
+  }, [collaborators, activities, logs]);
 
   const handleDrilldownClick = useCallback((operatorName: string) => {
     setDrilldownFilter(operatorName);

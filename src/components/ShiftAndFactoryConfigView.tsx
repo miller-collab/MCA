@@ -45,6 +45,7 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
+  const isDirtyRef = React.useRef(false);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -53,9 +54,11 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
     onConfirm: () => void;
   } | null>(null);
 
-  // Synchronize localShifts if shifts prop updates from parent
+  // Synchronize localShifts if shifts prop updates from parent ONLY if user has not made unsaved local edits
   useEffect(() => {
-    setLocalShifts(shifts);
+    if (!isDirtyRef.current) {
+      setLocalShifts(shifts);
+    }
   }, [shifts]);
 
   // Handle PIN Unlock
@@ -122,6 +125,7 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   const [colabSuccess, setColabSuccess] = useState(false);
 
   const handleShiftChange = (shiftId: string, field: keyof ShiftConfig, value: any) => {
+    isDirtyRef.current = true;
     setLocalShifts((prev) =>
       prev.map((s) => (s.id === shiftId ? { ...s, [field]: value } : s))
     );
@@ -129,11 +133,13 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   };
 
   const handleToggleDia = (shiftId: string, dia: string) => {
+    isDirtyRef.current = true;
     setLocalShifts((prev) =>
       prev.map((s) => {
         if (s.id === shiftId) {
-          const exists = s.dias.includes(dia);
-          const newDias = exists ? s.dias.filter((d) => d !== dia) : [...s.dias, dia];
+          const currentDias = s.dias || [];
+          const exists = currentDias.includes(dia);
+          const newDias = exists ? currentDias.filter((d) => d !== dia) : [...currentDias, dia];
           return { ...s, dias: newDias };
         }
         return s;
@@ -143,6 +149,10 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   };
 
   const handleSaveAll = () => {
+    isDirtyRef.current = false;
+    try {
+      localStorage.setItem('mca_shifts_v3', JSON.stringify(localShifts));
+    } catch {}
     onSaveShifts(localShifts);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
