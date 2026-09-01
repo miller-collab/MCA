@@ -390,25 +390,40 @@ export function desduplicarLogsAtivos(
 ): {
   sanitizedLogs: ProductionLog[];
   logsParaFinalizar: ProductionLog[];
+  logsParaDeletar: string[];
 } {
   const activeColabSeen = new Set<string>();
   const sanitizedLogs: ProductionLog[] = [];
   const logsParaFinalizar: ProductionLog[] = [];
+  const logsParaDeletar: string[] = [];
   const agora = new Date();
   const hojePtBr = formatarDataPtBr(agora);
 
   for (const log of logs) {
-    if (log.status === 'Em Execução' || log.status === 'Pausada') {
-      const colabKey = log.collaboratorName.trim().toLowerCase();
+    // 1. Elimina logs residuais de retomada automática sintética
+    if (log.id.startsWith('log-resume-') || log.resumedFromPreviousLogId) {
+      logsParaDeletar.push(log.id);
+      continue;
+    }
+
+    // Garante que nenhuma flag de retomada pendente permaneça ativa
+    const cleanLog: ProductionLog = log.pendingNextShiftResume
+      ? { ...log, pendingNextShiftResume: false }
+      : log;
+
+    if (cleanLog.status === 'Em Execução' || cleanLog.status === 'Pausada') {
+      const colabKey = cleanLog.collaboratorName.trim().toLowerCase();
 
       // Verifica se o turno já encerrou (ou se a atividade é de dias anteriores)
-      let shiftEnded = false;
+      const isPreviousDay = Boolean(cleanLog.date && cleanLog.date !== hojePtBr);
+      let shiftEnded = isPreviousDay;
       let shiftSaida = '17:30';
-      let shiftName = 'Turno 1';
+      let shiftEntrada = '07:00';
+      let shiftDias: string[] | undefined = undefined;
 
       if (collaborators && shifts && shifts.length > 0) {
         const colab = collaborators.find((c) => c.name.trim().toLowerCase() === colabKey);
-        const colabShift = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
+        const colabShift = (colab?.shift || cleanLog.shift || 'Turno 1').toUpperCase();
         const foundShift = shifts.find(
           (s) =>
             s.name.toUpperCase() === colabShift ||
@@ -417,58 +432,71 @@ export function desduplicarLogsAtivos(
             s.name.toUpperCase().includes(colabShift)
         ) || shifts[0];
 
-        shiftSaida = foundShift.saida;
-        shiftName = foundShift.name;
+        shiftSaida = foundShift.saida || '17:30';
+        shiftEntrada = foundShift.entrada || '07:00';
+        shiftDias = foundShift.dias;
 
-        const isPreviousDay = log.date && log.date !== hojePtBr;
         if (isPreviousDay || verificarTurnoEncerrado(foundShift.saida, foundShift.entrada, foundShift.dias, agora)) {
           shiftEnded = true;
         }
+      } else if (!isPreviousDay) {
+        // Fallback: se não temos lista de turnos, verifica horário padrão 17:30
+        shiftEnded = verificarTurnoEncerrado('17:30', '07:00', undefined, agora);
       }
 
       if (shiftEnded) {
-        // Encerramento automático por fim de turno
-        let dur = calcularDiferencaMinutos(log.startTime, shiftSaida);
+        // Encerramento automático por fim de turno / fim do dia anterior
+        let dur = calcularDiferencaMinutos(cleanLog.startTime, shiftSaida);
         if (dur <= 0) dur = 60;
+        let mealDeducted = cleanLog.mealBreakDeducted;
+        let mealMins = cleanLog.mealBreakMinutes;
+        if (!mealDeducted && dur > 90) {
+          dur = Math.max(1, dur - 90);
+          mealDeducted = true;
+          mealMins = 90;
+        }
 
         const autoClosedLog: ProductionLog = {
-          ...log,
+          ...cleanLog,
           status: 'Concluída',
           endTime: shiftSaida,
           durationMinutes: dur,
           autoClosed: true,
           autoClosedAtShiftEnd: true,
           pendingNextShiftResume: false,
-          observation: log.observation
-            ? `${log.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`
-            : `⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida}) - Colaborador não finalizou`,
+          mealBreakDeducted: mealDeducted,
+          mealBreakMinutes: mealMins,
+          mealBreakSource: mealDeducted ? 'automatic' : undefined,
+          observation: cleanLog.observation
+            ? `${cleanLog.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`
+            : `⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida}) - Fechado no fim do dia`,
         };
         sanitizedLogs.push(autoClosedLog);
         logsParaFinalizar.push(autoClosedLog);
       } else if (activeColabSeen.has(colabKey)) {
         // Já existe uma atividade mais recente aberta para este mesmo operador!
         // Finaliza com segurança este registro duplicado
-        const fallbackEnd = log.endTime || formatarHoraPtBr(agora);
-        const dur = calcularDiferencaMinutos(log.startTime, fallbackEnd);
+        const fallbackEnd = cleanLog.endTime || formatarHoraPtBr(agora);
+        const dur = calcularDiferencaMinutos(cleanLog.startTime, fallbackEnd);
         const autoFinished: ProductionLog = {
-          ...log,
+          ...cleanLog,
           status: 'Concluída',
           endTime: fallbackEnd,
           durationMinutes: dur > 0 ? dur : 1,
-          observation: log.observation || 'Finalizada automaticamente por nova atividade do colaborador',
+          observation: cleanLog.observation || 'Finalizada automaticamente por nova atividade do colaborador',
         };
         sanitizedLogs.push(autoFinished);
         logsParaFinalizar.push(autoFinished);
       } else {
         activeColabSeen.add(colabKey);
-        sanitizedLogs.push(log);
+        sanitizedLogs.push(cleanLog);
       }
     } else {
-      sanitizedLogs.push(log);
+      sanitizedLogs.push(cleanLog);
     }
   }
 
-  return { sanitizedLogs, logsParaFinalizar };
+  return { sanitizedLogs, logsParaFinalizar, logsParaDeletar };
 }
 
 /**

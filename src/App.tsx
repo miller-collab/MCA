@@ -80,7 +80,10 @@ function gerarLogsIniciais(
       activity: 'SETUP DE MAQUINA',
       category: 'Setup',
       startTime: '07:00:00',
-      status: 'Em Execução',
+      endTime: '08:30:00',
+      durationMinutes: 90,
+      status: 'Concluída',
+      observation: 'Setup inicial concluído com sucesso',
     },
     {
       id: 'log-seed-2',
@@ -91,7 +94,10 @@ function gerarLogsIniciais(
       activity: 'MEDIR PEÇAS',
       category: 'Qualidade / Inspeção',
       startTime: '07:15:00',
-      status: 'Em Execução',
+      endTime: '08:45:00',
+      durationMinutes: 90,
+      status: 'Concluída',
+      observation: 'Inspeção de rotina concluída',
     },
     {
       id: 'log-seed-3',
@@ -102,7 +108,10 @@ function gerarLogsIniciais(
       activity: 'LIMPEZA DO CAVACO',
       category: '5S & Limpeza',
       startTime: '07:20:00',
-      status: 'Em Execução',
+      endTime: '08:20:00',
+      durationMinutes: 60,
+      status: 'Concluída',
+      observation: 'Limpeza 5S executada',
     },
     {
       id: 'log-seed-4',
@@ -181,10 +190,12 @@ export function App() {
     if (saved) {
       try {
         const parsed: ProductionLog[] = JSON.parse(saved);
-        return parsed.map((l) => ({
+        const formatted = parsed.map((l) => ({
           ...l,
           shift: padronizarNomeTurno(l.shift),
         }));
+        const { sanitizedLogs } = desduplicarLogsAtivos(formatted, INITIAL_COLLABORATORS, INITIAL_SHIFTS);
+        return sanitizedLogs;
       } catch {
         return gerarLogsIniciais(INITIAL_COLLABORATORS, INITIAL_ACTIVITIES);
       }
@@ -231,11 +242,15 @@ export function App() {
     const unsubLogs = subscribeToLogs((cloudLogs) => {
       if (cloudLogs) {
         const formatted = cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-        const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(formatted, collaborators, shifts);
+        const { sanitizedLogs, logsParaFinalizar, logsParaDeletar } = desduplicarLogsAtivos(formatted, collaborators, shifts);
         setLogs(sanitizedLogs);
         // Se houver registros encerrados automaticamente ou duplicatas no banco, salva a finalização segura
         if (logsParaFinalizar.length > 0) {
           logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
+        }
+        // Se houver logs sintéticos a serem deletados do Firestore
+        if (logsParaDeletar.length > 0) {
+          logsParaDeletar.forEach((id) => deleteLogFromFirestore(id));
         }
       }
     });
@@ -347,7 +362,7 @@ export function App() {
           }
           if (cloudData.logs && cloudData.logs.length > 0) {
             const formatted = cloudData.logs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-            const { sanitizedLogs, logsParaFinalizar } = desduplicarLogsAtivos(
+            const { sanitizedLogs, logsParaFinalizar, logsParaDeletar } = desduplicarLogsAtivos(
               formatted,
               cloudData.collaborators || collaborators,
               cloudData.shifts || shifts
@@ -355,6 +370,9 @@ export function App() {
             setLogs((prev) => (JSON.stringify(prev) === JSON.stringify(sanitizedLogs) ? prev : sanitizedLogs));
             if (logsParaFinalizar.length > 0) {
               logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
+            }
+            if (logsParaDeletar.length > 0) {
+              logsParaDeletar.forEach((id) => deleteLogFromFirestore(id));
             }
           }
         }
@@ -581,69 +599,6 @@ export function App() {
           return log;
         });
 
-        // C. Retomada Automática no Início do Próximo Turno (se não finalizou a tarefa no turno anterior)
-        updated.forEach((log) => {
-          if (log.pendingNextShiftResume && log.status === 'Concluída') {
-            const colab = collaborators.find(
-              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
-            );
-            if (!colab || !colab.active) return;
-
-            const colabShiftName = (colab.shift || log.shift || 'Turno 1').toUpperCase();
-            const shift = shifts.find(
-              (s) =>
-                s.name.toUpperCase() === colabShiftName ||
-                s.code.toUpperCase() === colabShiftName ||
-                colabShiftName.includes(s.name.toUpperCase())
-            );
-
-            // Verifica se o turno está ativo agora (não está encerrado)
-            const turnoEstaAtivo = shift && !verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias);
-
-            if (turnoEstaAtivo && shift) {
-              // Verifica se o colaborador já possui qualquer atividade em andamento hoje
-              const jaTemAtividadeHoje = [...updated, ...newResumedLogs].some(
-                (l) =>
-                  l.date === todayDateStr &&
-                  l.collaboratorName.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase() &&
-                  (l.status === 'Em Execução' || l.status === 'Pausada')
-              );
-
-              // Verifica se este log específico já foi continuado hoje
-              const jaContinuadoHoje = [...updated, ...newResumedLogs].some(
-                (l) => l.date === todayDateStr && l.resumedFromPreviousLogId === log.id
-              );
-
-              if (!jaTemAtividadeHoje && !jaContinuadoHoje) {
-                // Inicia automaticamente onde parou no início do turno!
-                changed = true;
-                const resumedId = `log-resume-${log.id}-${todayDateStr.replace(/\//g, '-')}`;
-                const newActiveLog: ProductionLog = {
-                  id: resumedId,
-                  date: todayDateStr,
-                  collaboratorName: log.collaboratorName,
-                  role: log.role,
-                  shift: padronizarNomeTurno(shift.name),
-                  activity: log.activity,
-                  category: log.category || 'Operação',
-                  startTime: shift.entrada || formatarHoraPtBr(now),
-                  status: 'Em Execução',
-                  machineId: log.machineId || 'TORNO-01',
-                  observation: `🔄 Continuação automática do turno anterior (${log.date})`,
-                  resumedFromPreviousLogId: log.id,
-                };
-
-                // Desativa a flag pendente no log anterior
-                log.pendingNextShiftResume = false;
-                saveLogToFirestore(log);
-                saveLogToFirestore(newActiveLog);
-
-                newResumedLogs.push(newActiveLog);
-              }
-            }
-          }
-        });
-
         if (newNotifs.length > 0) {
           setAutoCloseNotifs((prev) => {
             const map = new Map<string, AutoCloseNotification>();
@@ -656,11 +611,7 @@ export function App() {
           if (soundEnabled) playFactoryChime('alert');
         }
 
-        if (newResumedLogs.length > 0 && soundEnabled) {
-          playFactoryChime('start');
-        }
-
-        return changed ? [...newResumedLogs, ...updated] : prevLogs;
+        return changed ? updated : prevLogs;
       });
     };
 
@@ -733,7 +684,7 @@ export function App() {
             observation: obsFinal,
             autoClosed: true,
             autoClosedAtShiftEnd: true,
-            pendingNextShiftResume: true, // Marca para continuar no próximo turno!
+            pendingNextShiftResume: false,
             mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
             mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
             mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
