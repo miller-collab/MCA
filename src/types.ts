@@ -103,6 +103,11 @@ export interface OperatorEfficiency {
   eficienciaRaw: number;
   isFimDoTurno: boolean;
   isAlertaSemApontar: boolean;
+  statusTurno?: 'EM_ANDAMENTO' | 'NAO_INICIADO' | 'ENCERRADO' | 'FOLGA';
+  tempoOciosoAtualMinutos?: number;
+  motivoAlerta?: string;
+  isLivreAgora?: boolean;
+  ultimaAtividadeFim?: string;
   operacoes: {
     nome: string;
     tempoMinutos: number;

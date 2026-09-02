@@ -1183,6 +1183,10 @@ export function App() {
             shifts={shifts}
             onDeleteLog={handleDeleteLog}
             onUpdateLog={handleUpdateLog}
+            onAddLog={(newLog) => {
+              setLogs((prev) => [newLog, ...prev]);
+              saveLogToFirestore(newLog);
+            }}
             initialFilterTerm={drilldownFilter}
             isLeaderUnlocked={isLeaderUnlocked}
             leaderPin={leaderPin}

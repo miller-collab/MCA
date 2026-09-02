@@ -378,10 +378,25 @@ export function calcularEstadoTempoAtividade(
 }
 
 /**
- * Garante a regra fundamental de produção: cada colaborador executa apenas 1 atividade por vez.
- * Se houver múltiplos registros em status 'Em Execução' para o mesmo colaborador (devido a toques rápidos ou concorrência),
- * preserva o mais recente e finaliza os anteriores com segurança.
- * Também encerra automaticamente qualquer atividade ativa cujo turno já tenha encerrado ou que seja de dias anteriores.
+ * Converte horário "HH:mm:ss" ou "HH:mm" para segundos do dia para comparações exatas
+ */
+export function timeToSecondsOfDay(timeStr: string): number {
+  if (!timeStr) return 0;
+  const parts = timeStr.split(':').map((p) => parseInt(p, 10) || 0);
+  const h = parts[0] || 0;
+  const m = parts[1] || 0;
+  const s = parts[2] || 0;
+  return h * 3600 + m * 60 + s;
+}
+
+/**
+ * Garante a regra fundamental industrial de produção:
+ * 1. Cada colaborador executa no máximo 1 atividade por vez.
+ * 2. As atividades de um mesmo dia formam uma linha do tempo contínua sem nenhuma colisão ou sobreposição temporal.
+ * 3. Se uma nova atividade foi iniciada às 15:32:42, a atividade anterior OBRIGATORIAMENTE encerra às 15:32:42.
+ * 4. Micro-cliques duplicados (< 5 segundos de diferença com mesma atividade e duração zero) são descartados.
+ * 5. Dedução de refeição de 90 min (ou configurada para o turno) é aplicada com clareza no registro que atravessou o intervalo.
+ * 6. Encerra automaticamente registros no fim do turno (ex: 17:30 para Turno 1, 01:30 para Turno 2).
  */
 export function desduplicarLogsAtivos(
   logs: ProductionLog[],
@@ -392,107 +407,241 @@ export function desduplicarLogsAtivos(
   logsParaFinalizar: ProductionLog[];
   logsParaDeletar: string[];
 } {
-  const activeColabSeen = new Set<string>();
   const sanitizedLogs: ProductionLog[] = [];
   const logsParaFinalizar: ProductionLog[] = [];
   const logsParaDeletar: string[] = [];
   const agora = new Date();
   const hojePtBr = formatarDataPtBr(agora);
 
+  // 1. Filtra registros residuais sintéticos de retomada
+  const validLogs: ProductionLog[] = [];
   for (const log of logs) {
-    // 1. Elimina logs residuais de retomada automática sintética
     if (log.id.startsWith('log-resume-') || log.resumedFromPreviousLogId) {
       logsParaDeletar.push(log.id);
       continue;
     }
-
-    // Garante que nenhuma flag de retomada pendente permaneça ativa
     const cleanLog: ProductionLog = log.pendingNextShiftResume
       ? { ...log, pendingNextShiftResume: false }
       : log;
+    validLogs.push(cleanLog);
+  }
 
-    if (cleanLog.status === 'Em Execução' || cleanLog.status === 'Pausada') {
-      const colabKey = cleanLog.collaboratorName.trim().toLowerCase();
+  // 2. Agrupa logs por colaborador e por data para sanitizar a linha do tempo cronológica
+  const groups = new Map<string, ProductionLog[]>();
+  for (const log of validLogs) {
+    const colabKey = (log.collaboratorName || '').trim().toLowerCase();
+    const dateKey = log.date || hojePtBr;
+    const groupKey = `${colabKey}__${dateKey}`;
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, []);
+    }
+    groups.get(groupKey)!.push(log);
+  }
 
-      // Verifica se o turno já encerrou (ou se a atividade é de dias anteriores)
-      const isPreviousDay = Boolean(cleanLog.date && cleanLog.date !== hojePtBr);
-      let shiftEnded = isPreviousDay;
-      let shiftSaida = '17:30';
-      let shiftEntrada = '07:00';
-      let shiftDias: string[] | undefined = undefined;
+  // 3. Processa cada grupo (colaborador + dia)
+  for (const [, groupLogs] of groups.entries()) {
+    if (groupLogs.length === 0) continue;
 
-      if (collaborators && shifts && shifts.length > 0) {
-        const colab = collaborators.find((c) => c.name.trim().toLowerCase() === colabKey);
-        const colabShift = (colab?.shift || cleanLog.shift || 'Turno 1').toUpperCase();
-        const foundShift = shifts.find(
-          (s) =>
-            s.name.toUpperCase() === colabShift ||
-            s.code.toUpperCase() === colabShift ||
-            colabShift.includes(s.name.toUpperCase()) ||
-            s.name.toUpperCase().includes(colabShift)
-        ) || shifts[0];
+    const sampleLog = groupLogs[0];
+    const colabKey = sampleLog.collaboratorName.trim().toLowerCase();
+    const dateStr = sampleLog.date || hojePtBr;
+    const isPreviousDay = dateStr !== hojePtBr;
 
-        shiftSaida = foundShift.saida || '17:30';
-        shiftEntrada = foundShift.entrada || '07:00';
-        shiftDias = foundShift.dias;
+    // Busca configuração do turno do colaborador
+    let shiftSaida = '17:30';
+    let shiftEntrada = '07:00';
+    let shiftDias: string[] | undefined = undefined;
+    let colabShiftName = sampleLog.shift || 'Turno 1';
 
-        if (isPreviousDay || verificarTurnoEncerrado(foundShift.saida, foundShift.entrada, foundShift.dias, agora)) {
-          shiftEnded = true;
-        }
-      } else if (!isPreviousDay) {
-        // Fallback: se não temos lista de turnos, verifica horário padrão 17:30
-        shiftEnded = verificarTurnoEncerrado('17:30', '07:00', undefined, agora);
+    if (collaborators && shifts && shifts.length > 0) {
+      const colab = collaborators.find((c) => c.name.trim().toLowerCase() === colabKey);
+      colabShiftName = colab?.shift || sampleLog.shift || 'Turno 1';
+      const foundShift = shifts.find(
+        (s) =>
+          padronizarNomeTurno(s.name) === padronizarNomeTurno(colabShiftName) ||
+          padronizarNomeTurno(s.code) === padronizarNomeTurno(colabShiftName) ||
+          s.name.toUpperCase().includes(colabShiftName.toUpperCase())
+      ) || shifts[0];
+
+      shiftSaida = foundShift.saida || '17:30';
+      shiftEntrada = foundShift.entrada || '07:00';
+      shiftDias = foundShift.dias;
+    }
+
+    const shiftEnded = isPreviousDay || verificarTurnoEncerrado(shiftSaida, shiftEntrada, shiftDias, agora);
+    const mealConfig = obterConfiguracaoRefeicao(colabShiftName, shifts || []);
+
+    // Ordena cronologicamente por horário de início (startTime)
+    groupLogs.sort((a, b) => {
+      const secA = timeToSecondsOfDay(a.startTime);
+      const secB = timeToSecondsOfDay(b.startTime);
+      if (secA !== secB) return secA - secB;
+      // Se empatar no mesmo segundo, desempata por timestamp ou ID
+      return (a.id || '').localeCompare(b.id || '');
+    });
+
+    // Remove duplicatas imediatas geradas por duplo clique no mesmo segundo
+    const deduplicatedTimeline: ProductionLog[] = [];
+    for (let i = 0; i < groupLogs.length; i++) {
+      const current = groupLogs[i];
+      const next = groupLogs[i + 1];
+
+      if (
+        next &&
+        current.activity === next.activity &&
+        Math.abs(timeToSecondsOfDay(next.startTime) - timeToSecondsOfDay(current.startTime)) <= 3 &&
+        (current.durationMinutes === undefined || current.durationMinutes <= 1)
+      ) {
+        // Registro redundante gerado por clique duplo rápido: descarta do banco
+        logsParaDeletar.push(current.id);
+        continue;
       }
+      deduplicatedTimeline.push(current);
+    }
 
-      if (shiftEnded) {
-        // Encerramento automático por fim de turno / fim do dia anterior
-        let dur = calcularDiferencaMinutos(cleanLog.startTime, shiftSaida);
-        if (dur <= 0) dur = 60;
-        let mealDeducted = cleanLog.mealBreakDeducted;
-        let mealMins = cleanLog.mealBreakMinutes;
-        if (!mealDeducted && dur > 90) {
-          dur = Math.max(1, dur - 90);
-          mealDeducted = true;
-          mealMins = 90;
+    // Controla se a refeição já foi deduzida em algum registro deste colaborador neste dia
+    let hasMealBeenDeductedToday = deduplicatedTimeline.some(
+      (l) => l.isMealPause || (l.mealBreakDeducted && l.status === 'Concluída')
+    );
+
+    const totalLogsInDay = deduplicatedTimeline.length;
+
+    for (let i = 0; i < totalLogsInDay; i++) {
+      const current = deduplicatedTimeline[i];
+      const isLastLogOfDay = i === totalLogsInDay - 1;
+      let needsUpdate = false;
+      let updatedLog: ProductionLog = { ...current };
+
+      if (!isLastLogOfDay) {
+        // Há uma atividade subsequente no mesmo dia:
+        // A atividade atual OBRIGATORIAMENTE encerra no momento de início da próxima atividade!
+        const nextLog = deduplicatedTimeline[i + 1];
+        const nextStartTime = nextLog.startTime;
+        const currentEndSec = current.endTime ? timeToSecondsOfDay(current.endTime) : 0;
+        const nextStartSec = timeToSecondsOfDay(nextStartTime);
+
+        if (
+          current.status !== 'Concluída' ||
+          !current.endTime ||
+          currentEndSec > nextStartSec ||
+          (current.autoClosedAtShiftEnd && nextStartSec < timeToSecondsOfDay(shiftSaida))
+        ) {
+          // Ajusta o fim para coincidir exatamente com o início da próxima
+          updatedLog.endTime = nextStartTime;
+          updatedLog.status = 'Concluída';
+          updatedLog.autoClosed = false;
+          updatedLog.autoClosedAtShiftEnd = false;
+          needsUpdate = true;
         }
 
-        const autoClosedLog: ProductionLog = {
-          ...cleanLog,
-          status: 'Concluída',
-          endTime: shiftSaida,
-          durationMinutes: dur,
-          autoClosed: true,
-          autoClosedAtShiftEnd: true,
-          pendingNextShiftResume: false,
-          mealBreakDeducted: mealDeducted,
-          mealBreakMinutes: mealMins,
-          mealBreakSource: mealDeducted ? 'automatic' : undefined,
-          observation: cleanLog.observation
-            ? `${cleanLog.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`
-            : `⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida}) - Fechado no fim do dia`,
-        };
-        sanitizedLogs.push(autoClosedLog);
-        logsParaFinalizar.push(autoClosedLog);
-      } else if (activeColabSeen.has(colabKey)) {
-        // Já existe uma atividade mais recente aberta para este mesmo operador!
-        // Finaliza com segurança este registro duplicado
-        const fallbackEnd = cleanLog.endTime || formatarHoraPtBr(agora);
-        const dur = calcularDiferencaMinutos(cleanLog.startTime, fallbackEnd);
-        const autoFinished: ProductionLog = {
-          ...cleanLog,
-          status: 'Concluída',
-          endTime: fallbackEnd,
-          durationMinutes: dur > 0 ? dur : 1,
-          observation: cleanLog.observation || 'Finalizada automaticamente por nova atividade do colaborador',
-        };
-        sanitizedLogs.push(autoFinished);
-        logsParaFinalizar.push(autoFinished);
+        // Calcula a duração líquida sem sobreposição
+        const endCalculo = updatedLog.endTime || nextStartTime;
+        const durBruta = calcularDiferencaMinutos(updatedLog.startTime, endCalculo);
+
+        // Aplica dedução de refeição se a janela cobriu o horário de almoço do turno
+        let mealMins = 0;
+        let mealDeducted = Boolean(updatedLog.mealBreakDeducted);
+
+        if (!hasMealBeenDeductedToday && durBruta >= 60) {
+          const sobreposicao = calcularSobreposicaoRefeicaoMinutos(
+            updatedLog.startTime,
+            endCalculo,
+            mealConfig.saidaAlmoco,
+            mealConfig.retornoAlmoco
+          );
+          if (sobreposicao >= 15) {
+            mealMins = sobreposicao;
+            mealDeducted = true;
+            hasMealBeenDeductedToday = true;
+          }
+        } else if (mealDeducted) {
+          mealMins = updatedLog.mealBreakMinutes || mealConfig.duracaoMinutos || 90;
+        }
+
+        const durLiquida = mealDeducted ? Math.max(1, durBruta - mealMins) : Math.max(1, durBruta);
+
+        if (
+          updatedLog.durationMinutes !== durLiquida ||
+          updatedLog.mealBreakDeducted !== mealDeducted ||
+          (mealDeducted && updatedLog.mealBreakMinutes !== mealMins)
+        ) {
+          updatedLog.durationMinutes = durLiquida;
+          updatedLog.mealBreakDeducted = mealDeducted;
+          updatedLog.mealBreakMinutes = mealDeducted ? mealMins : undefined;
+          updatedLog.mealBreakSource = mealDeducted ? updatedLog.mealBreakSource || 'automatic' : undefined;
+          needsUpdate = true;
+        }
       } else {
-        activeColabSeen.add(colabKey);
-        sanitizedLogs.push(cleanLog);
+        // Último log do dia para este colaborador:
+        if (shiftEnded) {
+          // O turno ou o dia já encerrou: finaliza com segurança no horário de saída do turno
+          const currentEndSec = current.endTime ? timeToSecondsOfDay(current.endTime) : 0;
+          const shiftSaidaSec = timeToSecondsOfDay(shiftSaida);
+
+          if (
+            current.status !== 'Concluída' ||
+            !current.endTime ||
+            currentEndSec > shiftSaidaSec
+          ) {
+            updatedLog.status = 'Concluída';
+            updatedLog.endTime = current.endTime && currentEndSec <= shiftSaidaSec ? current.endTime : shiftSaida;
+            updatedLog.autoClosed = true;
+            updatedLog.autoClosedAtShiftEnd = true;
+            needsUpdate = true;
+          }
+
+          const endCalculo = updatedLog.endTime || shiftSaida;
+          const durBruta = calcularDiferencaMinutos(updatedLog.startTime, endCalculo);
+
+          let mealMins = 0;
+          let mealDeducted = Boolean(updatedLog.mealBreakDeducted);
+
+          if (!hasMealBeenDeductedToday && durBruta >= 90) {
+            const sobreposicao = calcularSobreposicaoRefeicaoMinutos(
+              updatedLog.startTime,
+              endCalculo,
+              mealConfig.saidaAlmoco,
+              mealConfig.retornoAlmoco
+            );
+            if (sobreposicao >= 15) {
+              mealMins = sobreposicao;
+              mealDeducted = true;
+              hasMealBeenDeductedToday = true;
+            } else if (durBruta >= 180) {
+              mealMins = mealConfig.duracaoMinutos || 90;
+              mealDeducted = true;
+              hasMealBeenDeductedToday = true;
+            }
+          } else if (mealDeducted) {
+            mealMins = updatedLog.mealBreakMinutes || mealConfig.duracaoMinutos || 90;
+          }
+
+          const durLiquida = mealDeducted ? Math.max(1, durBruta - mealMins) : Math.max(1, durBruta);
+
+          if (
+            updatedLog.durationMinutes !== durLiquida ||
+            updatedLog.mealBreakDeducted !== mealDeducted ||
+            (mealDeducted && updatedLog.mealBreakMinutes !== mealMins)
+          ) {
+            updatedLog.durationMinutes = durLiquida;
+            updatedLog.mealBreakDeducted = mealDeducted;
+            updatedLog.mealBreakMinutes = mealDeducted ? mealMins : undefined;
+            updatedLog.mealBreakSource = mealDeducted ? updatedLog.mealBreakSource || 'automatic' : undefined;
+            needsUpdate = true;
+          }
+
+          if (needsUpdate && !updatedLog.observation?.includes('Encerrado Automaticamente')) {
+            updatedLog.observation = updatedLog.observation
+              ? `${updatedLog.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`
+              : `⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`;
+          }
+        }
       }
-    } else {
-      sanitizedLogs.push(cleanLog);
+
+      sanitizedLogs.push(updatedLog);
+      if (needsUpdate) {
+        logsParaFinalizar.push(updatedLog);
+      }
     }
   }
 
@@ -514,20 +663,31 @@ export function calcularCargaHorariaTurno(shift: ShiftConfig): number {
   return trabalho1 + trabalho2;
 }
 
-/**
- * Checks if current time is past the shift's end time (or outside working days)
- */
-export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: string[], date: Date = new Date()): boolean {
-  if (!saida || !entrada) return false;
+export type ShiftStatus = 'EM_ANDAMENTO' | 'NAO_INICIADO' | 'ENCERRADO' | 'FOLGA';
 
-  // If shift working days are specified, verify if today is an active working day
+/**
+ * Retorna o status exato do turno em uma data específica e horário:
+ * - 'FOLGA': Dia de folga (não está nos dias de operação)
+ * - 'NAO_INICIADO': O turno inicia mais tarde no dia atual (ex: Turno 2 às 10:20 da manhã)
+ * - 'EM_ANDAMENTO': O turno está com a jornada ativa no momento
+ * - 'ENCERRADO': O turno já finalizou sua jornada neste dia
+ */
+export function obterStatusTurno(
+  saida: string,
+  entrada: string,
+  dias?: string[],
+  date: Date = new Date()
+): ShiftStatus {
+  if (!saida || !entrada) return 'ENCERRADO';
+
+  // Verifica se hoje é um dia de trabalho ativo para este turno
   if (dias && dias.length > 0) {
     const DIAS_SIGLAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
     const diaHoje = DIAS_SIGLAS[date.getDay()];
     const diasNorm = dias.map((d) => d.trim().toLowerCase().slice(0, 3));
     const diaHojeNorm = diaHoje.trim().toLowerCase().slice(0, 3);
     if (!diasNorm.includes(diaHojeNorm)) {
-      return true; // Outside operating days -> shift is closed!
+      return 'FOLGA';
     }
   }
 
@@ -536,16 +696,217 @@ export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: s
   const sai = saida.slice(0, 5);
 
   if (ent <= sai) {
-    // Normal day shift (e.g. 07:00 to 17:30)
-    // Active if ent <= currentHourMin <= sai
-    // Closed if currentHourMin >= sai or currentHourMin < ent
-    return currentHourMin >= sai || currentHourMin < ent;
+    // Turno diurno normal (ex: 07:00 às 17:30)
+    if (currentHourMin < ent) {
+      return 'NAO_INICIADO';
+    } else if (currentHourMin >= ent && currentHourMin <= sai) {
+      return 'EM_ANDAMENTO';
+    } else {
+      return 'ENCERRADO';
+    }
   } else {
-    // Overnight shift crossing midnight (e.g. 20:00 to 06:00 or 15:30 to 01:30)
-    // Active if currentHourMin >= ent || currentHourMin <= sai
-    // Closed if currentHourMin >= sai && currentHourMin < ent
-    return currentHourMin >= sai && currentHourMin < ent;
+    // Turno que cruza a meia-noite (ex: 15:30 às 01:30, ou 22:00 às 06:00)
+    // No período diurno entre a saída da madrugada (01:30) e a entrada da tarde (15:30):
+    // O turno de hoje AINDA NÃO INICIOU!
+    if (currentHourMin > sai && currentHourMin < ent) {
+      return 'NAO_INICIADO';
+    } else if (currentHourMin >= ent || currentHourMin <= sai) {
+      return 'EM_ANDAMENTO';
+    } else {
+      return 'ENCERRADO';
+    }
   }
+}
+
+/**
+ * Checks if current time is past the shift's end time (or outside working days)
+ */
+export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: string[], date: Date = new Date()): boolean {
+  const status = obterStatusTurno(saida, entrada, dias, date);
+  return status === 'ENCERRADO' || status === 'FOLGA';
+}
+
+export interface ShiftGapEntry {
+  id: string;
+  isGap: true;
+  date: string;
+  collaboratorName: string;
+  shift: string;
+  role: string;
+  startTime: string;
+  endTime: string;
+  durationMinutes: number;
+  activity: string;
+  status: 'Sem Apontamento';
+  observation: string;
+}
+
+export interface ResumoJornadaOperador {
+  collaboratorName: string;
+  date: string;
+  shift: string;
+  minutosJornadaEsperada: number;
+  minutosProdutivosApontados: number;
+  minutosRefeicao: number;
+  minutosSemApontamento: number;
+  percentualAderencia: number;
+}
+
+/**
+ * Calcula os períodos de tempo sem apontamento (GAPs) para cada operador na jornada de trabalho.
+ * Mapeia desde o início do turno até o fim do turno, identificando onde não houve registro de atividade.
+ */
+export function calcularGapsJornadaColaboradores(
+  logs: ProductionLog[],
+  collaborators: Collaborator[] = [],
+  shifts: ShiftConfig[] = [],
+  dataFiltro?: string,
+  agora: Date = new Date()
+): ShiftGapEntry[] {
+  const gaps: ShiftGapEntry[] = [];
+  const hojePtBr = formatarDataPtBr(agora);
+
+  // Agrupa logs válidos por (colaborador + data)
+  const groups = new Map<string, ProductionLog[]>();
+  for (const log of logs) {
+    if (log.id.startsWith('log-resume-') || log.resumedFromPreviousLogId) continue;
+    const date = log.date || hojePtBr;
+    if (dataFiltro && dataFiltro !== 'TODAS' && date !== dataFiltro) continue;
+    const colab = (log.collaboratorName || '').trim();
+    if (!colab) continue;
+    const key = `${colab.toLowerCase()}__${date}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(log);
+  }
+
+  for (const [, groupLogs] of groups.entries()) {
+    if (groupLogs.length === 0) continue;
+
+    const sample = groupLogs[0];
+    const colabName = sample.collaboratorName;
+    const dateStr = sample.date || hojePtBr;
+    const isToday = dateStr === hojePtBr;
+
+    const colabObj = collaborators.find((c) => c.name.trim().toLowerCase() === colabName.toLowerCase());
+    const shiftName = colabObj?.shift || sample.shift || 'Turno 1';
+    const role = colabObj?.role || sample.role || 'Operador';
+
+    const foundShift = shifts.find(
+      (s) =>
+        padronizarNomeTurno(s.name) === padronizarNomeTurno(shiftName) ||
+        padronizarNomeTurno(s.code) === padronizarNomeTurno(shiftName) ||
+        s.name.toUpperCase().includes(shiftName.toUpperCase())
+    ) || shifts[0] || { entrada: '07:00', saida: '17:30', name: 'Turno 1' };
+
+    const shiftEntrada = foundShift.entrada || '07:00';
+    const shiftSaida = foundShift.saida || '17:30';
+
+    // Ordena cronologicamente
+    const sorted = [...groupLogs].sort(
+      (a, b) => timeToSecondsOfDay(a.startTime) - timeToSecondsOfDay(b.startTime)
+    );
+
+    // 1. GAP no início do turno (Entre a entrada do turno e a primeira atividade)
+    const firstLog = sorted[0];
+    const firstStartSec = timeToSecondsOfDay(firstLog.startTime);
+    const shiftEntradaSec = timeToSecondsOfDay(shiftEntrada);
+
+    if (firstStartSec - shiftEntradaSec >= 180) { // Gap >= 3 minutos
+      const gapMins = calcularDiferencaMinutos(shiftEntrada, firstLog.startTime);
+      if (gapMins >= 3) {
+        gaps.push({
+          id: `gap-start-${colabName}-${dateStr}-${shiftEntrada}`,
+          isGap: true,
+          date: dateStr,
+          collaboratorName: colabName,
+          shift: shiftName,
+          role,
+          startTime: shiftEntrada,
+          endTime: firstLog.startTime,
+          durationMinutes: gapMins,
+          activity: '⚠️ SEM APONTAMENTO (Início de Turno)',
+          status: 'Sem Apontamento',
+          observation: `Colaborador não registrou atividade entre o início do turno (${shiftEntrada}) e o primeiro apontamento (${firstLog.startTime}).`,
+        });
+      }
+    }
+
+    // 2. GAPs intermediários entre atividades consecutivas
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const current = sorted[i];
+      const next = sorted[i + 1];
+
+      const currentEnd = current.endTime;
+      if (!currentEnd) continue;
+
+      const currentEndSec = timeToSecondsOfDay(currentEnd);
+      const nextStartSec = timeToSecondsOfDay(next.startTime);
+
+      if (nextStartSec - currentEndSec >= 180) { // Gap >= 3 minutos
+        const gapMins = calcularDiferencaMinutos(currentEnd, next.startTime);
+        if (gapMins >= 3) {
+          gaps.push({
+            id: `gap-mid-${colabName}-${dateStr}-${currentEnd}`,
+            isGap: true,
+            date: dateStr,
+            collaboratorName: colabName,
+            shift: shiftName,
+            role,
+            startTime: currentEnd,
+            endTime: next.startTime,
+            durationMinutes: gapMins,
+            activity: '⚠️ SEM APONTAMENTO (Intervalo)',
+            status: 'Sem Apontamento',
+            observation: `Período sem atividade registrada entre "${current.activity}" (${currentEnd}) e "${next.activity}" (${next.startTime}).`,
+          });
+        }
+      }
+    }
+
+    // 3. GAP no fim do turno (Entre o término da última atividade e o fim do turno)
+    const lastLog = sorted[sorted.length - 1];
+    if (lastLog.status === 'Concluída' && lastLog.endTime) {
+      const lastEndSec = timeToSecondsOfDay(lastLog.endTime);
+      const shiftSaidaSec = timeToSecondsOfDay(shiftSaida);
+
+      // Limite final a considerar
+      let limiteFim = shiftSaida;
+      let limiteFimSec = shiftSaidaSec;
+
+      if (isToday) {
+        const agoraHoraMin = formatarHoraPtBr(agora);
+        const agoraSec = timeToSecondsOfDay(agoraHoraMin);
+        if (agoraSec < shiftSaidaSec) {
+          limiteFim = agoraHoraMin;
+          limiteFimSec = agoraSec;
+        }
+      }
+
+      if (limiteFimSec - lastEndSec >= 180) { // Gap >= 3 minutos
+        const gapMins = calcularDiferencaMinutos(lastLog.endTime, limiteFim);
+        if (gapMins >= 3) {
+          gaps.push({
+            id: `gap-end-${colabName}-${dateStr}-${lastLog.endTime}`,
+            isGap: true,
+            date: dateStr,
+            collaboratorName: colabName,
+            shift: shiftName,
+            role,
+            startTime: lastLog.endTime,
+            endTime: limiteFim,
+            durationMinutes: gapMins,
+            activity: isToday && limiteFim !== shiftSaida ? '⚠️ SEM ATIVIDADE NO MOMENTO' : '⚠️ SEM APONTAMENTO (Fim de Turno)',
+            status: 'Sem Apontamento',
+            observation: isToday && limiteFim !== shiftSaida
+              ? `Última atividade concluída às ${lastLog.endTime}. Colaborador está livre sem apontamento até o momento.`
+              : `Atividade finalizada às ${lastLog.endTime} antes do encerramento do turno (${shiftSaida}). Nenhuma outra atividade foi apontada até as ${shiftSaida}.`,
+          });
+        }
+      }
+    }
+  }
+
+  return gaps;
 }
 
 /**
@@ -667,9 +1028,11 @@ export function calcularEficienciaEquipePeriodo(
   const diasIntervalo = gerarDatasNoIntervalo(dataInicioStr, dataFimStr);
   const setDatasPtBr = new Set(diasIntervalo.map((d) => d.datePtBr));
   const hojePtBr = formatarDataPtBr(new Date());
+  const agora = new Date();
+  const currentHourMin = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
 
   // 1. Mapa de turnos e horas úteis por turno
-  const turnosMap: Record<string, { shift: ShiftConfig; min: number; ent: string; sai: string; dias: string[] }> = {};
+  const turnosMap: Record<string, { shift: ShiftConfig; min: number; ent: string; sai: string; entAlmoco?: string; saiAlmoco?: string; dias: string[] }> = {};
   shifts.forEach((s) => {
     const minCalculado = calcularCargaHorariaTurno(s);
     const shiftData = {
@@ -677,6 +1040,8 @@ export function calcularEficienciaEquipePeriodo(
       min: minCalculado,
       ent: s.entrada,
       sai: s.saida,
+      entAlmoco: s.saidaAlmoco,
+      saiAlmoco: s.retornoAlmoco,
       dias: s.dias || [],
     };
     turnosMap[s.name.toUpperCase().trim()] = shiftData;
@@ -700,7 +1065,9 @@ export function calcularEficienciaEquipePeriodo(
       trabalhadoTotalMinutos: number;
       trabalhadoPorDia: Record<string, number>;
       operacoes: Record<string, { tempoMinutos: number; category?: string }>;
+      statusTurnoHoje: ShiftStatus;
       isFimDoTurno: boolean;
+      todayLogs: ProductionLog[];
     }
   > = {};
 
@@ -716,6 +1083,8 @@ export function calcularEficienciaEquipePeriodo(
             ),
             ent: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.entrada,
             sai: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.saida,
+            entAlmoco: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.saidaAlmoco,
+            saiAlmoco: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.retornoAlmoco,
             dias: shifts.find((s) => s.name.toUpperCase().includes(turnoKey) || turnoKey.includes(s.name.toUpperCase()))!.dias,
           }
         : {
@@ -723,30 +1092,55 @@ export function calcularEficienciaEquipePeriodo(
             min: 540,
             ent: '07:00',
             sai: '17:30',
+            entAlmoco: '12:00',
+            saiAlmoco: '13:00',
             dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
           };
+
+    const statusHoje = obterStatusTurno(tData.sai, tData.ent, tData.dias, agora);
 
     // Calcula esperado no período somando os dias em que o turno trabalha
     let esperadoMinutosPeriodo = 0;
     diasIntervalo.forEach((diaInfo) => {
       const trabalhaNesteDia = tData.dias && tData.dias.includes(diaInfo.dayOfWeek);
       if (trabalhaNesteDia) {
-        esperadoMinutosPeriodo += tData.min;
+        if (diaInfo.datePtBr === hojePtBr) {
+          // Para hoje: considera o status atual do turno
+          if (statusHoje === 'ENCERRADO') {
+            esperadoMinutosPeriodo += tData.min;
+          } else if (statusHoje === 'EM_ANDAMENTO') {
+            // Tempo decorrido de turno até agora
+            let decorrido = calcularDiferencaMinutos(tData.ent, currentHourMin);
+            if (tData.entAlmoco && tData.saiAlmoco) {
+              const almocoOverlap = calcularSobreposicaoRefeicaoMinutos(tData.ent, currentHourMin, tData.entAlmoco, tData.saiAlmoco);
+              decorrido = Math.max(0, decorrido - almocoOverlap);
+            }
+            esperadoMinutosPeriodo += Math.min(decorrido, tData.min);
+          } else {
+            // NAO_INICIADO ou FOLGA: 0 minutos esperados até agora
+            esperadoMinutosPeriodo += 0;
+          }
+        } else {
+          // Dias passados: carga completa do turno
+          esperadoMinutosPeriodo += tData.min;
+        }
       }
     });
 
-    const isFim = verificarTurnoEncerrado(tData.sai, tData.ent, tData.dias);
+    const isFim = statusHoje === 'ENCERRADO' || !setDatasPtBr.has(hojePtBr);
 
     colabMap[c.name.trim().toLowerCase()] = {
       collaborator: c,
       shiftName: c.shift || 'Turno 1',
       shiftEntrada: tData.ent,
       shiftSaida: tData.sai,
-      esperadoTotalMinutos: esperadoMinutosPeriodo,
+      esperadoTotalMinutos: Math.round(esperadoMinutosPeriodo),
       trabalhadoTotalMinutos: 0,
       trabalhadoPorDia: {},
       operacoes: {},
+      statusTurnoHoje: statusHoje,
       isFimDoTurno: isFim,
+      todayLogs: [],
     };
   });
 
@@ -773,11 +1167,17 @@ export function calcularEficienciaEquipePeriodo(
         trabalhadoTotalMinutos: 0,
         trabalhadoPorDia: {},
         operacoes: {},
+        statusTurnoHoje: 'ENCERRADO',
         isFimDoTurno: true,
+        todayLogs: [],
       };
     }
 
     const colabEntry = colabMap[colabKey];
+    if (logDatePtBr === hojePtBr) {
+      colabEntry.todayLogs.push(log);
+    }
+
     let duracaoLogMin = 0;
 
     if (log.status === 'Concluída') {
@@ -790,12 +1190,11 @@ export function calcularEficienciaEquipePeriodo(
         }
       }
     } else if (log.status === 'Em Execução' && log.startTime) {
-      if (logDatePtBr === hojePtBr && !colabEntry.isFimDoTurno) {
+      if (logDatePtBr === hojePtBr && colabEntry.statusTurnoHoje === 'EM_ANDAMENTO') {
         // Atividade em andamento hoje dentro do turno
         const parts = log.startTime.split(':');
         const h = parseInt(parts[0], 10) || 0;
         const m = parseInt(parts[1], 10) || 0;
-        const agora = new Date();
         const inicio = new Date();
         inicio.setHours(h, m, 0, 0);
         const diffMs = agora.getTime() - inicio.getTime();
@@ -830,25 +1229,93 @@ export function calcularEficienciaEquipePeriodo(
   const arrayFinal: OperatorEfficiency[] = [];
 
   Object.values(colabMap).forEach((cData) => {
-    // Soma tempo trabalhado (capando cada dia à carga diária normal para evitar distorções)
     let totalTrabalhado = 0;
     Object.entries(cData.trabalhadoPorDia).forEach(([, tempoDia]) => {
-      // Carga padrão diária de referência = 540 min (9h) ou proporcional ao turno
       const cargaDiariaReferencia = cData.esperadoTotalMinutos > 0 && diasIntervalo.length > 0
         ? cData.esperadoTotalMinutos / diasIntervalo.length
         : 540;
       
-      // Limita o tempo normal de um dia para a carga máxima útil diária
       const tempoAjustadoDia = Math.min(tempoDia, Math.max(cargaDiariaReferencia, 540));
       totalTrabalhado += tempoAjustadoDia;
     });
 
     const esperado = cData.esperadoTotalMinutos;
     
-    // Se o turno não tem esperado (ex: folga em todos os dias do filtro), eficiência é 100% se trabalhou
-    const efi = esperado > 0 ? (totalTrabalhado / esperado) * 100 : totalTrabalhado > 0 ? 100 : 0;
+    // Cálculo de Eficiência
+    let efi = 0;
+    if (cData.statusTurnoHoje === 'NAO_INICIADO' && diasIntervalo.length === 1 && diasIntervalo[0].datePtBr === hojePtBr) {
+      // Se estamos vendo apenas hoje e o turno ainda não iniciou
+      efi = 100;
+    } else if (esperado > 0) {
+      efi = (totalTrabalhado / esperado) * 100;
+    } else {
+      efi = totalTrabalhado > 0 ? 100 : (cData.statusTurnoHoje === 'NAO_INICIADO' ? 100 : 0);
+    }
+
     const semApontar = esperado > 0 ? Math.max(0, esperado - totalTrabalhado) : 0;
-    const isAlerta = cData.isFimDoTurno && semApontar > toleranciaMinutos;
+    
+    // Análise de Alertas e Ociosidade em Tempo Real
+    let isAlerta = false;
+    let tempoOciosoAtualMinutos = 0;
+    let motivoAlerta: string | undefined = undefined;
+    let isLivreAgora = false;
+    let ultimaAtividadeFim: string | undefined = undefined;
+
+    if (cData.statusTurnoHoje === 'NAO_INICIADO') {
+      // Turno ainda não iniciou hoje: NUNCA gera alerta de ociosidade
+      isAlerta = false;
+    } else if (cData.statusTurnoHoje === 'EM_ANDAMENTO') {
+      // Turno está em andamento agora: analisa tempo sem apontar em tempo real
+      const hasActiveLog = cData.todayLogs.some((l) => l.status === 'Em Execução' || l.status === 'Pausada');
+      
+      if (!hasActiveLog) {
+        isLivreAgora = true;
+        // Encontra o último horário de término das tarefas de hoje
+        const completedLogs = cData.todayLogs.filter((l) => l.status === 'Concluída' && l.endTime);
+        if (completedLogs.length === 0) {
+          // Sem nenhuma atividade concluída desde o início do turno
+          const ocioso = calcularDiferencaMinutos(cData.shiftEntrada, currentHourMin);
+          tempoOciosoAtualMinutos = ocioso;
+          ultimaAtividadeFim = cData.shiftEntrada;
+          if (ocioso >= toleranciaMinutos) {
+            isAlerta = true;
+            motivoAlerta = `Sem apontamento no turno desde às ${cData.shiftEntrada} (${formatarHorasMinutos(ocioso)} sem atividade)`;
+          }
+        } else {
+          // Pega o término mais recente
+          let latestEndSec = 0;
+          let latestEndStr = cData.shiftEntrada;
+          completedLogs.forEach((l) => {
+            const sec = timeToSecondsOfDay(l.endTime);
+            if (sec > latestEndSec) {
+              latestEndSec = sec;
+              latestEndStr = l.endTime;
+            }
+          });
+          const ocioso = calcularDiferencaMinutos(latestEndStr, currentHourMin);
+          tempoOciosoAtualMinutos = ocioso;
+          ultimaAtividadeFim = latestEndStr;
+          if (ocioso >= toleranciaMinutos) {
+            isAlerta = true;
+            motivoAlerta = `Sem atividade há ${formatarHorasMinutos(ocioso)} (última finalizada às ${latestEndStr.slice(0, 5)})`;
+          }
+        }
+      }
+
+      // Se não deu alerta de ócio atual, verifica se no acumulado do turno o semApontar excedeu a tolerância
+      if (!isAlerta && semApontar > toleranciaMinutos) {
+        isAlerta = true;
+        tempoOciosoAtualMinutos = semApontar;
+        motivoAlerta = `Acumulado de ${formatarHorasMinutos(semApontar)} sem apontamento no turno`;
+      }
+    } else {
+      // Turno Encerrado ou Análise de Período Passado
+      if (semApontar > toleranciaMinutos) {
+        isAlerta = true;
+        tempoOciosoAtualMinutos = semApontar;
+        motivoAlerta = `Turno encerrado com ${formatarHorasMinutos(semApontar)} sem apontamento`;
+      }
+    }
 
     const opsArray = Object.entries(cData.operacoes)
       .map(([nome, opInfo]) => ({
@@ -865,12 +1332,17 @@ export function calcularEficienciaEquipePeriodo(
       turnoEntrada: cData.shiftEntrada,
       turnoSaida: cData.shiftSaida,
       esperadoMinutos: esperado,
-      trabalhadoMinutos: totalTrabalhado,
-      semApontarMinutos: semApontar,
+      trabalhadoMinutos: Math.round(totalTrabalhado),
+      semApontarMinutos: Math.round(semApontar),
       eficienciaPct: parseFloat(Math.min(efi, 100).toFixed(1)),
       eficienciaRaw: Math.min(efi, 100),
       isFimDoTurno: cData.isFimDoTurno,
       isAlertaSemApontar: isAlerta,
+      statusTurno: cData.statusTurnoHoje,
+      tempoOciosoAtualMinutos,
+      motivoAlerta,
+      isLivreAgora,
+      ultimaAtividadeFim,
       operacoes: opsArray,
     });
   });
@@ -1083,6 +1555,42 @@ export function obterTurnoAtual(shifts: ShiftConfig[], date: Date = new Date()):
 export function obterNomeTurnoAtual(shifts: ShiftConfig[], date: Date = new Date()): string {
   const t = obterTurnoAtual(shifts, date);
   return t ? padronizarNomeTurno(t.name) : 'Turno 1';
+}
+
+/**
+ * Busca a configuração do turno correspondente ao nome
+ */
+export function obterConfigTurno(shiftName: string, shifts: ShiftConfig[]): ShiftConfig | undefined {
+  if (!shifts || shifts.length === 0) return undefined;
+  const shiftNorm = padronizarNomeTurno(shiftName);
+  return shifts.find(
+    (s) =>
+      padronizarNomeTurno(s.name) === shiftNorm ||
+      padronizarNomeTurno(s.code) === shiftNorm ||
+      s.name.toUpperCase().includes(shiftNorm.toUpperCase())
+  );
+}
+
+/**
+ * Verifica se um turno específico está com sua jornada em andamento no horário atual
+ */
+export function isTurnoAtivoNoMomento(shiftName: string, shifts: ShiftConfig[], date: Date = new Date()): boolean {
+  if (!shifts || shifts.length === 0) return true;
+  const shiftNorm = padronizarNomeTurno(shiftName);
+  const activeShifts = obterTurnosAtivosNoMomento(shifts, date);
+  return activeShifts.some(
+    (s) =>
+      padronizarNomeTurno(s.name) === shiftNorm ||
+      padronizarNomeTurno(s.code) === shiftNorm
+  );
+}
+
+/**
+ * Verifica se o colaborador pertence a um turno cuja jornada está ativa no momento
+ */
+export function isColaboradorEmTurnoAtivo(colab: Collaborator, shifts: ShiftConfig[], date: Date = new Date()): boolean {
+  if (!colab || !colab.active) return false;
+  return isTurnoAtivoNoMomento(colab.shift, shifts, date);
 }
 
 /**

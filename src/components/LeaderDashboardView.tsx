@@ -782,7 +782,7 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
                       title="Clique para filtrar o histórico deste operador abaixo"
                     >
                       <div className="card-header bg-[#222222] text-white p-3 flex justify-between items-center border-b border-[#333333]">
-                        <div className="flex items-center gap-1.5 truncate max-w-[70%]">
+                        <div className="flex items-center gap-1.5 truncate max-w-[65%]">
                           <span className="font-bold text-sm text-white truncate">
                             {d.nome}
                           </span>
@@ -792,12 +792,30 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
                             </span>
                           )}
                         </div>
-                        <span className="text-[#007BFF] text-xs font-bold font-mono">
-                          {d.turno} {d.esperadoMinutos > 0 ? `(${d.turnoEntrada}-${d.turnoSaida})` : '(Inativo)'}
-                        </span>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                            d.statusTurno === 'NAO_INICIADO'
+                              ? 'bg-[#333333] text-[#AAAAAA]'
+                              : d.statusTurno === 'EM_ANDAMENTO'
+                              ? 'bg-[#00E676]/20 text-[#00E676]'
+                              : 'bg-[#2979FF]/20 text-[#2979FF]'
+                          }`}>
+                            {d.statusTurno === 'NAO_INICIADO' ? '⏳ Aguarda' : d.statusTurno === 'EM_ANDAMENTO' ? '🟢 No Turno' : '🏁 Fim Turno'}
+                          </span>
+                          <span className="text-[#007BFF] text-xs font-bold font-mono">
+                            {d.turno} {d.esperadoMinutos > 0 ? `(${d.turnoEntrada}-${d.turnoSaida})` : '(Inativo)'}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="card-body p-3.5 text-left space-y-3">
+                        {/* Alerta de Ócio se presente */}
+                        {d.isAlertaSemApontar && d.motivoAlerta && (
+                          <div className="p-2 rounded-lg bg-[#FF3D00]/15 border border-[#FF3D00]/40 text-[#FF9E80] text-xs font-bold">
+                            🚨 {d.motivoAlerta}
+                          </div>
+                        )}
+
                         {/* Barra de Progresso de Eficiência */}
                         <div>
                           <div className="flex justify-between text-xs mb-1">

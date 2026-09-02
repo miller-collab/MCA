@@ -182,6 +182,20 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
     };
   }, [efficiencyData]);
 
+  // List of Collaborators with Idle Alert or Unassigned deviation
+  const idleCollaborators = useMemo(() => {
+    return efficiencyData.filter(
+      (op) => op.isAlertaSemApontar || (op.semApontarMinutos >= toleranceMinutes && op.statusTurno !== 'NAO_INICIADO')
+    );
+  }, [efficiencyData, toleranceMinutes]);
+
+  // List of Collaborators with any Unassigned time > 0
+  const unassignedCollaborators = useMemo(() => {
+    return efficiencyData.filter(
+      (op) => op.semApontarMinutos > 0 && op.statusTurno !== 'NAO_INICIADO'
+    );
+  }, [efficiencyData]);
+
   // Data formatted for Column Bar Chart
   const chartData = useMemo(() => {
     return efficiencyData.map((op) => {
@@ -205,11 +219,16 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
         esperadoHoras: formatarHorasMinutos(op.esperadoMinutos),
         trabalhadoMin: op.trabalhadoMinutos,
         semApontarMin: op.semApontarMinutos,
+        statusTurno: op.statusTurno,
+        isAlertaSemApontar: op.isAlertaSemApontar,
+        motivoAlerta: op.motivoAlerta,
+        tempoOciosoAtualMinutos: op.tempoOciosoAtualMinutos,
+        isLivreAgora: op.isLivreAgora,
         effColor,
         shiftColor,
       };
     });
-  }, [efficiencyData]);
+  }, [efficiencyData, efficiencyThresholdGreen, efficiencyThresholdYellow]);
 
   // Handle PIN verification
   const handlePinSubmit = (e?: React.FormEvent) => {
@@ -482,27 +501,137 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           <span className="text-[10px] text-[#666666] mt-0.5">Horas de atividade útil</span>
         </div>
 
-        <div className="bg-[#141414] border border-[#2A2A2A] p-3 rounded-lg flex flex-col justify-between">
-          <span className="text-[10px] uppercase font-bold text-[#888888]">Sem Apontamento</span>
+        {/* CARD 3: SEM APONTAMENTO COM POPOVER AO PASSAR O MOUSE */}
+        <div className="relative group bg-[#141414] border border-[#2A2A2A] hover:border-[#E91E63]/50 p-3 rounded-lg flex flex-col justify-between transition cursor-pointer">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] uppercase font-bold text-[#888888]">Sem Apontamento</span>
+            <span className="text-[9px] text-[#666666] bg-[#222222] px-1.5 py-0.5 rounded font-mono group-hover:text-white transition">
+              {unassignedCollaborators.length} op.
+            </span>
+          </div>
           <div className="text-xl sm:text-2xl font-black text-[#E91E63] font-mono mt-1">
             {formatarHorasMinutos(summaryStats.totalSemApontarMin)}
           </div>
-          <span className="text-[10px] text-[#666666] mt-0.5">Ociosidade / Esperas</span>
+          <span className="text-[10px] text-[#666666] mt-0.5 flex items-center justify-between">
+            <span>Ociosidade / Esperas</span>
+            <span className="text-[9px] text-[#888888] underline decoration-dotted">Ver quem</span>
+          </span>
+
+          {/* POPOVER HOVER: LISTA DE QUEM TEM TEMPO SEM APONTAR */}
+          <div className="absolute left-0 top-full mt-2 w-72 sm:w-80 bg-[#1A1A1A] border border-[#444444] rounded-xl p-3 shadow-2xl z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto">
+            <div className="flex items-center justify-between border-b border-[#333333] pb-1.5 mb-2">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <span>⏱️</span> Operadores com Tempo sem Apontar
+              </span>
+              <span className="text-[10px] font-mono font-bold text-[#E91E63] bg-[#E91E63]/10 px-1.5 py-0.5 rounded">
+                {unassignedCollaborators.length} no período
+              </span>
+            </div>
+            {unassignedCollaborators.length === 0 ? (
+              <p className="text-xs text-[#00E676] py-1 flex items-center gap-1">
+                <span>✅</span> Todos os operadores com 100% de ocupação.
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {unassignedCollaborators.map((op) => (
+                  <div 
+                    key={op.nome} 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onNavigateToHistory) onNavigateToHistory(op.nome);
+                      else if (onDrilldownClick) onDrilldownClick(op.nome);
+                    }}
+                    className="flex items-center justify-between p-1.5 rounded bg-[#111111] hover:bg-[#252525] border border-[#2D2D2D] transition cursor-pointer"
+                  >
+                    <div>
+                      <div className="text-xs font-bold text-white flex items-center gap-1">
+                        <span>{op.nome}</span>
+                        <span className="text-[9px] text-[#888888] font-normal">({op.turno})</span>
+                      </div>
+                      <div className="text-[10px] text-[#888888]">{op.role}</div>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs font-mono font-bold text-[#E91E63]">
+                        {formatarHorasMinutos(op.semApontarMinutos)}
+                      </span>
+                      <div className="text-[9px] text-[#007BFF] font-bold">Ver histórico →</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="bg-[#141414] border border-[#2A2A2A] p-3 rounded-lg flex flex-col justify-between">
-          <span className="text-[10px] uppercase font-bold text-[#888888]">Alertas Ociosidade</span>
+        {/* CARD 4: ALERTAS OCIOSIDADE COM POPOVER INTERATIVO (FOTO 4) */}
+        <div className="relative group bg-[#141414] border border-[#2A2A2A] hover:border-[#FF9800] p-3 rounded-lg flex flex-col justify-between transition cursor-pointer">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] uppercase font-bold text-[#888888]">Alertas Ociosidade</span>
+            <span className="text-[9px] text-[#FF9800] bg-[#FF9800]/10 px-1.5 py-0.5 rounded font-bold font-mono">
+              &gt; {toleranceMinutes}m
+            </span>
+          </div>
           <div className="flex items-center gap-1.5 mt-1">
             <span className={`text-xl sm:text-2xl font-black font-mono ${summaryStats.alertCount > 0 ? 'text-[#FF3D00] animate-pulse' : 'text-[#888888]'}`}>
               {summaryStats.alertCount}
             </span>
             {summaryStats.alertCount > 0 && (
               <span className="text-[10px] text-[#FF9800] bg-[#FF9800]/10 px-1 rounded font-bold">
-                &gt; {toleranceMinutes}m
+                desvio
               </span>
             )}
           </div>
-          <span className="text-[10px] text-[#666666] mt-0.5">Colaboradores c/ desvio</span>
+          <span className="text-[10px] text-[#666666] mt-0.5 flex items-center justify-between">
+            <span>Colaboradores c/ desvio</span>
+            <span className="text-[9px] text-[#FFB74D] underline decoration-dotted">Passe o mouse</span>
+          </span>
+
+          {/* POPOVER HOVER: NOMES E DETALHES DOS COLABORADORES OCIOSOS */}
+          <div className="absolute right-0 top-full mt-2 w-72 sm:w-88 bg-[#1E1400] border-2 border-[#FF9800] rounded-xl p-3 shadow-2xl z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto">
+            <div className="flex items-center justify-between border-b border-[#FF9800]/40 pb-1.5 mb-2">
+              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                <span>🚨</span> Colaboradores Ociosos (&gt; {toleranceMinutes}m)
+              </span>
+              <span className="text-[10px] font-mono font-black text-black bg-[#FF9800] px-1.5 py-0.5 rounded">
+                {idleCollaborators.length} alerta(s)
+              </span>
+            </div>
+            {idleCollaborators.length === 0 ? (
+              <div className="text-xs text-[#00E676] py-1.5 flex items-center gap-1.5 bg-[#00E676]/10 px-2 rounded">
+                <span>✅</span> Nenhum colaborador ocioso no momento (&gt; {toleranceMinutes}m).
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {idleCollaborators.map((op) => (
+                  <div 
+                    key={op.nome} 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onNavigateToHistory) onNavigateToHistory(op.nome);
+                      else if (onDrilldownClick) onDrilldownClick(op.nome);
+                    }}
+                    className="p-2 rounded-lg bg-[#2A1E00] hover:bg-[#382800] border border-[#FF9800]/60 transition cursor-pointer space-y-1"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-black text-white">{op.nome}</span>
+                        <span className="text-[9px] px-1 py-0.2 bg-[#FF9800]/20 text-[#FFE082] rounded font-mono font-bold">
+                          {op.turno}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-[#FF3D00] font-mono font-black">
+                        {formatarHorasMinutos(op.tempoOciosoAtualMinutos || op.semApontarMinutos)}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-[#FFE082] flex items-center justify-between">
+                      <span>{op.motivoAlerta || `Sem apontamento de atividade`}</span>
+                      <span className="text-[9px] text-[#007BFF] font-bold hover:underline shrink-0 ml-1">Ver Histórico →</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -574,14 +703,32 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                       if (active && payload && payload.length) {
                         const data = payload[0].payload;
                         return (
-                          <div className="bg-[#1C1C1C] border border-[#444444] p-3 rounded-xl shadow-2xl text-xs space-y-1.5 z-50">
-                            <div className="font-black text-white text-sm border-b border-[#333333] pb-1 flex items-center justify-between gap-3">
+                          <div className="bg-[#1C1C1C] border border-[#444444] p-3.5 rounded-xl shadow-2xl text-xs space-y-2 z-50 min-w-[220px]">
+                            <div className="font-black text-white text-sm border-b border-[#333333] pb-1.5 flex items-center justify-between gap-3">
                               <span>{data.fullName}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ backgroundColor: `${data.shiftColor}25`, color: data.shiftColor }}>
                                 {data.turno}
                               </span>
                             </div>
-                            <div className="text-[11px] text-[#AAAAAA]">{data.role}</div>
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="text-[#AAAAAA]">{data.role}</span>
+                              <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                                data.statusTurno === 'NAO_INICIADO' 
+                                  ? 'bg-[#333333] text-[#AAAAAA]' 
+                                  : data.statusTurno === 'EM_ANDAMENTO'
+                                  ? 'bg-[#00E676]/20 text-[#00E676]'
+                                  : 'bg-[#2979FF]/20 text-[#2979FF]'
+                              }`}>
+                                {data.statusTurno === 'NAO_INICIADO' ? '⏳ Aguarda Turno' : data.statusTurno === 'EM_ANDAMENTO' ? '🟢 Em Andamento' : '🏁 Turno Encerrado'}
+                              </span>
+                            </div>
+
+                            {data.isAlertaSemApontar && data.motivoAlerta && (
+                              <div className="p-1.5 rounded bg-[#FF3D00]/20 border border-[#FF3D00]/40 text-[#FF9E80] text-[10px] font-bold">
+                                🚨 {data.motivoAlerta}
+                              </div>
+                            )}
+
                             <div className="flex items-center justify-between gap-4 pt-1">
                               <span className="text-[#AAAAAA]">Eficiência:</span>
                               <span className="font-black text-sm font-mono" style={{ color: data.effColor }}>
@@ -684,7 +831,7 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                   >
                     {/* Card Header */}
                     <div className="card-header bg-[#1E1E1E] text-white p-3.5 flex justify-between items-center border-b border-[#2A2A2A]">
-                      <div className="flex items-center gap-2 truncate max-w-[65%]">
+                      <div className="flex items-center gap-2 truncate max-w-[60%]">
                         <span className="font-black text-sm text-white truncate tracking-wide">
                           {d.nome}
                         </span>
@@ -694,13 +841,31 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                           </span>
                         )}
                       </div>
-                      <span className="text-[#007BFF] text-xs font-bold font-mono shrink-0">
-                        {d.turno} {d.esperadoMinutos > 0 ? `(${d.turnoEntrada}-${d.turnoSaida})` : '(Inativo)'}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                          d.statusTurno === 'NAO_INICIADO'
+                            ? 'bg-[#333333] text-[#AAAAAA]'
+                            : d.statusTurno === 'EM_ANDAMENTO'
+                            ? 'bg-[#00E676]/20 text-[#00E676]'
+                            : 'bg-[#2979FF]/20 text-[#2979FF]'
+                        }`}>
+                          {d.statusTurno === 'NAO_INICIADO' ? '⏳ Aguarda' : d.statusTurno === 'EM_ANDAMENTO' ? '🟢 No Turno' : '🏁 Fim Turno'}
+                        </span>
+                        <span className="text-[#007BFF] text-xs font-bold font-mono">
+                          {d.turno} {d.esperadoMinutos > 0 ? `(${d.turnoEntrada}-${d.turnoSaida})` : '(Inativo)'}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Card Body */}
                     <div className="card-body p-4 text-left space-y-3.5">
+                      {/* Alerta de Ócio se presente */}
+                      {d.isAlertaSemApontar && d.motivoAlerta && (
+                        <div className="p-2 rounded-lg bg-[#FF3D00]/15 border border-[#FF3D00]/40 text-[#FF9E80] text-xs font-bold flex items-center justify-between">
+                          <span className="truncate">🚨 {d.motivoAlerta}</span>
+                        </div>
+                      )}
+
                       {/* Eficiência Atual Bar */}
                       <div>
                         <div className="flex justify-between text-xs mb-1.5">

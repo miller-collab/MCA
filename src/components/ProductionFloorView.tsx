@@ -22,6 +22,9 @@ import {
   obterTurnoAtual,
   obterNomeTurnoAtual,
   obterTurnosAtivosNoMomento,
+  obterConfigTurno,
+  isTurnoAtivoNoMomento,
+  isColaboradorEmTurnoAtivo,
   obterConfiguracaoRefeicao,
   colaboradorJaUsouRefeicaoHoje,
   calcularEstadoTempoRefeicao
@@ -83,6 +86,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [colabSearch, setColabSearch] = useState('');
   const [selectedShiftFilter, setSelectedShiftFilter] = useState('TODOS');
   const [colabShiftFilter, setColabShiftFilter] = useState('TODOS');
+  const [allowOffShiftStart, setAllowOffShiftStart] = useState(false);
 
   // Finish state
   const [logToFinish, setLogToFinish] = useState<ProductionLog | null>(null);
@@ -145,31 +149,81 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return new Set(allActiveLogs.map(l => l.collaboratorName.trim().toLowerCase()));
   }, [allActiveLogs]);
 
-  // Available collaborators
-  const availableCollaborators = useMemo(() => {
+  // Todos os colaboradores ativos cadastrados sem tarefa aberta
+  const allFreeCollaborators = useMemo(() => {
     return collaborators.filter(
       c => c.active && !busyCollaborators.has(c.name.trim().toLowerCase())
     );
   }, [collaborators, busyCollaborators]);
 
-  // Filtered available collaborators by search and shift filter (Foto 3 & Foto 5)
-  const filteredAvailableColabs = availableCollaborators.filter(c => {
-    const matchSearch = 
-      c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
-      c.role.toLowerCase().includes(colabSearch.toLowerCase());
-    
-    let matchShift = true;
-    if (colabShiftFilter === 'TURNO_ATUAL') {
+  // Colaboradores livres cujo TURNO ESTÁ ATIVO AGORA NO MOMENTO
+  const availableActiveShiftCollaborators = useMemo(() => {
+    return allFreeCollaborators.filter(c => {
       const colabShiftNorm = padronizarNomeTurno(c.shift);
-      // Se há turnos coincidentes ativos no momento, exibe colaboradores de todos os turnos ativos!
-      matchShift = currentActiveShiftNames.length > 0
-        ? currentActiveShiftNames.includes(colabShiftNorm)
-        : colabShiftNorm === currentActiveShiftName;
-    } else if (colabShiftFilter !== 'TODOS') {
-      matchShift = padronizarNomeTurno(c.shift) === padronizarNomeTurno(colabShiftFilter);
+      return currentActiveShiftNames.includes(colabShiftNorm);
+    });
+  }, [allFreeCollaborators, currentActiveShiftNames]);
+
+  // Contagem de livres para exibir no botão principal do Painel
+  const activeShiftFreeCount = useMemo(() => {
+    if (selectedShiftFilter === 'TODOS') {
+      return availableActiveShiftCollaborators.length;
     }
-    return matchSearch && matchShift;
-  });
+    const filterNorm = padronizarNomeTurno(selectedShiftFilter);
+    // Se o turno filtrado não está ativo agora, o total de livres é 0
+    if (!currentActiveShiftNames.includes(filterNorm)) {
+      return 0;
+    }
+    return availableActiveShiftCollaborators.filter(
+      c => padronizarNomeTurno(c.shift) === filterNorm
+    ).length;
+  }, [selectedShiftFilter, availableActiveShiftCollaborators, currentActiveShiftNames]);
+
+  // Configuração do turno selecionado na aba de seleção
+  const selectedTabShiftConfig = useMemo(() => {
+    if (colabShiftFilter === 'TURNO_ATUAL' || colabShiftFilter === 'TODOS') return undefined;
+    return obterConfigTurno(colabShiftFilter, shifts);
+  }, [colabShiftFilter, shifts]);
+
+  const isSelectedTabShiftActive = useMemo(() => {
+    if (colabShiftFilter === 'TURNO_ATUAL') return true;
+    if (colabShiftFilter === 'TODOS') return true;
+    return isTurnoAtivoNoMomento(colabShiftFilter, shifts, new Date());
+  }, [colabShiftFilter, shifts, secondsTick]);
+
+  // Filtered available collaborators by search, active shift hours and shift tabs
+  const filteredAvailableColabs = useMemo(() => {
+    return allFreeCollaborators.filter(c => {
+      const matchSearch = 
+        c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
+        c.role.toLowerCase().includes(colabSearch.toLowerCase());
+      if (!matchSearch) return false;
+
+      const colabShiftNorm = padronizarNomeTurno(c.shift);
+      const isColabInActiveShift = currentActiveShiftNames.includes(colabShiftNorm);
+
+      if (colabShiftFilter === 'TURNO_ATUAL') {
+        // No turno atual, APENAS exibe colaboradores cujo turno está ativo no momento
+        return isColabInActiveShift;
+      }
+
+      if (colabShiftFilter !== 'TODOS') {
+        const matchesShift = colabShiftNorm === padronizarNomeTurno(colabShiftFilter);
+        if (!matchesShift) return false;
+        // Se o turno não está ativo agora e não habilitou exceção, não exibe
+        if (!isSelectedTabShiftActive && !allowOffShiftStart) {
+          return false;
+        }
+        return true;
+      }
+
+      // Se colabShiftFilter === 'TODOS'
+      if (!allowOffShiftStart) {
+        return isColabInActiveShift;
+      }
+      return true;
+    });
+  }, [allFreeCollaborators, colabSearch, colabShiftFilter, currentActiveShiftNames, isSelectedTabShiftActive, allowOffShiftStart]);
 
   // Unread operator notifications (strictly deduplicated by logId to prevent duplicate cards)
   const unreadOperatorNotifs = useMemo(() => {
@@ -249,6 +303,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setSelectedColab(null);
     setColabSearch('');
     setActivitySearch('');
+    setAllowOffShiftStart(false);
     // Default strictly to the current active shift according to current time (Foto 5)
     setColabShiftFilter('TURNO_ATUAL');
     setCurrentScreen('colab');
@@ -357,9 +412,9 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               className="flex-1 py-3.5 sm:py-4 px-5 sm:px-6 bg-[#0066CC] hover:bg-[#005bb5] active:bg-[#004c99] text-white font-black text-base sm:text-lg rounded-xl border border-[#005bb5] shadow-lg transition-transform transform active:scale-[0.99] flex items-center justify-center gap-2.5 cursor-pointer min-h-[54px]"
             >
               <span className="tracking-wide">➕ INICIAR NOVA ATIVIDADE</span>
-              {availableCollaborators.length > 0 && (
+              {activeShiftFreeCount > 0 && (
                 <span className="bg-black/35 text-[#00E676] text-xs px-2.5 py-1 rounded-full font-mono font-bold border border-black/20">
-                  {availableCollaborators.length} livres
+                  {activeShiftFreeCount} livres
                 </span>
               )}
             </button>
@@ -541,12 +596,38 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             </div>
           )}
 
+          {/* Banner de Aviso quando o Turno selecionado ainda não iniciou no relógio */}
+          {colabShiftFilter !== 'TURNO_ATUAL' && colabShiftFilter !== 'TODOS' && !isSelectedTabShiftActive && selectedTabShiftConfig && (
+            <div className="p-3.5 bg-[#FF8C00]/15 border border-[#FF8C00]/40 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-sm animate-in fade-in">
+              <div className="flex items-center gap-2.5 text-[#FFB74D]">
+                <Clock className="w-5 h-5 shrink-0 text-[#FF8C00]" />
+                <div>
+                  <span className="font-bold">{colabShiftFilter} ({selectedTabShiftConfig.entrada} às {selectedTabShiftConfig.saida})</span>: Expediente ainda não iniciado. Os colaboradores deste turno estarão disponíveis a partir das {selectedTabShiftConfig.entrada}.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAllowOffShiftStart(!allowOffShiftStart)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap cursor-pointer shrink-0 ${
+                  allowOffShiftStart
+                    ? 'bg-[#FF8C00] text-black shadow'
+                    : 'bg-[#2A2A2A] text-white hover:bg-[#333333] border border-[#555555]'
+                }`}
+              >
+                {allowOffShiftStart ? '✓ Exibindo Fora de Turno' : 'Liberar Início Excepcional'}
+              </button>
+            </div>
+          )}
+
           {/* Quick Shift Filter for Operator List on Tablet (Foto 5: Filtrar por Turno Atual) */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1 bg-[#161616] p-1 rounded-xl border border-[#333333] overflow-x-auto">
               <button
                 type="button"
-                onClick={() => setColabShiftFilter('TURNO_ATUAL')}
+                onClick={() => {
+                  setColabShiftFilter('TURNO_ATUAL');
+                  setAllowOffShiftStart(false);
+                }}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[36px] flex items-center gap-1.5 ${
                   colabShiftFilter === 'TURNO_ATUAL'
                     ? 'bg-[#00E676] text-black shadow-md'
@@ -563,7 +644,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                   <button
                     key={shiftOpt}
                     type="button"
-                    onClick={() => setColabShiftFilter(shiftOpt)}
+                    onClick={() => {
+                      setColabShiftFilter(shiftOpt);
+                      setAllowOffShiftStart(false);
+                    }}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[36px] ${
                       isActive
                         ? 'bg-[#007BFF] text-white shadow-sm'
@@ -592,12 +676,26 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
           {/* Grid de Colaboradores (Cards Grandes para Tablet) */}
           {filteredAvailableColabs.length === 0 ? (
-            <div className="p-8 text-center bg-[#181818] border border-[#2D2D2D] rounded-2xl">
-              <p className="text-white font-bold">
+            <div className="p-8 text-center bg-[#181818] border border-[#2D2D2D] rounded-2xl space-y-3">
+              <p className="text-white font-bold text-base">
                 {colabSearch
                   ? 'Nenhum colaborador encontrado com este filtro.'
-                  : 'Todos os colaboradores deste turno já estão com atividades em andamento.'}
+                  : !isSelectedTabShiftActive && selectedTabShiftConfig
+                  ? `O ${colabShiftFilter} (${selectedTabShiftConfig.entrada} - ${selectedTabShiftConfig.saida}) ainda não iniciou. Colaboradores estarão disponíveis a partir das ${selectedTabShiftConfig.entrada}.`
+                  : `Todos os colaboradores do ${colabShiftFilter === 'TURNO_ATUAL' ? currentActiveShiftName : colabShiftFilter} já estão com atividades em andamento.`}
               </p>
+              {!isSelectedTabShiftActive && selectedTabShiftConfig && !allowOffShiftStart && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setAllowOffShiftStart(true)}
+                    className="px-4 py-2 bg-[#2A2000] hover:bg-[#3A2D00] text-[#FFB74D] font-bold text-xs rounded-xl border border-[#FF8C00]/40 cursor-pointer inline-flex items-center gap-2"
+                  >
+                    <Clock className="w-4 h-4 text-[#FF8C00]" />
+                    <span>Liberar operador fora de turno (Exceção / Hora Extra)</span>
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -610,6 +708,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                     colab.shift.toUpperCase().includes(s.name.toUpperCase())
                 );
                 const isShiftInactive = assignedShift && (!assignedShift.dias || assignedShift.dias.length === 0);
+                const isOutOfCurrentShift = !currentActiveShiftNames.includes(padronizarNomeTurno(colab.shift));
                 const hasRecentAutoClose = autoCloseNotifs.some(n => n.collaboratorName === colab.name && !n.readByOperator);
 
                 return (
@@ -617,7 +716,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                     key={colab.id}
                     onClick={() => handleSelectColab(colab)}
                     className={`p-3.5 sm:p-4 bg-[#1C1C1C] hover:bg-[#282828] active:bg-[#333333] text-white rounded-xl text-left transition-all border cursor-pointer flex flex-col justify-between relative shadow-md hover:scale-[1.01] active:scale-[0.98] min-h-[100px] ${
-                      hasRecentAutoClose ? 'border-[#FF9800] bg-[#2A2000]' : 'border-[#333333]'
+                      hasRecentAutoClose ? 'border-[#FF9800] bg-[#2A2000]' : isOutOfCurrentShift ? 'border-[#FF8C00]/40 bg-[#1F1A12]' : 'border-[#333333]'
                     }`}
                     style={{ borderTop: `5px solid ${corFuncao}` }}
                   >
@@ -638,11 +737,15 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                       <span className="text-[#007BFF] font-bold truncate">
                         {padronizarNomeTurno(colab.shift)} {assignedShift ? `(${assignedShift.entrada}-${assignedShift.saida})` : ''}
                       </span>
-                      {isShiftInactive && (
+                      {isOutOfCurrentShift ? (
+                        <span className="text-[#FF8C00] font-bold text-[9px] px-1 bg-[#FF8C00]/20 rounded shrink-0" title="Fora do horário do turno atual">
+                          Inicia {assignedShift?.entrada || 'depois'}
+                        </span>
+                      ) : isShiftInactive ? (
                         <span className="text-[#FF3D00] font-bold text-[9px] px-1 bg-[#FF3D00]/20 rounded shrink-0">
                           Inativo
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </button>
                 );
