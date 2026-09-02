@@ -1244,12 +1244,12 @@ export function calcularEficienciaEquipePeriodo(
     // Cálculo de Eficiência
     let efi = 0;
     if (cData.statusTurnoHoje === 'NAO_INICIADO' && diasIntervalo.length === 1 && diasIntervalo[0].datePtBr === hojePtBr) {
-      // Se estamos vendo apenas hoje e o turno ainda não iniciou
-      efi = 100;
+      // Se estamos vendo apenas hoje e o turno ainda não iniciou, não há jornada decorrida
+      efi = 0;
     } else if (esperado > 0) {
       efi = (totalTrabalhado / esperado) * 100;
     } else {
-      efi = totalTrabalhado > 0 ? 100 : (cData.statusTurnoHoje === 'NAO_INICIADO' ? 100 : 0);
+      efi = 0;
     }
 
     const semApontar = esperado > 0 ? Math.max(0, esperado - totalTrabalhado) : 0;

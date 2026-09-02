@@ -92,6 +92,9 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
 
+  // Tablet & Touch interactive modal state ('idle_alerts' | 'unassigned' | null)
+  const [activeModal, setActiveModal] = useState<'idle_alerts' | 'unassigned' | null>(null);
+
   // Quick Date Range Presets
   const handleApplyPreset = (preset: 'hoje' | 'ontem' | 'ultimos7' | 'esteMes' | 'dia28') => {
     const now = new Date();
@@ -205,8 +208,13 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
       if (normTurno.includes('3')) shiftColor = '#9C27B0'; // Turno 3
 
       let effColor = '#00E676';
-      if (op.eficienciaPct < efficiencyThresholdYellow) effColor = '#E91E63';
-      else if (op.eficienciaPct < efficiencyThresholdGreen) effColor = '#FFD700';
+      if (op.statusTurno === 'NAO_INICIADO') {
+        effColor = '#555555'; // Neutro/cinza para operadores cujo turno ainda não iniciou
+      } else if (op.eficienciaPct < efficiencyThresholdYellow) {
+        effColor = '#E91E63';
+      } else if (op.eficienciaPct < efficiencyThresholdGreen) {
+        effColor = '#FFD700';
+      }
 
       return {
         name: op.nome.split(' ')[0], // Primeiro nome para legibilidade no eixo X
@@ -419,10 +427,10 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           </div>
         </div>
 
-        {/* Row 2: Search and View Mode Selectors */}
+        {/* Row 2: Search, Shift Filter Pills, and View Mode Selectors */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#2A2A2A] pt-3">
           {/* Collaborator Search Input */}
-          <div className="flex items-center gap-2 flex-1 sm:max-w-[280px]">
+          <div className="flex items-center gap-2 flex-1 sm:max-w-[240px]">
             <input
               type="text"
               placeholder="Buscar colaborador ou cargo..."
@@ -430,6 +438,26 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
               onChange={(e) => setSearchName(e.target.value)}
               className="w-full py-1.5 px-2.5 bg-[#111111] text-white border border-[#444444] rounded-lg text-xs focus:outline-none focus:border-[#007BFF]"
             />
+          </div>
+
+          {/* Quick Shift Filter Pills */}
+          <div className="flex items-center gap-1 bg-[#111111] p-1 rounded-lg border border-[#333333]">
+            {['TODOS', 'Turno 1', 'Turno 2', 'Turno 3'].map((shiftOpt) => {
+              const isActive = selectedShift === shiftOpt;
+              return (
+                <button
+                  key={shiftOpt}
+                  onClick={() => setSelectedShift(shiftOpt)}
+                  className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
+                    isActive
+                      ? 'bg-[#007BFF] text-white shadow-sm'
+                      : 'text-[#888888] hover:text-white hover:bg-[#222222]'
+                  }`}
+                >
+                  {shiftOpt === 'TODOS' ? 'Todos os Turnos' : shiftOpt}
+                </button>
+              );
+            })}
           </div>
 
           {/* View Mode Toggle Buttons */}
@@ -501,8 +529,12 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           <span className="text-[10px] text-[#666666] mt-0.5">Horas de atividade útil</span>
         </div>
 
-        {/* CARD 3: SEM APONTAMENTO COM POPOVER AO PASSAR O MOUSE */}
-        <div className="relative group bg-[#141414] border border-[#2A2A2A] hover:border-[#E91E63]/50 p-3 rounded-lg flex flex-col justify-between transition cursor-pointer">
+        {/* CARD 3: SEM APONTAMENTO COM CLIQUE PARA TABLET E POPOVER */}
+        <div 
+          onClick={() => setActiveModal('unassigned')}
+          className="relative group bg-[#141414] border border-[#2A2A2A] hover:border-[#E91E63]/60 p-3 rounded-lg flex flex-col justify-between transition cursor-pointer active:scale-[0.98] select-none"
+          title="Clique ou toque para ver os operadores sem apontamento"
+        >
           <div className="flex items-center justify-between">
             <span className="text-[10px] uppercase font-bold text-[#888888]">Sem Apontamento</span>
             <span className="text-[9px] text-[#666666] bg-[#222222] px-1.5 py-0.5 rounded font-mono group-hover:text-white transition">
@@ -514,11 +546,11 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           </div>
           <span className="text-[10px] text-[#666666] mt-0.5 flex items-center justify-between">
             <span>Ociosidade / Esperas</span>
-            <span className="text-[9px] text-[#888888] underline decoration-dotted">Ver quem</span>
+            <span className="text-[9px] text-[#E91E63] font-bold underline decoration-dotted">Toque para ver 👆</span>
           </span>
 
-          {/* POPOVER HOVER: LISTA DE QUEM TEM TEMPO SEM APONTAR */}
-          <div className="absolute left-0 top-full mt-2 w-72 sm:w-80 bg-[#1A1A1A] border border-[#444444] rounded-xl p-3 shadow-2xl z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto">
+          {/* POPOVER HOVER: LISTA DE QUEM TEM TEMPO SEM APONTAR (Para Desktop com Mouse) */}
+          <div className="hidden sm:block absolute left-0 top-full mt-2 w-72 sm:w-80 bg-[#1A1A1A] border border-[#444444] rounded-xl p-3 shadow-2xl z-40 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto">
             <div className="flex items-center justify-between border-b border-[#333333] pb-1.5 mb-2">
               <span className="text-xs font-bold text-white flex items-center gap-1.5">
                 <span>⏱️</span> Operadores com Tempo sem Apontar
@@ -563,8 +595,12 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           </div>
         </div>
 
-        {/* CARD 4: ALERTAS OCIOSIDADE COM POPOVER INTERATIVO (FOTO 4) */}
-        <div className="relative group bg-[#141414] border border-[#2A2A2A] hover:border-[#FF9800] p-3 rounded-lg flex flex-col justify-between transition cursor-pointer">
+        {/* CARD 4: ALERTAS OCIOSIDADE COM CLIQUE PARA TABLET E POPOVER */}
+        <div 
+          onClick={() => setActiveModal('idle_alerts')}
+          className="relative group bg-[#141414] border border-[#2A2A2A] hover:border-[#FF9800] p-3 rounded-lg flex flex-col justify-between transition cursor-pointer active:scale-[0.98] select-none"
+          title="Clique ou toque para abrir a lista de colaboradores ociosos"
+        >
           <div className="flex items-center justify-between">
             <span className="text-[10px] uppercase font-bold text-[#888888]">Alertas Ociosidade</span>
             <span className="text-[9px] text-[#FF9800] bg-[#FF9800]/10 px-1.5 py-0.5 rounded font-bold font-mono">
@@ -583,11 +619,11 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           </div>
           <span className="text-[10px] text-[#666666] mt-0.5 flex items-center justify-between">
             <span>Colaboradores c/ desvio</span>
-            <span className="text-[9px] text-[#FFB74D] underline decoration-dotted">Passe o mouse</span>
+            <span className="text-[9px] text-[#FF9800] font-bold underline decoration-dotted">Toque para ver 👆</span>
           </span>
 
-          {/* POPOVER HOVER: NOMES E DETALHES DOS COLABORADORES OCIOSOS */}
-          <div className="absolute right-0 top-full mt-2 w-72 sm:w-88 bg-[#1E1400] border-2 border-[#FF9800] rounded-xl p-3 shadow-2xl z-50 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto">
+          {/* POPOVER HOVER: NOMES E DETALHES DOS COLABORADORES OCIOSOS (Para Desktop com Mouse) */}
+          <div className="hidden sm:block absolute right-0 top-full mt-2 w-72 sm:w-88 bg-[#1E1400] border-2 border-[#FF9800] rounded-xl p-3 shadow-2xl z-40 invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto">
             <div className="flex items-center justify-between border-b border-[#FF9800]/40 pb-1.5 mb-2">
               <span className="text-xs font-bold text-white flex items-center gap-1.5">
                 <span>🚨</span> Colaboradores Ociosos (&gt; {toleranceMinutes}m)
@@ -948,6 +984,150 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
             </div>
           )}
         </>
+      )}
+
+      {/* MODAL TOUCH / TABLET: DETALHES DE ALERTAS DE OCIOSIDADE E SEM APONTAMENTO */}
+      {activeModal && (
+        <div 
+          className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4"
+          onClick={() => setActiveModal(null)}
+        >
+          <div 
+            className="bg-[#181818] border border-[#444444] rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className={`p-4 border-b flex items-center justify-between ${
+              activeModal === 'idle_alerts' ? 'bg-[#2A1E00] border-[#FF9800]/40' : 'bg-[#1E1118] border-[#E91E63]/40'
+            }`}>
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl">
+                  {activeModal === 'idle_alerts' ? '🚨' : '⏱️'}
+                </span>
+                <div>
+                  <h3 className="font-black text-sm sm:text-base text-white">
+                    {activeModal === 'idle_alerts' 
+                      ? `Alertas de Ociosidade (> ${toleranceMinutes}m)`
+                      : 'Operadores com Tempo sem Apontamento'
+                    }
+                  </h3>
+                  <p className="text-[11px] text-[#AAAAAA]">
+                    {activeModal === 'idle_alerts'
+                      ? `${idleCollaborators.length} colaborador(es) com desvio identificado`
+                      : `${unassignedCollaborators.length} colaborador(es) no período analisado`
+                    }
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="text-[#AAAAAA] hover:text-white p-2 rounded-xl bg-[#000000]/40 hover:bg-[#000000]/70 transition cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body / Scrollable List */}
+            <div className="p-4 overflow-y-auto space-y-2.5 flex-1 divide-y divide-[#262626]">
+              {activeModal === 'idle_alerts' ? (
+                idleCollaborators.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-[#00E676] bg-[#00E676]/10 border border-[#00E676]/30 rounded-xl space-y-1">
+                    <span className="text-2xl block mb-1">✅</span>
+                    <p className="font-bold">Nenhum operador ocioso no momento</p>
+                    <p className="text-xs text-[#888888]">Todos os colaboradores dentro da tolerância de {toleranceMinutes} minutos.</p>
+                  </div>
+                ) : (
+                  idleCollaborators.map((op) => (
+                    <div
+                      key={op.nome}
+                      onClick={() => {
+                        setActiveModal(null);
+                        if (onNavigateToHistory) onNavigateToHistory(op.nome);
+                        else if (onDrilldownClick) onDrilldownClick(op.nome);
+                      }}
+                      className="p-3 rounded-xl bg-[#221805] hover:bg-[#332200] border border-[#FF9800]/50 transition cursor-pointer space-y-2 active:scale-[0.99]"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-black text-sm text-white">{op.nome}</span>
+                          <span className="text-[10px] px-2 py-0.5 bg-[#FF9800]/25 text-[#FFE082] rounded font-mono font-bold">
+                            {op.turno}
+                          </span>
+                        </div>
+                        <span className="text-sm font-mono font-black text-[#FF3D00]">
+                          {formatarHorasMinutos(op.tempoOciosoAtualMinutos || op.semApontarMinutos)}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-[#FFE082] bg-[#000000]/30 p-2 rounded-lg border border-[#FF9800]/20">
+                        {op.motivoAlerta || 'Sem apontamento de atividade no turno'}
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] pt-1">
+                        <span className="text-[#888888]">{op.role}</span>
+                        <span className="text-[#007BFF] font-bold flex items-center gap-1 hover:underline">
+                          Abrir histórico completo →
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )
+              ) : (
+                unassignedCollaborators.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-[#00E676] bg-[#00E676]/10 border border-[#00E676]/30 rounded-xl space-y-1">
+                    <span className="text-2xl block mb-1">✅</span>
+                    <p className="font-bold">100% de ocupação no período</p>
+                    <p className="text-xs text-[#888888]">Nenhum operador com tempo sem apontar.</p>
+                  </div>
+                ) : (
+                  unassignedCollaborators.map((op) => (
+                    <div
+                      key={op.nome}
+                      onClick={() => {
+                        setActiveModal(null);
+                        if (onNavigateToHistory) onNavigateToHistory(op.nome);
+                        else if (onDrilldownClick) onDrilldownClick(op.nome);
+                      }}
+                      className="p-3 rounded-xl bg-[#1A1217] hover:bg-[#2A1B24] border border-[#E91E63]/40 transition cursor-pointer space-y-2 active:scale-[0.99]"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="font-black text-sm text-white">{op.nome}</span>
+                          <span className="text-[10px] px-2 py-0.5 bg-[#E91E63]/25 text-[#FF80AB] rounded font-mono font-bold">
+                            {op.turno}
+                          </span>
+                        </div>
+                        <span className="text-sm font-mono font-black text-[#E91E63]">
+                          {formatarHorasMinutos(op.semApontarMinutos)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-[#888888]">{op.role} • Eficiência: {op.eficienciaPct.toFixed(1)}%</span>
+                        <span className="text-[#007BFF] font-bold flex items-center gap-1 hover:underline">
+                          Abrir histórico completo →
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 bg-[#111111] border-t border-[#2A2A2A] flex justify-end">
+              <button
+                type="button"
+                onClick={() => setActiveModal(null)}
+                className="py-2 px-5 bg-[#2A2A2A] hover:bg-[#383838] text-white font-bold rounded-xl text-xs transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Modal de Senha do Líder para Proteção do Max. Sem Apontar */}
