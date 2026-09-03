@@ -115,6 +115,27 @@ export interface OperatorEfficiency {
   }[];
 }
 
+export interface DailyCollaboratorEfficiency {
+  dateIso: string;
+  datePtBr: string;
+  dayLabel: string;
+  dayOfWeek: string;
+  dayOfWeekFull: string;
+  esperadoMinutos: number;
+  trabalhadoMinutos: number;
+  semApontarMinutos: number;
+  eficienciaPct: number;
+  statusDia: 'EM_ANDAMENTO' | 'NAO_INICIADO' | 'ENCERRADO' | 'FOLGA';
+  statusLabel: string;
+  isAlerta: boolean;
+  motivoAlerta?: string;
+  operacoes: {
+    nome: string;
+    tempoMinutos: number;
+    category?: string;
+  }[];
+}
+
 export interface AIAnalysisResponse {
   summary: string;
   overallScore: number;

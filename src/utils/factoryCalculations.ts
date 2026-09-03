@@ -1,4 +1,4 @@
-import { ProductionLog, ShiftConfig, OperatorEfficiency, Collaborator, ActivityItem } from '../types';
+import { ProductionLog, ShiftConfig, OperatorEfficiency, Collaborator, ActivityItem, DailyCollaboratorEfficiency } from '../types';
 
 /**
  * Calculates the difference in minutes between two "HH:mm" or "HH:mm:ss" strings.
@@ -1099,31 +1099,13 @@ export function calcularEficienciaEquipePeriodo(
 
     const statusHoje = obterStatusTurno(tData.sai, tData.ent, tData.dias, agora);
 
-    // Calcula esperado no período somando os dias em que o turno trabalha
+    // Calcula esperado no período somando os dias em que o turno trabalha conforme a configuração do turno
     let esperadoMinutosPeriodo = 0;
     diasIntervalo.forEach((diaInfo) => {
       const trabalhaNesteDia = tData.dias && tData.dias.includes(diaInfo.dayOfWeek);
       if (trabalhaNesteDia) {
-        if (diaInfo.datePtBr === hojePtBr) {
-          // Para hoje: considera o status atual do turno
-          if (statusHoje === 'ENCERRADO') {
-            esperadoMinutosPeriodo += tData.min;
-          } else if (statusHoje === 'EM_ANDAMENTO') {
-            // Tempo decorrido de turno até agora
-            let decorrido = calcularDiferencaMinutos(tData.ent, currentHourMin);
-            if (tData.entAlmoco && tData.saiAlmoco) {
-              const almocoOverlap = calcularSobreposicaoRefeicaoMinutos(tData.ent, currentHourMin, tData.entAlmoco, tData.saiAlmoco);
-              decorrido = Math.max(0, decorrido - almocoOverlap);
-            }
-            esperadoMinutosPeriodo += Math.min(decorrido, tData.min);
-          } else {
-            // NAO_INICIADO ou FOLGA: 0 minutos esperados até agora
-            esperadoMinutosPeriodo += 0;
-          }
-        } else {
-          // Dias passados: carga completa do turno
-          esperadoMinutosPeriodo += tData.min;
-        }
+        // Meta útil do turno para cada dia de trabalho no período (definida na configuração do turno)
+        esperadoMinutosPeriodo += tData.min;
       }
     });
 
@@ -1370,6 +1352,206 @@ export function calcularEficienciaEquipe(
     dataAlvo,
     toleranciaMinutos
   );
+}
+
+/**
+ * Calculates day-by-day efficiency breakdown for a single collaborator across a date range.
+ * Perfect for individual analysis when a collaborator is selected/filtered.
+ */
+export function calcularEficienciaIndividualDiaria(
+  logs: ProductionLog[] = [],
+  collaboratorName: string,
+  collaborators: Collaborator[] = [],
+  shifts: ShiftConfig[] = [],
+  dataInicioStr: string,
+  dataFimStr: string,
+  toleranciaMinutos: number = 60
+): DailyCollaboratorEfficiency[] {
+  if (!collaboratorName || !collaboratorName.trim()) return [];
+
+  const targetNorm = collaboratorName.trim().toLowerCase();
+  const colab = (collaborators || []).find((c) => c && c.name && c.name.trim().toLowerCase() === targetNorm) || {
+    id: `temp-${targetNorm}`,
+    name: collaboratorName,
+    role: 'OPERADOR',
+    shift: 'Turno 1',
+    active: true,
+  };
+
+  const diasIntervalo = gerarDatasNoIntervalo(dataInicioStr, dataFimStr);
+  if (!diasIntervalo || diasIntervalo.length === 0) return [];
+
+  const hojePtBr = formatarDataPtBr(new Date());
+  const agora = new Date();
+  const currentHourMin = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+
+  // Encontra configuração do turno do operador
+  const turnoKey = (colab.shift || 'Turno 1').toUpperCase().trim();
+  const fallbackShift: ShiftConfig = {
+    id: 't1',
+    name: 'Turno 1',
+    code: 't1',
+    entrada: '07:00',
+    saida: '17:30',
+    saidaAlmoco: '12:00',
+    retornoAlmoco: '13:30',
+    dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+    color: '#007BFF',
+  };
+
+  const shiftFound = (shifts || []).find((s) => {
+    if (!s) return false;
+    const sName = (s.name || '').toUpperCase();
+    const sCode = (s.code || '').toUpperCase();
+    return sName.includes(turnoKey) || turnoKey.includes(sName) || (sCode && sCode.includes(turnoKey));
+  }) || shifts?.[0] || fallbackShift;
+
+  const shiftData = {
+    shift: shiftFound,
+    min: calcularCargaHorariaTurno(shiftFound) || 540,
+    ent: shiftFound?.entrada || '07:00',
+    sai: shiftFound?.saida || '17:30',
+    entAlmoco: shiftFound?.saidaAlmoco || '12:00',
+    saiAlmoco: shiftFound?.retornoAlmoco || '13:30',
+    dias: shiftFound?.dias && shiftFound.dias.length > 0 ? shiftFound.dias : ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+  };
+
+  const statusHoje = obterStatusTurno(shiftData.sai, shiftData.ent, shiftData.dias, agora);
+
+  const DIAS_FULL_MAP: Record<string, string> = {
+    Dom: 'Domingo',
+    Seg: 'Segunda-feira',
+    Ter: 'Terça-feira',
+    Qua: 'Quarta-feira',
+    Qui: 'Quinta-feira',
+    Sex: 'Sexta-feira',
+    Sab: 'Sábado',
+  };
+
+  // Filtra os logs apenas desse colaborador
+  const userLogs = (logs || []).filter(
+    (l) => l && l.collaboratorName && l.collaboratorName.trim().toLowerCase() === targetNorm
+  );
+
+  return diasIntervalo.map((diaInfo) => {
+    const isHoje = diaInfo.datePtBr === hojePtBr;
+    const trabalhaNesteDia = shiftData.dias && shiftData.dias.includes(diaInfo.dayOfWeek);
+
+    let statusDia: 'EM_ANDAMENTO' | 'NAO_INICIADO' | 'ENCERRADO' | 'FOLGA' = 'ENCERRADO';
+    let statusLabel = 'Turno Concluído';
+    let esperadoDia = 0;
+
+    if (!trabalhaNesteDia) {
+      statusDia = 'FOLGA';
+      statusLabel = 'Folga / Fim de Semana';
+      esperadoDia = 0;
+    } else {
+      statusDia = isHoje ? statusHoje : 'ENCERRADO';
+      statusLabel = isHoje
+        ? (statusHoje === 'EM_ANDAMENTO' ? 'Em Andamento' : statusHoje === 'NAO_INICIADO' ? 'Aguardando Turno' : 'Turno Encerrado')
+        : 'Turno Concluído';
+      esperadoDia = shiftData.min;
+    }
+
+    // Processa logs do dia
+    const logsDoDia = userLogs.filter((l) => l && padronizarDataPtBr(l.date) === diaInfo.datePtBr);
+    let trabalhadoMinutosDia = 0;
+    const operacoesMap: Record<string, { tempoMinutos: number; category?: string }> = {};
+
+    logsDoDia.forEach((log) => {
+      let duracao = 0;
+      if (log.status === 'Concluída') {
+        if (log.durationMinutes !== undefined && log.durationMinutes > 0) {
+          duracao = log.durationMinutes;
+        } else if (log.startTime && log.endTime) {
+          duracao = calcularDiferencaMinutos(log.startTime, log.endTime);
+          if (log.mealBreakDeducted && log.mealBreakMinutes) {
+            duracao = Math.max(0, duracao - log.mealBreakMinutes);
+          }
+        }
+      } else if (log.status === 'Em Execução' && log.startTime) {
+        if (isHoje && statusHoje === 'EM_ANDAMENTO') {
+          const parts = (log.startTime || '00:00:00').split(':');
+          const h = parseInt(parts[0], 10) || 0;
+          const m = parseInt(parts[1], 10) || 0;
+          const s = parseInt(parts[2] || '0', 10) || 0;
+          const inicio = new Date();
+          inicio.setHours(h, m, s, 0);
+          if (inicio.getTime() > agora.getTime()) {
+            inicio.setDate(inicio.getDate() - 1);
+          }
+          const diffMs = agora.getTime() - inicio.getTime();
+          duracao = diffMs > 0 ? diffMs / 60000 : 0;
+        } else {
+          duracao = calcularDiferencaMinutos(log.startTime, shiftData.sai);
+          const meal = obterConfiguracaoRefeicao(shiftData.shift ? shiftData.shift.name : 'Turno 1', shifts);
+          if (meal && meal.duracaoMinutos && duracao > meal.duracaoMinutos) {
+            duracao = Math.max(0, duracao - meal.duracaoMinutos);
+          }
+        }
+      } else if (log.status === 'Pausada') {
+        duracao = log.durationMinutes || 0;
+      }
+
+      trabalhadoMinutosDia += duracao;
+
+      const actName = log.activity || 'Atividade';
+      if (!operacoesMap[actName]) {
+        operacoesMap[actName] = { tempoMinutos: 0, category: log.category };
+      }
+      operacoesMap[actName].tempoMinutos += duracao;
+    });
+
+    const trabalhadoAjustado = Math.min(trabalhadoMinutosDia, Math.max(esperadoDia, 540));
+    const semApontar = esperadoDia > 0 ? Math.max(0, esperadoDia - trabalhadoAjustado) : 0;
+
+    let efi = 0;
+    if (statusDia === 'NAO_INICIADO') {
+      efi = 0;
+    } else if (statusDia === 'FOLGA') {
+      efi = trabalhadoAjustado > 0 ? 100 : 0;
+    } else if (esperadoDia > 0) {
+      efi = (trabalhadoAjustado / esperadoDia) * 100;
+    } else {
+      efi = 0;
+    }
+
+    const diaFull = DIAS_FULL_MAP[diaInfo.dayOfWeek] || diaInfo.dayOfWeek;
+    const diaMes = diaInfo.datePtBr ? diaInfo.datePtBr.slice(0, 5) : ''; // "26/08"
+    const dayLabel = `${diaMes} ${diaInfo.dayOfWeek}`;
+
+    const opsArray = Object.entries(operacoesMap)
+      .map(([nome, op]) => ({
+        nome,
+        tempoMinutos: Math.round(op.tempoMinutos || 0),
+        category: op.category,
+      }))
+      .sort((a, b) => b.tempoMinutos - a.tempoMinutos);
+
+    let isAlerta = false;
+    let motivoAlerta: string | undefined = undefined;
+    if (statusDia !== 'FOLGA' && statusDia !== 'NAO_INICIADO' && semApontar > toleranciaMinutos) {
+      isAlerta = true;
+      motivoAlerta = `${formatarHorasMinutos(semApontar)} sem apontamento no dia`;
+    }
+
+    return {
+      dateIso: padronizarDataIso(diaInfo.datePtBr),
+      datePtBr: diaInfo.datePtBr,
+      dayLabel,
+      dayOfWeek: diaInfo.dayOfWeek,
+      dayOfWeekFull: diaFull,
+      esperadoMinutos: Math.round(esperadoDia),
+      trabalhadoMinutos: Math.round(trabalhadoAjustado),
+      semApontarMinutos: Math.round(semApontar),
+      eficienciaPct: parseFloat(Math.min(Math.max(0, efi), 100).toFixed(1)),
+      statusDia,
+      statusLabel,
+      isAlerta,
+      motivoAlerta,
+      operacoes: opsArray,
+    };
+  });
 }
 
 /**

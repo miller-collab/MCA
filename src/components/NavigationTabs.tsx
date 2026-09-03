@@ -1,7 +1,7 @@
 import React from 'react';
-import { Play, BarChart2, History, BarChart3, Clock, Lock, Unlock } from 'lucide-react';
+import { Play, BarChart2, History, BarChart3, Clock, Lock, Unlock, TrendingUp } from 'lucide-react';
 
-export type TabKey = 'painel' | 'eficiencia' | 'historico' | 'indicadores' | 'turnos';
+export type TabKey = 'painel' | 'eficiencia' | 'grafico-diario' | 'historico' | 'indicadores' | 'turnos';
 
 interface NavigationTabsProps {
   activeTab: TabKey;
@@ -21,6 +21,7 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
   const tabs = [
     { id: 'painel' as TabKey, label: 'PRODUÇÃO', icon: Play, count: activeCount },
     { id: 'eficiencia' as TabKey, label: 'EFICIÊNCIA', icon: BarChart2 },
+    { id: 'grafico-diario' as TabKey, label: 'GRÁFICO DIÁRIO', icon: TrendingUp },
     { id: 'historico' as TabKey, label: 'HISTÓRICO', icon: History },
     { id: 'indicadores' as TabKey, label: 'INDICADORES LÍDER', icon: BarChart3, isProtected: true, alertCount: leaderAlertCount },
     { id: 'turnos' as TabKey, label: 'TURNOS', icon: Clock, isProtected: true },

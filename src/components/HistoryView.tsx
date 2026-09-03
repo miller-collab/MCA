@@ -72,7 +72,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   // Modal para Preencher Apontamento Retroativo no GAP
   const [fillingGap, setFillingGap] = useState<ShiftGapEntry | null>(null);
   const [gapActivityName, setGapActivityName] = useState('');
-  const [gapCategory, setGapCategory] = useState<ActivityCategory>('PRODUCAO');
+  const [gapCategory, setGapCategory] = useState<ActivityCategory>('Operação');
   const [gapStartTime, setGapStartTime] = useState('');
   const [gapEndTime, setGapEndTime] = useState('');
   const [gapObs, setGapObs] = useState('');
@@ -314,7 +314,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const openFillGapModal = (gap: ShiftGapEntry) => {
     setFillingGap(gap);
     setGapActivityName('AFIAR FERRAMENTAS');
-    setGapCategory('SETUP');
+    setGapCategory('Setup');
     setGapStartTime(gap.startTime);
     setGapEndTime(gap.endTime);
     setGapObs(`Apontamento preenchido retroativamente pelo líder (período sem registro das ${gap.startTime} às ${gap.endTime})`);

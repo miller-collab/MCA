@@ -1328,7 +1328,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                       if (editingActId) {
                         setEditActForm({
                           ...editActForm,
-                          priority: val === '' ? ('' as unknown as number) : val,
+                          priority: val === '' ? 0 : parseFloat(val) || 0,
                         });
                       } else {
                         setNewActPriority(val);
@@ -1521,7 +1521,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                                   const val = e.target.value;
                                   setEditActForm({
                                     ...editActForm,
-                                    priority: val === '' ? ('' as unknown as number) : val,
+                                    priority: val === '' ? 0 : parseFloat(val) || 0,
                                   });
                                 }}
                                 className="w-16 p-1 bg-[#111111] text-white text-center font-mono rounded border border-[#555555] focus:border-[#007BFF] focus:outline-none"

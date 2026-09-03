@@ -29,9 +29,10 @@ import {
   Cell, 
   CartesianGrid 
 } from 'recharts';
-import { ProductionLog, Collaborator, ShiftConfig, OperatorEfficiency } from '../types';
+import { ProductionLog, Collaborator, ShiftConfig, OperatorEfficiency, DailyCollaboratorEfficiency } from '../types';
 import { 
   calcularEficienciaEquipePeriodo, 
+  calcularEficienciaIndividualDiaria,
   formatarDataPtBr, 
   formatarHorasMinutos,
   padronizarNomeTurno,
@@ -53,6 +54,7 @@ interface EfficiencyViewProps {
   onUnlockLeader: (pin: string) => boolean;
   onDrilldownClick?: (operatorName: string) => void;
   onNavigateToHistory?: (operatorName?: string) => void;
+  onNavigateToGraficoDiario?: (operatorName?: string) => void;
 }
 
 export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
@@ -68,6 +70,7 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
   onUnlockLeader,
   onDrilldownClick,
   onNavigateToHistory,
+  onNavigateToGraficoDiario,
 }) => {
   // Date Range filter (defaults to today)
   const [startDate, setStartDate] = useState(() => {
@@ -94,6 +97,11 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
 
   // Tablet & Touch interactive modal state ('idle_alerts' | 'unassigned' | null)
   const [activeModal, setActiveModal] = useState<'idle_alerts' | 'unassigned' | null>(null);
+
+  // List of days in the selected date range
+  const diasNoPeriodo = useMemo(() => {
+    return gerarDatasNoIntervalo(startDate, endDate);
+  }, [startDate, endDate]);
 
   // Quick Date Range Presets
   const handleApplyPreset = (preset: 'hoje' | 'ontem' | 'ultimos7' | 'esteMes' | 'dia28') => {
@@ -199,7 +207,7 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
     );
   }, [efficiencyData]);
 
-  // Data formatted for Column Bar Chart
+  // Data formatted for Column Bar Chart (Team Comparison)
   const chartData = useMemo(() => {
     return efficiencyData.map((op) => {
       let shiftColor = '#007BFF'; // Turno 1
@@ -286,24 +294,38 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
           </p>
         </div>
 
-        {/* Quick Shift Filter Pills */}
-        <div className="flex items-center gap-1.5 bg-[#111111] p-1 rounded-lg border border-[#333333]">
-          {['TODOS', 'Turno 1', 'Turno 2', 'Turno 3'].map((shiftOpt) => {
-            const isActive = selectedShift === shiftOpt;
-            return (
-              <button
-                key={shiftOpt}
-                onClick={() => setSelectedShift(shiftOpt)}
-                className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
-                  isActive
-                    ? 'bg-[#007BFF] text-white shadow-sm'
-                    : 'text-[#888888] hover:text-white hover:bg-[#222222]'
-                }`}
-              >
-                {shiftOpt === 'TODOS' ? 'Todos os Turnos' : shiftOpt}
-              </button>
-            );
-          })}
+        {/* Quick Shift Filter Pills & Shortcut */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-[#111111] p-1 rounded-lg border border-[#333333]">
+            {['TODOS', 'Turno 1', 'Turno 2', 'Turno 3'].map((shiftOpt) => {
+              const isActive = selectedShift === shiftOpt;
+              return (
+                <button
+                  key={shiftOpt}
+                  onClick={() => setSelectedShift(shiftOpt)}
+                  className={`px-2.5 py-1 rounded text-xs font-bold transition cursor-pointer ${
+                    isActive
+                      ? 'bg-[#007BFF] text-white shadow-sm'
+                      : 'text-[#888888] hover:text-white hover:bg-[#222222]'
+                  }`}
+                >
+                  {shiftOpt === 'TODOS' ? 'Todos os Turnos' : shiftOpt}
+                </button>
+              );
+            })}
+          </div>
+
+          {onNavigateToGraficoDiario && (
+            <button
+              type="button"
+              onClick={() => onNavigateToGraficoDiario()}
+              className="px-3 py-1.5 rounded-lg bg-[#00E676]/10 hover:bg-[#00E676]/20 border border-[#00E676]/30 text-[#00E676] text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+              title="Abrir aba de Gráfico Diário por Colaborador"
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+              <span>Aba Gráfico Diário</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -430,14 +452,24 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
         {/* Row 2: Search, Shift Filter Pills, and View Mode Selectors */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#2A2A2A] pt-3">
           {/* Collaborator Search Input */}
-          <div className="flex items-center gap-2 flex-1 sm:max-w-[240px]">
+          <div className="flex items-center gap-2 flex-1 sm:max-w-[280px] relative">
             <input
               type="text"
               placeholder="Buscar colaborador ou cargo..."
               value={searchName}
               onChange={(e) => setSearchName(e.target.value)}
-              className="w-full py-1.5 px-2.5 bg-[#111111] text-white border border-[#444444] rounded-lg text-xs focus:outline-none focus:border-[#007BFF]"
+              className="w-full py-1.5 pl-2.5 pr-7 bg-[#111111] text-white border border-[#444444] rounded-lg text-xs focus:outline-none focus:border-[#007BFF]"
             />
+            {searchName && (
+              <button
+                type="button"
+                onClick={() => setSearchName('')}
+                className="absolute right-2 text-[#888888] hover:text-white text-xs cursor-pointer p-0.5"
+                title="Limpar busca"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           {/* Quick Shift Filter Pills */}
@@ -671,10 +703,10 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
         </div>
       </div>
 
-      {/* GRÁFICO DE COLUNAS POR COLABORADOR SEPARADO POR TURNO */}
+      {/* GRÁFICO DE COLUNAS: COMPARATIVO DA EQUIPE */}
       {(viewMode === 'grafico_cards' || viewMode === 'apenas_grafico') && (
-        <div className="bg-[#141414] border border-[#2A2A2A] rounded-xl p-4 sm:p-5 space-y-4 shadow-xl">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#222222] pb-3">
+        <div id="container-grafico-eficiencia" className="bg-[#141414] border border-[#2A2A2A] rounded-xl p-4 sm:p-5 space-y-4 shadow-xl">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#222222] pb-3">
             <div className="flex items-center gap-2">
               <div className="p-1.5 rounded-lg bg-[#007BFF]/20 text-[#007BFF]">
                 <BarChartIcon className="w-4 h-4" />
@@ -708,7 +740,7 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
 
           {chartData.length === 0 ? (
             <div className="py-12 text-center text-[#777777] text-xs">
-              Nenhum dado de apontamento encontrado para o intervalo e turno selecionados.
+              Nenhum dado de apontamento encontrado para o intervalo e filtro selecionados.
             </div>
           ) : (
             <div className="h-[280px] sm:h-[320px] w-full">
@@ -737,17 +769,19 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                   <Tooltip 
                     content={({ active, payload }) => {
                       if (active && payload && payload.length) {
-                        const data = payload[0].payload;
+                        const data = payload[0]?.payload;
+                        if (!data) return null;
+                        
                         return (
                           <div className="bg-[#1C1C1C] border border-[#444444] p-3.5 rounded-xl shadow-2xl text-xs space-y-2 z-50 min-w-[220px]">
                             <div className="font-black text-white text-sm border-b border-[#333333] pb-1.5 flex items-center justify-between gap-3">
-                              <span>{data.fullName}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ backgroundColor: `${data.shiftColor}25`, color: data.shiftColor }}>
-                                {data.turno}
+                              <span>{data.fullName || data.name}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ backgroundColor: `${data.shiftColor || '#007BFF'}25`, color: data.shiftColor || '#007BFF' }}>
+                                {data.turno || ''}
                               </span>
                             </div>
                             <div className="flex items-center justify-between text-[11px]">
-                              <span className="text-[#AAAAAA]">{data.role}</span>
+                              <span className="text-[#AAAAAA]">{data.role || ''}</span>
                               <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
                                 data.statusTurno === 'NAO_INICIADO' 
                                   ? 'bg-[#333333] text-[#AAAAAA]' 
@@ -767,21 +801,21 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
 
                             <div className="flex items-center justify-between gap-4 pt-1">
                               <span className="text-[#AAAAAA]">Eficiência:</span>
-                              <span className="font-black text-sm font-mono" style={{ color: data.effColor }}>
-                                {data.eficienciaPct}%
+                              <span className="font-black text-sm font-mono" style={{ color: data.effColor || '#00E676' }}>
+                                {data.eficienciaPct ?? 0}%
                               </span>
                             </div>
                             <div className="flex items-center justify-between gap-4">
                               <span className="text-[#00E676]">Tempo Ocupado:</span>
-                              <span className="font-bold text-white font-mono">{data.trabalhadoHoras}</span>
+                              <span className="font-bold text-white font-mono">{data.trabalhadoHoras || '0h 00m'}</span>
                             </div>
                             <div className="flex items-center justify-between gap-4">
                               <span className="text-[#E91E63]">Sem Apontar:</span>
-                              <span className="font-bold text-white font-mono">{data.semApontarHoras}</span>
+                              <span className="font-bold text-white font-mono">{data.semApontarHoras || '0h 00m'}</span>
                             </div>
                             <div className="flex items-center justify-between gap-4 border-t border-[#333333] pt-1">
                               <span className="text-[#2979FF]">Meta Período:</span>
-                              <span className="font-bold text-[#2979FF] font-mono">{data.esperadoHoras}</span>
+                              <span className="font-bold text-[#2979FF] font-mono">{data.esperadoHoras || '0h 00m'}</span>
                             </div>
                           </div>
                         );
@@ -808,7 +842,7 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                     maxBarSize={45}
                   >
                     {chartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.effColor} />
+                      <Cell key={`cell-${index}`} fill={entry?.effColor || '#007BFF'} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -973,10 +1007,23 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Card Footer Action */}
-                    <div className="px-4 py-2 bg-[#161616] border-t border-[#222222] flex items-center justify-between text-[11px] text-[#888888] hover:text-[#007BFF]">
-                      <span>Ver histórico detalhado</span>
-                      <ChevronRight className="w-3.5 h-3.5" />
+                    {/* Card Footer Actions */}
+                    <div className="px-3 py-2 bg-[#161616] border-t border-[#222222] flex items-center justify-between text-[11px] text-[#888888]">
+                      <span className="text-[#666666]">
+                        {d.role || 'OPERADOR'}
+                      </span>
+
+                      <div 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onNavigateToHistory) onNavigateToHistory(d.nome);
+                          else if (onDrilldownClick) onDrilldownClick(d.nome);
+                        }}
+                        className="flex items-center gap-1 text-[#888888] hover:text-[#007BFF] transition cursor-pointer"
+                      >
+                        <span>Histórico</span>
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </div>
                     </div>
                   </div>
                 );

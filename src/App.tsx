@@ -3,6 +3,7 @@ import { Header } from './components/Header';
 import { NavigationTabs } from './components/NavigationTabs';
 import { ProductionFloorView } from './components/ProductionFloorView';
 import { EfficiencyView } from './components/EfficiencyView';
+import { GraficoDiarioView } from './components/GraficoDiarioView';
 import { HistoryView } from './components/HistoryView';
 import { LeaderDashboardView } from './components/LeaderDashboardView';
 import { ShiftAndFactoryConfigView } from './components/ShiftAndFactoryConfigView';
@@ -62,7 +63,7 @@ import {
   fetchAllDataFromFirestore,
 } from './services/firestoreSync';
 
-export type TabKey = 'painel' | 'eficiencia' | 'historico' | 'indicadores' | 'turnos';
+export type TabKey = 'painel' | 'eficiencia' | 'grafico-diario' | 'historico' | 'indicadores' | 'turnos';
 
 // Helper to generate initial logs if empty
 function gerarLogsIniciais(
@@ -1169,6 +1170,23 @@ export function App() {
               setDrilldownFilter(operatorName);
               setActiveTab('historico');
             }}
+            onNavigateToHistory={(operatorName) => {
+              setDrilldownFilter(operatorName || '');
+              setActiveTab('historico');
+            }}
+            onNavigateToGraficoDiario={(operatorName) => {
+              if (operatorName) setDrilldownFilter(operatorName);
+              setActiveTab('grafico-diario');
+            }}
+          />
+        )}
+
+        {activeTab === 'grafico-diario' && (
+          <GraficoDiarioView
+            logs={logs}
+            collaborators={collaborators}
+            shifts={shifts}
+            initialCollaborator={drilldownFilter || null}
             onNavigateToHistory={(operatorName) => {
               setDrilldownFilter(operatorName || '');
               setActiveTab('historico');
