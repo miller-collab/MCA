@@ -51,6 +51,7 @@ export interface ProductionLog {
   status: 'Em Execução' | 'Concluída' | 'Pausada';
   observation?: string;
   notes?: string;
+  initialDescription?: string; // Descrição informada pelo operador ao iniciar: "O que vai executar agora?"
   machineId?: string;
   partsProduced?: number;
   scrapCount?: number;

@@ -42,11 +42,11 @@ interface ProductionFloorViewProps {
   soundEnabled: boolean;
   autoCloseNotifs?: AutoCloseNotification[];
   onDismissOperatorNotif?: (id: string) => void;
-  onStartActivity: (collaboratorName: string, role: string, activityName: string, category: ActivityCategory, machineId?: string) => void;
+  onStartActivity: (collaboratorName: string, role: string, activityName: string, category: ActivityCategory, machineId?: string, initialDescription?: string) => void;
   onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number) => void;
   onPauseMeal?: (logId: string) => void;
   onResumeActivity?: (logId: string) => void;
-  onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string) => void;
+  onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string, newInitialDescription?: string) => void;
   onSaveCollaborators?: (colabs: Collaborator[]) => void;
   isLeaderUnlocked?: boolean;
   onUnlockLeader?: (pin: string) => boolean;
@@ -75,13 +75,22 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   leaderPin = '8619',
   onLockLeader,
 }) => {
-  // Screen state: 'painel' | 'colab' | 'ativ' | 'fechamento' | 'changeover'
-  const [currentScreen, setCurrentScreen] = useState<'painel' | 'colab' | 'ativ' | 'fechamento' | 'changeover'>('painel');
+  // Screen state: 'painel' | 'colab' | 'ativ' | 'pergunta_inicio' | 'fechamento' | 'changeover' | 'pergunta_changeover'
+  const [currentScreen, setCurrentScreen] = useState<
+    'painel' | 'colab' | 'ativ' | 'pergunta_inicio' | 'fechamento' | 'changeover' | 'pergunta_changeover'
+  >('painel');
   const [isQuickManageOpen, setIsQuickManageOpen] = useState(false);
   const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
   
   // Selection state
   const [selectedColab, setSelectedColab] = useState<Collaborator | null>(null);
+  const [selectedActivity, setSelectedActivity] = useState<ActivityItem | null>(null);
+  const [startDescription, setStartDescription] = useState('');
+  const [startDescError, setStartDescError] = useState(false);
+  const [changeoverActivity, setChangeoverActivity] = useState<ActivityItem | null>(null);
+  const [changeoverDescription, setChangeoverDescription] = useState('');
+  const [changeoverDescError, setChangeoverDescError] = useState(false);
+
   const [activitySearch, setActivitySearch] = useState('');
   const [colabSearch, setColabSearch] = useState('');
   const [selectedShiftFilter, setSelectedShiftFilter] = useState('TODOS');
@@ -313,22 +322,44 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const handleSelectColab = (colab: Collaborator) => {
     setSelectedColab(colab);
     setActivitySearch('');
+    setSelectedActivity(null);
+    setStartDescription('');
+    setStartDescError(false);
     setCurrentScreen('ativ');
   };
 
   const isStartingRef = useRef(false);
 
-  const handleConfirmStart = (activity: ActivityItem) => {
-    if (!selectedColab || isStartingRef.current) return;
+  // Ao clicar na atividade, abre a pergunta obrigatória: "DESCREVA EM POUCAS PALAVRAS O QUE VAI EXECUTAR AGORA ?"
+  const handleSelectActivityToStart = (activity: ActivityItem) => {
+    setSelectedActivity(activity);
+    setStartDescription('');
+    setStartDescError(false);
+    setCurrentScreen('pergunta_inicio');
+  };
+
+  // Confirmação final após preencher a descrição: Inicia a contagem!
+  const handleConfirmStartWithDescription = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!selectedColab || !selectedActivity || isStartingRef.current) return;
+    
+    if (!startDescription.trim()) {
+      setStartDescError(true);
+      return;
+    }
+
     isStartingRef.current = true;
     setTimeout(() => {
       isStartingRef.current = false;
     }, 1000);
+
     onStartActivity(
       selectedColab.name,
       selectedColab.role,
-      activity.name,
-      activity.category
+      selectedActivity.name,
+      selectedActivity.category,
+      undefined,
+      startDescription.trim()
     );
     setCurrentScreen('painel');
   };
@@ -357,8 +388,9 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
 
   const handleCardClick = (log: ProductionLog) => {
     setLogToFinish(log);
-    setFinishObs('');
-    setFinishNotes('');
+    setFinishObs(log.observation || '');
+    // Preenche as notas livres com o que foi digitado no início ou salvo no log
+    setFinishNotes(log.notes || log.initialDescription || '');
     setPartsProduced('');
     setScrapCount('');
     setCurrentScreen('fechamento');
@@ -367,33 +399,55 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const handleConfirmFinish = () => {
     if (!logToFinish) return;
     const targetId = logToFinish.id;
+    const noteText = finishNotes.trim();
     setLogToFinish(null);
     onFinishActivity(
       targetId,
-      finishObs,
-      finishNotes,
-      partsProduced ? parseInt(partsProduced, 10) : undefined,
-      scrapCount ? parseInt(scrapCount, 10) : undefined
+      noteText || 'Operação Concluída com Sucesso',
+      noteText,
+      undefined,
+      undefined
     );
     setCurrentScreen('painel');
   };
 
   const handleOpenChangeover = () => {
     if (!logToFinish) return;
-    const colab = collaborators.find(c => c.name === logToFinish.collaboratorName);
+    const colab = collaborators.find(
+      c => c.name.trim().toLowerCase() === logToFinish.collaboratorName.trim().toLowerCase()
+    );
     if (colab) {
       setSelectedColab(colab);
+      setChangeoverActivity(null);
+      setChangeoverDescription('');
+      setChangeoverDescError(false);
       setCurrentScreen('changeover');
     }
   };
 
-  const handleConfirmChangeover = (newActivity: ActivityItem) => {
-    if (!logToFinish || !onQuickChangeover) return;
+  const handleSelectChangeoverActivity = (newActivity: ActivityItem) => {
+    setChangeoverActivity(newActivity);
+    setChangeoverDescription('');
+    setChangeoverDescError(false);
+    setCurrentScreen('pergunta_changeover');
+  };
+
+  const handleConfirmChangeoverWithDescription = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!logToFinish || !changeoverActivity || !onQuickChangeover) return;
+
+    if (!changeoverDescription.trim()) {
+      setChangeoverDescError(true);
+      return;
+    }
+
     onQuickChangeover(
       logToFinish.id,
-      finishObs || 'Troca Rápida de Setup / Nova Atividade',
-      newActivity.name,
-      newActivity.category
+      finishNotes.trim() || 'Troca Rápida de Setup / Nova Atividade',
+      changeoverActivity.name,
+      changeoverActivity.category,
+      undefined,
+      changeoverDescription.trim()
     );
     setCurrentScreen('painel');
   };
@@ -491,12 +545,29 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                     </div>
 
                     {/* Body do Card */}
-                    <div className="card-body p-3 text-center flex-grow flex flex-col justify-between">
-                      <div
-                        className="card-atividade text-xs sm:text-[13px] text-[#DDDDDD] mb-2 min-h-[36px] line-clamp-2 leading-tight flex items-center justify-center font-medium"
-                        title={tarefa.activity}
-                      >
-                        {tarefa.activity}
+                    <div className="card-body p-2.5 sm:p-3 text-center flex-grow flex flex-col justify-between">
+                      <div>
+                        <div
+                          className="card-atividade text-xs sm:text-[13px] text-[#FFFFFF] font-bold mb-1.5 min-h-[32px] line-clamp-2 leading-tight flex items-center justify-center"
+                          title={tarefa.activity}
+                        >
+                          {tarefa.activity}
+                        </div>
+
+                        {/* Descrição informada pelo operador ao iniciar (Foto 1: O que vai executar agora) */}
+                        {(tarefa.initialDescription || tarefa.notes) && (
+                          <div
+                            className="mb-2 px-2 py-1.5 bg-[#1C1C1C] border border-[#FFD700]/35 rounded-lg text-[11px] sm:text-xs text-[#FFE082] leading-tight line-clamp-2 text-center shadow-inner"
+                            title={tarefa.initialDescription || tarefa.notes}
+                          >
+                            <span className="text-[#888888] text-[9px] uppercase tracking-wider font-mono font-bold block">
+                              Executando:
+                            </span>
+                            <span className="italic font-medium">
+                              "{tarefa.initialDescription || tarefa.notes}"
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {isPausedMeal ? (
@@ -816,7 +887,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               filteredRoleActivities.map((act) => (
                 <button
                   key={act.id}
-                  onClick={() => handleConfirmStart(act)}
+                  onClick={() => handleSelectActivityToStart(act)}
                   className="w-full p-4 bg-[#1C1C1C] hover:bg-[#282828] active:bg-[#333333] text-left text-white rounded-xl border border-[#333333] hover:border-[#007BFF] transition-all flex items-center justify-between gap-3 group cursor-pointer shadow-sm min-h-[56px]"
                 >
                   <div className="min-w-0">
@@ -850,7 +921,80 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
         </div>
       )}
 
-      {/* TELA 4: FECHAMENTO / CONCLUIR ATIVIDADE */}
+      {/* TELA 3.5: PERGUNTA OBRIGATÓRIA AO INICIAR (FOTO 1: FRASE SOMENTE DENTRO DA CAIXA COM MAIS ESPAÇO) */}
+      {currentScreen === 'pergunta_inicio' && selectedColab && selectedActivity && (
+        <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
+          <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs text-[#888888]">Colaborador:</div>
+              <div className="text-sm sm:text-base font-bold text-white">{selectedColab.name}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-[#888888]">Operação Selecionada:</div>
+              <div className="text-sm sm:text-base font-bold text-[#007BFF] truncate max-w-[240px]">
+                {selectedActivity.name}
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={handleConfirmStartWithDescription} className="space-y-4">
+            <div>
+              <textarea
+                id="input-descricao-inicio"
+                rows={5}
+                required
+                autoFocus
+                placeholder="DESCREVA EM POUCAS PALAVRAS O QUE VAI FAZER EXECUTAR AGORA DENTRO DA OPERAÇÃO SELECIONADA..."
+                value={startDescription}
+                onChange={(e) => {
+                  setStartDescription(e.target.value);
+                  if (startDescError && e.target.value.trim()) {
+                    setStartDescError(false);
+                  }
+                }}
+                className={`w-full p-4 bg-[#1F1F1F] text-white border rounded-xl text-sm sm:text-base focus:outline-none transition resize-none min-h-[140px] placeholder:text-[#888888] ${
+                  startDescError
+                    ? 'border-[#FF3D00] ring-1 ring-[#FF3D00] bg-[#2A1515]'
+                    : 'border-[#555555] focus:border-[#007BFF] focus:ring-1 focus:ring-[#007BFF]'
+                }`}
+              />
+              {startDescError && (
+                <p className="text-xs text-[#FF5252] font-bold mt-1.5 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Por favor, descreva em poucas palavras o que vai fazer executar agora.</span>
+                </p>
+              )}
+              <p className="text-xs text-[#888888] mt-1.5">
+                ⏱️ A contagem do tempo de trabalho iniciará imediatamente após a confirmação.
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              id="btn-iniciar-contagem"
+              disabled={!startDescription.trim()}
+              className={`w-full py-4 sm:py-5 font-black text-base sm:text-lg rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer min-h-[58px] ${
+                startDescription.trim()
+                  ? 'bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black border border-[#00c853] active:scale-[0.99]'
+                  : 'bg-[#2A2A2A] text-[#777777] border border-[#3A3A3A] cursor-not-allowed opacity-75'
+              }`}
+            >
+              <Play className="w-6 h-6 fill-current" />
+              <span>INICIAR ATIVIDADE & CONTAGEM</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCurrentScreen('ativ')}
+              className="w-full py-3.5 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold rounded-xl border border-[#444444] transition cursor-pointer min-h-[48px]"
+            >
+              Voltar e Escolher Outra Operação
+            </button>
+          </form>
+        </div>
+      )}
+
+      {/* TELA 4: FECHAMENTO / CONCLUIR ATIVIDADE (FOTO 2 SIMPLIFICADA) */}
       {currentScreen === 'fechamento' && logToFinish && (() => {
         const colab = collaborators.find(
           (c) => c.name.trim().toLowerCase() === logToFinish.collaboratorName.trim().toLowerCase()
@@ -916,64 +1060,14 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               </div>
             </div>
 
-            {/* Observação Padrão */}
-            <div>
-              <label className="block text-xs font-bold text-white mb-1.5">
-                Observação de Produção (Opcional):
-              </label>
-              <select
-                id="select-obs"
-                value={finishObs}
-                onChange={(e) => setFinishObs(e.target.value)}
-                className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] min-h-[48px]"
-              >
-                <option value="">Sem observação padrão</option>
-                {sanitizedObservations.map((obs, idx) => (
-                  <option key={idx} value={obs}>
-                    {obs}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Quantidade de Peças e Refugo */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
-                  Peças Boas Produzidas:
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="Ex: 50"
-                  value={partsProduced}
-                  onChange={(e) => setPartsProduced(e.target.value)}
-                  className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-[#CCCCCC] mb-1">
-                  Peças Refugo / NC:
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="Ex: 0"
-                  value={scrapCount}
-                  onChange={(e) => setScrapCount(e.target.value)}
-                  className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm font-mono focus:outline-none focus:border-[#007BFF] min-h-[48px]"
-                />
-              </div>
-            </div>
-
-            {/* Notas Adicionais Livres */}
+            {/* Notas Adicionais Livres (Foto 2: Campo preservado para anotações do fechamento) */}
             <div>
               <label className="block text-xs font-bold text-white mb-1.5">
                 Notas Adicionais Livres:
               </label>
               <textarea
                 id="texto-notas"
-                rows={2}
+                rows={3}
                 placeholder="Digite uma anotação extra se necessário..."
                 value={finishNotes}
                 onChange={(e) => setFinishNotes(e.target.value)}
@@ -1027,7 +1121,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             {filteredRoleActivities.map((act) => (
               <button
                 key={act.id}
-                onClick={() => handleConfirmChangeover(act)}
+                onClick={() => handleSelectChangeoverActivity(act)}
                 className="w-full p-4 bg-[#1C1C1C] hover:bg-[#282828] text-left text-white rounded-xl border border-[#333333] hover:border-[#00E676] transition flex items-center justify-between gap-3 group cursor-pointer min-h-[54px]"
               >
                 <div className="min-w-0">
@@ -1052,6 +1146,75 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
           >
             Voltar ao Fechamento Normal
           </button>
+        </div>
+      )}
+
+      {/* TELA 5.5: PERGUNTA PARA TROCA RÁPIDA (FRASE SOMENTE DENTRO DA CAIXA COM MAIS ESPAÇO) */}
+      {currentScreen === 'pergunta_changeover' && logToFinish && selectedColab && changeoverActivity && (
+        <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
+          <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs text-[#888888]">Colaborador:</div>
+              <div className="text-sm sm:text-base font-bold text-white">{selectedColab.name}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-[#888888]">Nova Operação:</div>
+              <div className="text-sm sm:text-base font-bold text-[#FFD700] truncate max-w-[240px]">
+                {changeoverActivity.name}
+              </div>
+            </div>
+          </div>
+
+          <form onSubmit={handleConfirmChangeoverWithDescription} className="space-y-4">
+            <div>
+              <textarea
+                id="input-descricao-changeover"
+                rows={5}
+                required
+                autoFocus
+                placeholder="DESCREVA EM POUCAS PALAVRAS O QUE VAI FAZER EXECUTAR AGORA DENTRO DA OPERAÇÃO SELECIONADA..."
+                value={changeoverDescription}
+                onChange={(e) => {
+                  setChangeoverDescription(e.target.value);
+                  if (changeoverDescError && e.target.value.trim()) {
+                    setChangeoverDescError(false);
+                  }
+                }}
+                className={`w-full p-4 bg-[#1F1F1F] text-white border rounded-xl text-sm sm:text-base focus:outline-none transition resize-none min-h-[140px] placeholder:text-[#888888] ${
+                  changeoverDescError
+                    ? 'border-[#FF3D00] ring-1 ring-[#FF3D00] bg-[#2A1515]'
+                    : 'border-[#555555] focus:border-[#00E676] focus:ring-1 focus:ring-[#00E676]'
+                }`}
+              />
+              {changeoverDescError && (
+                <p className="text-xs text-[#FF5252] font-bold mt-1.5 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Por favor, descreva em poucas palavras o que vai fazer executar agora.</span>
+                </p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              disabled={!changeoverDescription.trim()}
+              className={`w-full py-4 sm:py-5 font-black text-base sm:text-lg rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer min-h-[58px] ${
+                changeoverDescription.trim()
+                  ? 'bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black border border-[#00c853] active:scale-[0.99]'
+                  : 'bg-[#2A2A2A] text-[#777777] border border-[#3A3A3A] cursor-not-allowed opacity-75'
+              }`}
+            >
+              <Zap className="w-5 h-5 text-black" />
+              <span>FINALIZAR ANTERIOR & INICIAR NOVA CONTAGEM</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCurrentScreen('changeover')}
+              className="w-full py-3.5 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold rounded-xl border border-[#444444] transition cursor-pointer min-h-[48px]"
+            >
+              Voltar
+            </button>
+          </form>
         </div>
       )}
 

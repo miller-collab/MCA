@@ -736,7 +736,8 @@ export function App() {
       role: string,
       activityName: string,
       category: ActivityCategory,
-      machineId?: string
+      machineId?: string,
+      initialDescription?: string
     ) => {
       const now = new Date();
       const nowTimeStr = formatarHoraPtBr(now);
@@ -752,6 +753,8 @@ export function App() {
         startTime: nowTimeStr,
         status: 'Em Execução',
         machineId: machineId || 'TORNO-01',
+        initialDescription: initialDescription?.trim() || undefined,
+        notes: initialDescription?.trim() || undefined,
       };
 
       setLogs((prev) => {
@@ -914,7 +917,8 @@ export function App() {
       observation: string,
       newActivityName: string,
       newCategory: ActivityCategory,
-      machineId?: string
+      machineId?: string,
+      newInitialDescription?: string
     ) => {
       const now = new Date();
       const timeStr = formatarHoraPtBr(now);
@@ -971,6 +975,8 @@ export function App() {
             startTime: timeStr,
             status: 'Em Execução',
             machineId: machineId || 'TORNO-01',
+            initialDescription: newInitialDescription?.trim() || undefined,
+            notes: newInitialDescription?.trim() || undefined,
           };
           saveLogToFirestore(nextLog);
           return [nextLog, ...updated];
@@ -978,7 +984,6 @@ export function App() {
 
         return updated;
       });
-
       if (soundEnabled) playFactoryChime('start');
     },
     [collaborators, shifts, soundEnabled]

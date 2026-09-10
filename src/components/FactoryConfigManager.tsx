@@ -145,6 +145,10 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   const [newActMinutes, setNewActMinutes] = useState<number>(30);
   const [editingActId, setEditingActId] = useState<string | null>(null);
   const [editActForm, setEditActForm] = useState<Partial<ActivityItem>>({});
+  const [editActRoleMode, setEditActRoleMode] = useState<'SINGLE' | 'ALL' | 'MULTI'>('SINGLE');
+  const [selectedRolesForEditAct, setSelectedRolesForEditAct] = useState<string[]>([]);
+  const [applyToAllMatchingActs, setApplyToAllMatchingActs] = useState<boolean>(true);
+  const [originalActItem, setOriginalActItem] = useState<ActivityItem | null>(null);
 
   // Multi-Role Deletion Modal State
   const [deleteMultiModal, setDeleteMultiModal] = useState<{
@@ -332,33 +336,150 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
 
   const handleStartEditAct = (act: ActivityItem) => {
     setEditingActId(act.id);
+    setOriginalActItem(act);
     setEditActForm({ ...act });
+
+    const actNameNorm = act.name.trim().toUpperCase();
+    const sameNameActs = activities.filter((a) => a.name.trim().toUpperCase() === actNameNorm);
+    if (sameNameActs.length > 1) {
+      setSelectedRolesForEditAct(Array.from(new Set(sameNameActs.map((a) => a.role.toUpperCase().trim()))));
+      setApplyToAllMatchingActs(true);
+    } else {
+      setSelectedRolesForEditAct([act.role.toUpperCase().trim()]);
+      setApplyToAllMatchingActs(false);
+    }
+    setEditActRoleMode('SINGLE');
   };
 
   const handleSaveEditAct = (id: string) => {
-    if (!editActForm.name?.trim()) return;
+    if (!editActForm.name?.trim()) {
+      showNotification('O nome da atividade não pode ficar em branco.', 'error');
+      return;
+    }
+    const trimmedName = editActForm.name.trim().toUpperCase();
+    const origName = originalActItem?.name ? originalActItem.name.trim().toUpperCase() : trimmedName;
+    const rawPriorityStr = editActForm.priority !== undefined 
+      ? (typeof editActForm.priority === 'string' ? String(editActForm.priority).replace(',', '.') : String(editActForm.priority))
+      : '1';
+    const parsedPriority = isNaN(parseFloat(rawPriorityStr)) ? 1 : parseFloat(rawPriorityStr);
+    const parsedMinutes = Number(editActForm.standardMinutes) || 30;
+    const category = editActForm.category || 'Operação';
+
+    if (editActRoleMode === 'ALL') {
+      // 1. Aplicar/Atualizar esta atividade em TODOS os cargos cadastrados da fábrica
+      const updatedActs = [...activities];
+      existingRoles.forEach((roleName) => {
+        const roleUpper = roleName.toUpperCase().trim();
+        const existingIdx = updatedActs.findIndex(
+          (a) => a.role.toUpperCase().trim() === roleUpper && (a.name.trim().toUpperCase() === origName || a.name.trim().toUpperCase() === trimmedName)
+        );
+        if (existingIdx >= 0) {
+          updatedActs[existingIdx] = {
+            ...updatedActs[existingIdx],
+            name: trimmedName,
+            role: roleUpper,
+            priority: parsedPriority,
+            category,
+            standardMinutes: parsedMinutes,
+          };
+        } else {
+          updatedActs.push({
+            id: `act-${Date.now()}-${roleUpper.replace(/\s+/g, '_')}-${Math.random().toString(36).substring(2, 6)}`,
+            role: roleUpper,
+            name: trimmedName,
+            priority: parsedPriority,
+            category,
+            standardMinutes: parsedMinutes,
+          });
+        }
+      });
+      onUpdateActivities(updatedActs);
+      setEditingActId(null);
+      setOriginalActItem(null);
+      showNotification(`Atividade "${trimmedName}" salva e vinculada a TODOS os ${existingRoles.length} cargos com sucesso!`);
+      return;
+    }
+
+    if (editActRoleMode === 'MULTI') {
+      const targetRoles = selectedRolesForEditAct.length > 0 ? selectedRolesForEditAct : [editActForm.role || existingRoles[0]];
+      const updatedActs = [...activities];
+      targetRoles.forEach((roleName) => {
+        const roleUpper = roleName.toUpperCase().trim();
+        const existingIdx = updatedActs.findIndex(
+          (a) => a.role.toUpperCase().trim() === roleUpper && (a.name.trim().toUpperCase() === origName || a.name.trim().toUpperCase() === trimmedName)
+        );
+        if (existingIdx >= 0) {
+          updatedActs[existingIdx] = {
+            ...updatedActs[existingIdx],
+            name: trimmedName,
+            role: roleUpper,
+            priority: parsedPriority,
+            category,
+            standardMinutes: parsedMinutes,
+          };
+        } else {
+          updatedActs.push({
+            id: `act-${Date.now()}-${roleUpper.replace(/\s+/g, '_')}-${Math.random().toString(36).substring(2, 6)}`,
+            role: roleUpper,
+            name: trimmedName,
+            priority: parsedPriority,
+            category,
+            standardMinutes: parsedMinutes,
+          });
+        }
+      });
+      onUpdateActivities(updatedActs);
+      setEditingActId(null);
+      setOriginalActItem(null);
+      showNotification(`Atividade "${trimmedName}" salva em ${targetRoles.length} cargo(s) selecionados!`);
+      return;
+    }
+
+    // Modo SINGLE
+    const targetRole = (editActForm.role || originalActItem?.role || existingRoles[0]).toUpperCase().trim();
+    if (applyToAllMatchingActs && originalActItem) {
+      const sameNameActs = activities.filter((a) => a.name.trim().toUpperCase() === origName);
+      if (sameNameActs.length > 1) {
+        const updatedActs = activities.map((a) => {
+          if (a.name.trim().toUpperCase() === origName) {
+            return {
+              ...a,
+              name: trimmedName,
+              role: a.id === id ? targetRole : a.role,
+              priority: parsedPriority,
+              category,
+              standardMinutes: parsedMinutes,
+            };
+          }
+          return a;
+        });
+        onUpdateActivities(updatedActs);
+        setEditingActId(null);
+        setOriginalActItem(null);
+        showNotification(`Atividade "${trimmedName}" atualizada em todos os ${sameNameActs.length} cargos vinculados!`);
+        return;
+      }
+    }
+
+    // Atualização normal de 1 único item
     onUpdateActivities(
       activities.map((a) => {
         if (a.id === id) {
-          const rawPriorityStr = editActForm.priority !== undefined 
-            ? (typeof editActForm.priority === 'string' ? String(editActForm.priority).replace(',', '.') : String(editActForm.priority))
-            : String(a.priority);
-          const parsedPriority = isNaN(parseFloat(rawPriorityStr)) ? a.priority : parseFloat(rawPriorityStr);
-
           return {
             ...a,
-            name: editActForm.name?.trim().toUpperCase() || a.name,
-            role: editActForm.role?.trim().toUpperCase() || a.role,
+            name: trimmedName,
+            role: targetRole,
             priority: parsedPriority,
-            category: editActForm.category || a.category,
-            standardMinutes: Number(editActForm.standardMinutes) || a.standardMinutes || 30,
+            category,
+            standardMinutes: parsedMinutes,
           };
         }
         return a;
       })
     );
     setEditingActId(null);
-    showNotification('Atividade e tempo padrão atualizados com sucesso!');
+    setOriginalActItem(null);
+    showNotification(`Atividade "${trimmedName}" atualizada com sucesso no cargo "${targetRole}"!`);
   };
 
   const handleDeleteActivity = (act: ActivityItem) => {
@@ -378,10 +499,11 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
           onUpdateActivities(activities.filter((a) => a.id !== act.id));
           showNotification(`Atividade "${act.name}" excluída com sucesso!`);
           setConfirmModal(null);
+          if (editingActId === act.id) setEditingActId(null);
         },
       });
     } else {
-      // Exists in multiple roles: Open multi-role deletion modal where user can check/uncheck
+      // Exists in multiple roles: Open multi-role deletion modal where user can check/uncheck or delete from all
       setDeleteMultiModal({
         isOpen: true,
         activityName: act.name,
@@ -399,6 +521,24 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     }
   };
 
+  const handleDeleteActivityFromAllRoles = (actName: string) => {
+    const actNameUpper = actName.trim().toUpperCase();
+    const count = activities.filter((a) => a.name.trim().toUpperCase() === actNameUpper).length;
+    setConfirmModal({
+      isOpen: true,
+      title: `Excluir de TODOS os Cargos`,
+      description: `Deseja realmente remover a atividade "${actNameUpper}" de TODOS os ${count > 0 ? count : 'possíveis'} cargo(s) da fábrica?`,
+      confirmText: 'Sim, Excluir de Todos os Cargos',
+      onConfirm: () => {
+        onUpdateActivities(activities.filter((a) => a.name.trim().toUpperCase() !== actNameUpper));
+        showNotification(`Atividade "${actNameUpper}" foi removida de TODOS os cargos da matriz!`);
+        setConfirmModal(null);
+        if (editingActId) setEditingActId(null);
+        if (deleteMultiModal) setDeleteMultiModal(null);
+      },
+    });
+  };
+
   const handleConfirmMultiDelete = (selectedIds: string[]) => {
     if (!selectedIds || selectedIds.length === 0) {
       showNotification('Nenhum cargo selecionado para exclusão.', 'error');
@@ -407,6 +547,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     onUpdateActivities(activities.filter((a) => !selectedIds.includes(a.id)));
     showNotification(`Atividade removida de ${selectedIds.length} cargo(s) com sucesso!`);
     setDeleteMultiModal(null);
+    if (editingActId && selectedIds.includes(editingActId)) setEditingActId(null);
   };
 
   // -------------------------------------------------------------
@@ -1109,33 +1250,80 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
-                  {/* Seletor rápido de atividade para editar */}
-                  {!editingActId && activities.length > 0 && (
-                    <div className="flex items-center gap-1">
-                      <select
-                        aria-label="Selecionar atividade existente para editar ou excluir"
-                        onChange={(e) => {
-                          const act = activities.find((a) => a.id === e.target.value);
-                          if (act) handleStartEditAct(act);
-                          e.target.value = '';
-                        }}
-                        defaultValue=""
-                        className="py-1 px-2 bg-[#161616] hover:bg-[#222222] text-[#007BFF] border border-[#007BFF]/40 rounded text-xs font-bold cursor-pointer focus:outline-none"
+                  {editingActId ? (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setEditActRoleMode('ALL')}
+                        className={`px-2.5 py-1 text-xs rounded font-bold cursor-pointer transition flex items-center gap-1 border ${
+                          editActRoleMode === 'ALL'
+                            ? 'bg-[#FFD700]/20 border-[#FFD700] text-[#FFD700]'
+                            : 'bg-[#222222] border-[#444444] text-[#AAAAAA] hover:text-white'
+                        }`}
+                        title="Aplicar esta alteração em todos os cargos da fábrica"
                       >
-                        <option value="" disabled>
-                          ✏️ Selecionar Atividade para Editar/Excluir...
-                        </option>
-                        {activities.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            [{a.role}] P{a.priority} - {a.name} ({a.standardMinutes || 30}m)
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                        <Sparkles className="w-3 h-3" />
+                        <span>Aplicar em Todos os Cargos</span>
+                      </button>
 
-                  {!editingActId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditActRoleMode('MULTI');
+                          if (selectedRolesForEditAct.length === 0) {
+                            setSelectedRolesForEditAct(existingRoles);
+                          }
+                        }}
+                        className={`px-2.5 py-1 text-xs rounded font-bold cursor-pointer transition flex items-center gap-1 border ${
+                          editActRoleMode === 'MULTI'
+                            ? 'bg-[#007BFF]/20 border-[#007BFF] text-[#007BFF]'
+                            : 'bg-[#222222] border-[#444444] text-[#AAAAAA] hover:text-white'
+                        }`}
+                        title="Escolher quais cargos receberão a atividade"
+                      >
+                        <CheckSquare className="w-3 h-3" />
+                        <span>Selecionar Múltiplos ({selectedRolesForEditAct.length})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingActId(null);
+                          setOriginalActItem(null);
+                        }}
+                        className="px-3 py-1 bg-[#333333] hover:bg-[#444444] text-white rounded text-xs font-bold flex items-center gap-1 cursor-pointer transition"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>Cancelar</span>
+                      </button>
+                    </div>
+                  ) : (
                     <>
+                      {/* Seletor rápido de atividade para editar */}
+                      {activities.length > 0 && (
+                        <div className="flex items-center gap-1">
+                          <select
+                            aria-label="Selecionar atividade existente para editar ou excluir"
+                            onChange={(e) => {
+                              const act = activities.find((a) => a.id === e.target.value);
+                              if (act) handleStartEditAct(act);
+                              e.target.value = '';
+                            }}
+                            defaultValue=""
+                            className="py-1 px-2 bg-[#161616] hover:bg-[#222222] text-[#007BFF] border border-[#007BFF]/40 rounded text-xs font-bold cursor-pointer focus:outline-none"
+                          >
+                            <option value="" disabled>
+                              ✏️ Selecionar Atividade para Editar/Excluir...
+                            </option>
+                            {activities.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                [{a.role}] P{a.priority} - {a.name} ({a.standardMinutes || 30}m)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+
                       <button
                         type="button"
                         onClick={() => {
@@ -1172,19 +1360,93 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                       </button>
                     </>
                   )}
-
-                  {editingActId && (
-                    <button
-                      type="button"
-                      onClick={() => setEditingActId(null)}
-                      className="px-3 py-1 bg-[#333333] hover:bg-[#444444] text-white rounded text-xs font-bold flex items-center gap-1 cursor-pointer transition"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                      <span>Cancelar Edição</span>
-                    </button>
-                  )}
                 </div>
               </div>
+
+              {/* Painel de seleção de múltiplos cargos na EDIÇÃO */}
+              {editingActId && editActRoleMode === 'MULTI' && (
+                <div className="p-3 bg-[#161616] border border-[#007BFF]/40 rounded-lg space-y-2.5 animate-in fade-in duration-150">
+                  <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
+                    <span className="text-white font-bold flex items-center gap-1.5">
+                      <CheckSquare className="w-3.5 h-3.5 text-[#007BFF]" />
+                      Selecione os cargos para aplicar esta atividade editada:
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRolesForEditAct(existingRoles)}
+                        className="px-2 py-0.5 bg-[#2A2A2A] hover:bg-[#333333] text-[#00E676] rounded text-[11px] font-semibold cursor-pointer"
+                      >
+                        Marcar Todos ({existingRoles.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRolesForEditAct([])}
+                        className="px-2 py-0.5 bg-[#2A2A2A] hover:bg-[#333333] text-[#888888] rounded text-[11px] cursor-pointer"
+                      >
+                        Desmarcar Todos
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto p-1 bg-[#111111] rounded border border-[#333333]">
+                    {existingRoles.map((role) => {
+                      const isSelected = selectedRolesForEditAct.includes(role);
+                      const cor = getRoleColor(role);
+                      return (
+                        <label
+                          key={role}
+                          className={`flex items-center gap-2 p-1.5 rounded text-[11px] cursor-pointer transition select-none ${
+                            isSelected ? 'bg-[#222222] text-white font-bold' : 'text-[#888888] hover:bg-[#1A1A1A]'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedRolesForEditAct([...selectedRolesForEditAct, role]);
+                              } else {
+                                setSelectedRolesForEditAct(selectedRolesForEditAct.filter((r) => r !== role));
+                              }
+                            }}
+                            className="w-3.5 h-3.5 accent-[#007BFF] rounded cursor-pointer shrink-0"
+                          />
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cor }} />
+                          <span className="truncate">{role}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Informação e Checkbox quando a atividade está presente em múltiplos cargos e está em modo SINGLE */}
+              {editingActId && editActRoleMode === 'SINGLE' && originalActItem && (() => {
+                const sameNameList = activities.filter(
+                  (a) => a.name.trim().toUpperCase() === originalActItem.name.trim().toUpperCase()
+                );
+                if (sameNameList.length <= 1) return null;
+                return (
+                  <div className="p-2.5 bg-[#007BFF]/10 border border-[#007BFF]/30 rounded-lg flex items-center justify-between gap-3 text-xs flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-[#007BFF] shrink-0" />
+                      <span className="text-[#DDDDDD]">
+                        Esta atividade está cadastrada em <b className="text-white">{sameNameList.length} cargos</b> da fábrica.
+                      </span>
+                    </div>
+                    <label className="flex items-center gap-1.5 cursor-pointer text-white font-bold select-none">
+                      <input
+                        type="checkbox"
+                        checked={applyToAllMatchingActs}
+                        onChange={(e) => setApplyToAllMatchingActs(e.target.checked)}
+                        className="w-4 h-4 accent-[#007BFF] rounded cursor-pointer"
+                      />
+                      <span>Atualizar em todos os {sameNameList.length} cargos vinculados</span>
+                    </label>
+                  </div>
+                );
+              })()}
 
               {/* Multi-role selection panel when MULTI is chosen */}
               {!editingActId && newActRole === 'MULTI' && (
@@ -1260,15 +1522,32 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Cargo Vinculado:</label>
                   {editingActId ? (
                     <select
-                      value={editActForm.role || ''}
-                      onChange={(e) => setEditActForm({ ...editActForm, role: e.target.value })}
+                      value={editActRoleMode === 'ALL' ? 'ALL' : editActRoleMode === 'MULTI' ? 'MULTI' : (editActForm.role || '')}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === 'ALL') {
+                          setEditActRoleMode('ALL');
+                        } else if (val === 'MULTI') {
+                          setEditActRoleMode('MULTI');
+                          if (selectedRolesForEditAct.length === 0) {
+                            setSelectedRolesForEditAct(existingRoles);
+                          }
+                        } else {
+                          setEditActRoleMode('SINGLE');
+                          setEditActForm({ ...editActForm, role: val });
+                        }
+                      }}
                       className="w-full p-2 bg-[#111111] text-white border border-[#007BFF] rounded text-xs font-bold focus:outline-none"
                     >
-                      {existingRoles.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
+                      <option value="ALL">⭐ [TODOS OS CARGOS] ({existingRoles.length})</option>
+                      <option value="MULTI">☑️ [MÚLTIPLOS CARGOS ({selectedRolesForEditAct.length})]...</option>
+                      <optgroup label="── Cargos Individuais ──">
+                        {existingRoles.map((r) => (
+                          <option key={r} value={r}>
+                            {r}
+                          </option>
+                        ))}
+                      </optgroup>
                     </select>
                   ) : (
                     <select
@@ -1394,25 +1673,44 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   </select>
                 </div>
 
-                <div className="sm:col-span-6 flex items-center justify-between flex-wrap gap-2 pt-1 border-t border-[#333333]">
+                <div className="sm:col-span-6 flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-[#333333]">
                   {editingActId ? (
                     <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const curAct = activities.find((a) => a.id === editingActId);
-                          if (curAct) handleDeleteActivity(curAct);
-                        }}
-                        className="py-2.5 px-4 bg-[#FF3D00]/20 hover:bg-[#FF3D00] text-[#FF5252] hover:text-white border border-[#FF3D00]/50 font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        <span>Excluir Atividade da Matriz</span>
-                      </button>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const actName = editActForm.name || originalActItem?.name || '';
+                            if (actName) handleDeleteActivityFromAllRoles(actName);
+                          }}
+                          className="py-2 px-3.5 bg-[#FF3D00]/20 hover:bg-[#FF3D00] text-[#FF5252] hover:text-white border border-[#FF3D00]/50 font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-sm"
+                          title="Excluir esta atividade de absolutamente todos os cargos da fábrica"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>🗑️ Excluir de TODOS os Cargos</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const curAct = activities.find((a) => a.id === editingActId);
+                            if (curAct) handleDeleteActivity(curAct);
+                          }}
+                          className="py-2 px-3 bg-[#2A2A2A] hover:bg-[#382020] text-[#AAAAAA] hover:text-[#FF8C00] border border-[#444444] hover:border-[#FF8C00]/40 font-semibold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer"
+                          title="Excluir apenas do cargo atualmente selecionado"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Excluir Apenas deste Cargo</span>
+                        </button>
+                      </div>
 
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => setEditingActId(null)}
+                          onClick={() => {
+                            setEditingActId(null);
+                            setOriginalActItem(null);
+                          }}
                           className="py-2.5 px-4 bg-[#2A2A2A] hover:bg-[#333333] text-[#AAAAAA] hover:text-white font-bold rounded text-xs transition cursor-pointer"
                         >
                           Cancelar
@@ -1422,7 +1720,15 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                           className="py-2.5 px-6 bg-[#00E676] hover:bg-[#00c853] text-black font-extrabold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
                         >
                           <Save className="w-4 h-4" />
-                          <span>Salvar Alterações na Atividade</span>
+                          <span>
+                            {editActRoleMode === 'ALL'
+                              ? `Salvar em TODOS os ${existingRoles.length} Cargos`
+                              : editActRoleMode === 'MULTI'
+                              ? `Salvar em ${selectedRolesForEditAct.length} Cargos Selecionados`
+                              : applyToAllMatchingActs && originalActItem && activities.filter(a => a.name.trim().toUpperCase() === originalActItem.name.trim().toUpperCase()).length > 1
+                              ? `Salvar em Todos os Cargos Vinculados (${activities.filter(a => a.name.trim().toUpperCase() === originalActItem.name.trim().toUpperCase()).length})`
+                              : 'Salvar Alterações na Atividade'}
+                          </span>
                         </button>
                       </div>
                     </>
@@ -2414,6 +2720,19 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
               </button>
 
               <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const allIds = deleteMultiModal.roles.map((r) => r.id);
+                    handleConfirmMultiDelete(allIds);
+                  }}
+                  className="px-3.5 py-2 bg-[#D50000] hover:bg-[#B71C1C] text-white rounded-lg text-xs font-extrabold transition flex items-center gap-1.5 cursor-pointer shadow-md active:scale-95"
+                  title="Remover de absolutamente todos os cargos listados"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Excluir de TODOS os Cargos ({deleteMultiModal.roles.length})</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => handleConfirmMultiDelete([deleteMultiModal.clickedActId])}
