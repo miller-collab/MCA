@@ -43,10 +43,10 @@ interface ProductionFloorViewProps {
   autoCloseNotifs?: AutoCloseNotification[];
   onDismissOperatorNotif?: (id: string) => void;
   onStartActivity: (collaboratorName: string, role: string, activityName: string, category: ActivityCategory, machineId?: string, initialDescription?: string) => void;
-  onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number) => void;
+  onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number, customEndTime?: string) => void;
   onPauseMeal?: (logId: string) => void;
   onResumeActivity?: (logId: string) => void;
-  onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string, newInitialDescription?: string) => void;
+  onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string, newInitialDescription?: string, customEndTime?: string) => void;
   onSaveCollaborators?: (colabs: Collaborator[]) => void;
   isLeaderUnlocked?: boolean;
   onUnlockLeader?: (pin: string) => boolean;
@@ -90,6 +90,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [changeoverActivity, setChangeoverActivity] = useState<ActivityItem | null>(null);
   const [changeoverDescription, setChangeoverDescription] = useState('');
   const [changeoverDescError, setChangeoverDescError] = useState(false);
+  const [changeoverInitiatedTime, setChangeoverInitiatedTime] = useState<string>('');
 
   const [activitySearch, setActivitySearch] = useState('');
   const [colabSearch, setColabSearch] = useState('');
@@ -387,12 +388,14 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   };
 
   const handleCardClick = (log: ProductionLog) => {
+    const initTime = formatarHoraPtBr(new Date());
     setLogToFinish(log);
     setFinishObs(log.observation || '');
     // Preenche as notas livres com o que foi digitado no início ou salvo no log
     setFinishNotes(log.notes || log.initialDescription || '');
     setPartsProduced('');
     setScrapCount('');
+    setChangeoverInitiatedTime(initTime);
     setCurrentScreen('fechamento');
   };
 
@@ -400,13 +403,16 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     if (!logToFinish) return;
     const targetId = logToFinish.id;
     const noteText = finishNotes.trim();
+    const finishEndTime = changeoverInitiatedTime || undefined;
     setLogToFinish(null);
+    setChangeoverInitiatedTime('');
     onFinishActivity(
       targetId,
       noteText || 'Operação Concluída com Sucesso',
       noteText,
       undefined,
-      undefined
+      undefined,
+      finishEndTime
     );
     setCurrentScreen('painel');
   };
@@ -417,6 +423,9 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       c => c.name.trim().toLowerCase() === logToFinish.collaboratorName.trim().toLowerCase()
     );
     if (colab) {
+      if (!changeoverInitiatedTime) {
+        setChangeoverInitiatedTime(formatarHoraPtBr(new Date()));
+      }
       setSelectedColab(colab);
       setChangeoverActivity(null);
       setChangeoverDescription('');
@@ -447,8 +456,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       changeoverActivity.name,
       changeoverActivity.category,
       undefined,
-      changeoverDescription.trim()
+      changeoverDescription.trim(),
+      changeoverInitiatedTime || undefined
     );
+    setChangeoverInitiatedTime('');
     setCurrentScreen('painel');
   };
 
@@ -1164,6 +1175,18 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               </div>
             </div>
           </div>
+
+          {changeoverInitiatedTime && (
+            <div className="px-3.5 py-2.5 bg-[#141414] border border-[#2E2E2E] rounded-xl text-xs flex flex-wrap items-center justify-between gap-2 text-[#AAAAAA]">
+              <div className="flex items-center gap-2">
+                <Clock className="w-3.5 h-3.5 text-[#FFD700]" />
+                <span>Tarefa anterior encerrada às: <b className="text-[#00E676] font-mono font-bold text-sm">{changeoverInitiatedTime}</b></span>
+              </div>
+              <span className="text-[11px] text-[#FFB74D] font-mono bg-black/40 px-2 py-0.5 rounded border border-[#333333]">
+                ⏳ Nova contagem inicia ao confirmar
+              </span>
+            </div>
+          )}
 
           <form onSubmit={handleConfirmChangeoverWithDescription} className="space-y-4">
             <div>

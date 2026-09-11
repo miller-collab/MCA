@@ -811,9 +811,9 @@ export function calcularGapsJornadaColaboradores(
     const firstStartSec = timeToSecondsOfDay(firstLog.startTime);
     const shiftEntradaSec = timeToSecondsOfDay(shiftEntrada);
 
-    if (firstStartSec - shiftEntradaSec >= 180) { // Gap >= 3 minutos
+    if (firstStartSec - shiftEntradaSec >= 60) { // Gap >= 1 minuto
       const gapMins = calcularDiferencaMinutos(shiftEntrada, firstLog.startTime);
-      if (gapMins >= 3) {
+      if (gapMins >= 1) {
         gaps.push({
           id: `gap-start-${colabName}-${dateStr}-${shiftEntrada}`,
           isGap: true,
@@ -842,9 +842,9 @@ export function calcularGapsJornadaColaboradores(
       const currentEndSec = timeToSecondsOfDay(currentEnd);
       const nextStartSec = timeToSecondsOfDay(next.startTime);
 
-      if (nextStartSec - currentEndSec >= 180) { // Gap >= 3 minutos
+      if (nextStartSec - currentEndSec >= 60) { // Gap >= 1 minuto
         const gapMins = calcularDiferencaMinutos(currentEnd, next.startTime);
-        if (gapMins >= 3) {
+        if (gapMins >= 1) {
           gaps.push({
             id: `gap-mid-${colabName}-${dateStr}-${currentEnd}`,
             isGap: true,
@@ -882,9 +882,9 @@ export function calcularGapsJornadaColaboradores(
         }
       }
 
-      if (limiteFimSec - lastEndSec >= 180) { // Gap >= 3 minutos
+      if (limiteFimSec - lastEndSec >= 60) { // Gap >= 1 minuto
         const gapMins = calcularDiferencaMinutos(lastLog.endTime, limiteFim);
-        if (gapMins >= 3) {
+        if (gapMins >= 1) {
           gaps.push({
             id: `gap-end-${colabName}-${dateStr}-${lastLog.endTime}`,
             isGap: true,

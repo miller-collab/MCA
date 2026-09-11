@@ -61,6 +61,9 @@ import {
   clearAllNotifsInFirestore,
   seedInitialFirestoreDataIfEmpty,
   fetchAllDataFromFirestore,
+  resetProductionLogsInFirestore,
+  restoreProductionLogsToFirestore,
+  exportProductionLogsBackupFile,
 } from './services/firestoreSync';
 
 export type TabKey = 'painel' | 'eficiencia' | 'grafico-diario' | 'historico' | 'indicadores' | 'turnos';
@@ -865,10 +868,11 @@ export function App() {
       observation: string,
       notes: string,
       partsProduced?: number,
-      scrapCount?: number
+      scrapCount?: number,
+      customEndTime?: string
     ) => {
       const now = new Date();
-      const endTimeStr = formatarHoraPtBr(now);
+      const endTimeStr = customEndTime || formatarHoraPtBr(now);
 
       setLogs((prev) =>
         prev.map((log) => {
@@ -918,11 +922,13 @@ export function App() {
       newActivityName: string,
       newCategory: ActivityCategory,
       machineId?: string,
-      newInitialDescription?: string
+      newInitialDescription?: string,
+      customEndTime?: string
     ) => {
       const now = new Date();
       const timeStr = formatarHoraPtBr(now);
       const dateStr = formatarDataPtBr(now);
+      const prevEndTime = customEndTime || timeStr;
 
       let targetColab = '';
       let targetRole = '';
@@ -939,7 +945,7 @@ export function App() {
             const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
 
             const { duracaoLiquida, minutosRefeicaoDeduzidos, deveDebitarRefeicao } =
-              calcularDuracaoComDeducaoRefeicao(log.startTime, timeStr, colabShift, shifts, !!jaTeveRefeicao);
+              calcularDuracaoComDeducaoRefeicao(log.startTime, prevEndTime, colabShift, shifts, !!jaTeveRefeicao);
 
             let obsFinal = observation || 'Setup / Troca Rápida de Operação';
             if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
@@ -948,7 +954,7 @@ export function App() {
 
             const finishedLog: ProductionLog = {
               ...log,
-              endTime: timeStr,
+              endTime: prevEndTime,
               durationMinutes: duracaoLiquida,
               status: 'Concluída' as const,
               observation: obsFinal,
@@ -984,6 +990,7 @@ export function App() {
 
         return updated;
       });
+
       if (soundEnabled) playFactoryChime('start');
     },
     [collaborators, shifts, soundEnabled]
@@ -1107,6 +1114,44 @@ export function App() {
     setDrilldownFilter(operatorName);
   }, []);
 
+  // Handlers para Reset de Produção com Backup Automático e Restauração
+  const handleResetProductionLogs = useCallback(async () => {
+    try {
+      // 1. Exporta backup imediatamente para download seguro no navegador
+      exportProductionLogsBackupFile(logs, autoCloseNotifs);
+
+      // 2. Apaga exclusivamente logs e notificações automáticas no Firestore e localStorage
+      await resetProductionLogsInFirestore();
+
+      // 3. Atualiza estado da UI
+      setLogs([]);
+      setAutoCloseNotifs([]);
+    } catch (err) {
+      console.error('Erro ao resetar registros de produção:', err);
+      throw err;
+    }
+  }, [logs, autoCloseNotifs]);
+
+  const handleRestoreProductionLogs = useCallback(
+    async (restoredLogs: ProductionLog[], restoredNotifs: AutoCloseNotification[] = []) => {
+      try {
+        await restoreProductionLogsToFirestore(restoredLogs, restoredNotifs);
+        setLogs(restoredLogs);
+        if (restoredNotifs && restoredNotifs.length > 0) {
+          setAutoCloseNotifs(restoredNotifs);
+        }
+      } catch (err) {
+        console.error('Erro ao restaurar logs:', err);
+        throw err;
+      }
+    },
+    []
+  );
+
+  const handleExportBackup = useCallback(() => {
+    exportProductionLogsBackupFile(logs, autoCloseNotifs);
+  }, [logs, autoCloseNotifs]);
+
   const activeCount = new Set(
     logs.filter((l) => l.status === 'Em Execução').map((l) => l.collaboratorName.trim().toLowerCase())
   ).size;
@@ -1203,6 +1248,7 @@ export function App() {
           <HistoryView
             logs={logs}
             collaborators={collaborators}
+            activities={activities}
             shifts={shifts}
             onDeleteLog={handleDeleteLog}
             onUpdateLog={handleUpdateLog}
@@ -1243,6 +1289,9 @@ export function App() {
               setDrilldownFilter(filterName || '');
               setActiveTab('historico');
             }}
+            onResetProductionLogs={handleResetProductionLogs}
+            onRestoreProductionLogs={handleRestoreProductionLogs}
+            onExportBackup={handleExportBackup}
             onUpdateCollaborators={handleSaveCollaborators}
             onUpdateActivities={handleUpdateActivities}
             onUpdateShifts={handleUpdateShifts}

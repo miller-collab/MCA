@@ -2,9 +2,9 @@ import React, { useState, useMemo } from 'react';
 import { 
   Search, Download, Trash2, Edit3, X, Check, Filter, Lock, KeyRound, 
   AlertTriangle, RotateCcw, Calendar, Clock, ShieldCheck, PlusCircle, 
-  Activity
+  Activity, User, Layers
 } from 'lucide-react';
-import { ProductionLog, Collaborator, ShiftConfig, ActivityCategory } from '../types';
+import { ProductionLog, Collaborator, ShiftConfig, ActivityCategory, ActivityItem } from '../types';
 import { 
   formatarHorasMinutos, 
   calcularDiferencaMinutos, 
@@ -19,6 +19,7 @@ import {
 interface HistoryViewProps {
   logs: ProductionLog[];
   collaborators?: Collaborator[];
+  activities?: ActivityItem[];
   shifts?: ShiftConfig[];
   onDeleteLog?: (id: string) => void;
   onUpdateLog?: (log: ProductionLog) => void;
@@ -36,6 +37,7 @@ type HistoryTimelineItem =
 export const HistoryView: React.FC<HistoryViewProps> = ({
   logs,
   collaborators = [],
+  activities = [],
   shifts = [],
   onDeleteLog,
   onUpdateLog,
@@ -47,10 +49,44 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const [searchTerm, setSearchTerm] = useState(initialFilterTerm);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [selectedCollaborator, setSelectedCollaborator] = useState('TODOS');
+  const [selectedActivity, setSelectedActivity] = useState('TODOS');
   const [selectedShift, setSelectedShift] = useState('TODOS');
   const [filterStatus, setFilterStatus] = useState('TODOS');
   const [filterMeal, setFilterMeal] = useState('TODOS');
   const [showGaps, setShowGaps] = useState(true); // Exibir lacunas sem apontamento por padrão
+
+  // Lista de Colaboradores únicos para o seletor de filtro
+  const listaColaboradoresFiltro = useMemo(() => {
+    const rawList = Array.isArray(collaborators) && collaborators.length > 0
+      ? collaborators.filter((c) => c && c.name && typeof c.name === 'string')
+      : [];
+
+    if (rawList.length === 0) {
+      const nomes = Array.from(
+        new Set(
+          (logs || [])
+            .map((l) => l?.collaboratorName)
+            .filter((n): n is string => Boolean(n && typeof n === 'string' && n.trim()))
+        )
+      );
+      return nomes.map((n) => ({ id: n, name: n, role: 'OPERADOR', shift: 'Turno 1' }));
+    }
+
+    return [...rawList].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [collaborators, logs]);
+
+  // Lista de Atividades únicas para o seletor de filtro
+  const listaAtividadesFiltro = useMemo(() => {
+    const nomesSet = new Set<string>();
+    (activities || []).forEach((a) => {
+      if (a && a.name && a.name.trim()) nomesSet.add(a.name.trim());
+    });
+    (logs || []).forEach((l) => {
+      if (l && l.activity && l.activity.trim()) nomesSet.add(l.activity.trim());
+    });
+    return Array.from(nomesSet).sort((a, b) => a.localeCompare(b));
+  }, [activities, logs]);
   
   // Leader Password Protection for Edit/Delete/Fill Gap
   const [authModal, setAuthModal] = useState<{
@@ -93,6 +129,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     searchTerm || 
     startDate || 
     endDate || 
+    selectedCollaborator !== 'TODOS' ||
+    selectedActivity !== 'TODOS' ||
     selectedShift !== 'TODOS' || 
     filterStatus !== 'TODOS' || 
     filterMeal !== 'TODOS' || 
@@ -103,6 +141,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     setSearchTerm('');
     setStartDate('');
     setEndDate('');
+    setSelectedCollaborator('TODOS');
+    setSelectedActivity('TODOS');
     setSelectedShift('TODOS');
     setFilterStatus('TODOS');
     setFilterMeal('TODOS');
@@ -133,7 +173,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     return items;
   }, [logs, allGaps, showGaps]);
 
-  // Filtra itens com range, shift, status, busca e refeição
+  // Filtra itens com range, shift, status, busca, refeição, colaborador e atividade
   const filteredTimeline = useMemo(() => {
     return combinedTimeline.filter((item) => {
       const term = searchTerm.toLowerCase().trim();
@@ -156,6 +196,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
         const matchDatePeriod = verificarDataNoPeriodo(log.date, startDate, endDate);
 
+        const matchColab =
+          selectedCollaborator === 'TODOS' ||
+          log.collaboratorName.trim().toLowerCase() === selectedCollaborator.trim().toLowerCase();
+
+        const matchActivity =
+          selectedActivity === 'TODOS' ||
+          log.activity.trim().toLowerCase() === selectedActivity.trim().toLowerCase();
+
         const matchShift =
           selectedShift === 'TODOS' ||
           padronizarNomeTurno(itemShift) === padronizarNomeTurno(selectedShift);
@@ -169,7 +217,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         if (filterMeal === 'COM_REFEICAO') matchMeal = hasMeal;
         if (filterMeal === 'SEM_REFEICAO') matchMeal = !hasMeal;
 
-        return matchTerm && matchDatePeriod && matchShift && matchStatus && matchMeal;
+        return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus && matchMeal;
       } else {
         // É um GAP (Sem Apontamento)
         const gap = item.data;
@@ -187,6 +235,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
         const matchDatePeriod = verificarDataNoPeriodo(gap.date, startDate, endDate);
 
+        const matchColab =
+          selectedCollaborator === 'TODOS' ||
+          gap.collaboratorName.trim().toLowerCase() === selectedCollaborator.trim().toLowerCase();
+
+        const matchActivity =
+          selectedActivity === 'TODOS' ||
+          gap.activity.trim().toLowerCase() === selectedActivity.trim().toLowerCase();
+
         const matchShift =
           selectedShift === 'TODOS' ||
           padronizarNomeTurno(itemShift) === padronizarNomeTurno(selectedShift);
@@ -198,7 +254,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         // GAPs não têm refeição debitada por padrão
         const matchMeal = filterMeal === 'TODOS' || filterMeal === 'SEM_REFEICAO';
 
-        return matchTerm && matchDatePeriod && matchShift && matchStatus && matchMeal;
+        return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus && matchMeal;
       }
     }).sort((a, b) => {
       // Ordenação: primeiro por data decrescente, depois por colaborador, depois por startTime
@@ -214,7 +270,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       const startB = b.type === 'log' ? b.data.startTime : b.data.startTime;
       return timeToSecondsOfDay(startA) - timeToSecondsOfDay(startB);
     });
-  }, [combinedTimeline, searchTerm, startDate, endDate, selectedShift, filterStatus, filterMeal, collaborators]);
+  }, [combinedTimeline, searchTerm, startDate, endDate, selectedCollaborator, selectedActivity, selectedShift, filterStatus, filterMeal, collaborators]);
 
   // Cálculos para o Card de Conciliação e Auditoria da Jornada
   const conciliationMetrics = useMemo(() => {
@@ -560,8 +616,8 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           />
         </div>
 
-        {/* Linha 2: Filtros de Data Inicial, Data Final, Turnos, Status e Refeição */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+        {/* Linha 2: Filtros de Data, Colaborador, Atividade, Turno, Status e Refeição */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2.5">
           {/* Data Inicial */}
           <div className="space-y-1">
             <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center gap-1">
@@ -594,7 +650,49 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             />
           </div>
 
-          {/* Filtro por Turno (com opção Todos os Turnos) */}
+          {/* Filtro por Colaborador */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center gap-1">
+              <User className="w-3 h-3 text-[#00E676]" />
+              <span>Colaborador</span>
+            </label>
+            <select
+              id="filtro-colaborador"
+              value={selectedCollaborator}
+              onChange={(e) => setSelectedCollaborator(e.target.value)}
+              className="w-full py-2 px-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-xs font-medium focus:outline-none focus:border-[#007BFF]"
+            >
+              <option value="TODOS">Todos Colaboradores</option>
+              {listaColaboradoresFiltro.map((c) => (
+                <option key={c.id || c.name} value={c.name}>
+                  {c.name} {c.role ? `(${c.role})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Filtro por Atividade */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center gap-1">
+              <Layers className="w-3 h-3 text-[#2979FF]" />
+              <span>Atividade</span>
+            </label>
+            <select
+              id="filtro-atividade"
+              value={selectedActivity}
+              onChange={(e) => setSelectedActivity(e.target.value)}
+              className="w-full py-2 px-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-xs font-medium focus:outline-none focus:border-[#007BFF]"
+            >
+              <option value="TODOS">Todas Atividades</option>
+              {listaAtividadesFiltro.map((act) => (
+                <option key={act} value={act}>
+                  {act}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Filtro por Turno */}
           <div className="space-y-1">
             <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center gap-1">
               <Clock className="w-3 h-3 text-[#FF9800]" />
@@ -646,7 +744,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               onChange={(e) => setFilterMeal(e.target.value)}
               className="w-full py-2 px-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-xs font-medium focus:outline-none focus:border-[#007BFF]"
             >
-              <option value="TODOS">Todas Atividades</option>
+              <option value="TODOS">Todas (Com/Sem)</option>
               <option value="COM_REFEICAO">🍽️ Com Refeição</option>
               <option value="SEM_REFEICAO">Sem Refeição</option>
             </select>

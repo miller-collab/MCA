@@ -516,6 +516,150 @@ export async function clearAllNotifsInFirestore() {
 }
 
 /**
+ * Reseta exclusivamente os registros de produção (logs e notificações automáticas)
+ * mantendo colaboradores, turnos, atividades, regras e configurações intactas.
+ */
+export async function resetProductionLogsInFirestore(): Promise<boolean> {
+  try {
+    const logsCol = collection(db, 'logs');
+    const notifsCol = collection(db, 'autoclose_notifs');
+
+    const [logsSnap, notifsSnap] = await Promise.all([
+      getDocs(logsCol),
+      getDocs(notifsCol),
+    ]);
+
+    // Firestore batch supports up to 500 operations per batch
+    const allDocRefs = [
+      ...logsSnap.docs.map((d) => d.ref),
+      ...notifsSnap.docs.map((d) => d.ref),
+    ];
+
+    const chunkSize = 400;
+    for (let i = 0; i < allDocRefs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      const chunk = allDocRefs.slice(i, i + chunkSize);
+      chunk.forEach((ref) => batch.delete(ref));
+      await batch.commit();
+    }
+
+    // Limpar caches locais de logs também
+    try {
+      localStorage.setItem('mca_logs_v3', JSON.stringify([]));
+      localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify([]));
+    } catch {
+      // ignore
+    }
+
+    return true;
+  } catch (err) {
+    console.error('Erro ao resetar registros de produção no Firestore:', err);
+    throw err;
+  }
+}
+
+/**
+ * Restaura uma lista de logs de produção para o Firestore em batches seguros
+ */
+export async function restoreProductionLogsToFirestore(
+  logs: ProductionLog[],
+  notifs: AutoCloseNotification[] = []
+): Promise<boolean> {
+  try {
+    const chunkSize = 350;
+    
+    // 1. Gravar Logs
+    for (let i = 0; i < logs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      const chunk = logs.slice(i, i + chunkSize);
+      chunk.forEach((l) => {
+        const docRef = doc(db, 'logs', l.id);
+        batch.set(docRef, sanitizeForFirestore(l), { merge: true });
+      });
+      await batch.commit();
+    }
+
+    // 2. Gravar Notificações se existirem
+    if (notifs.length > 0) {
+      for (let i = 0; i < notifs.length; i += chunkSize) {
+        const batch = writeBatch(db);
+        const chunk = notifs.slice(i, i + chunkSize);
+        chunk.forEach((n) => {
+          const docRef = doc(db, 'autoclose_notifs', n.id);
+          batch.set(docRef, sanitizeForFirestore(n), { merge: true });
+        });
+        await batch.commit();
+      }
+    }
+
+    // Atualizar LocalStorage
+    try {
+      localStorage.setItem('mca_logs_v3', JSON.stringify(logs));
+      if (notifs.length > 0) {
+        localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(notifs));
+      }
+    } catch {
+      // ignore
+    }
+
+    return true;
+  } catch (err) {
+    console.error('Erro ao restaurar logs para o Firestore:', err);
+    throw err;
+  }
+}
+
+/**
+ * Gera e baixa o arquivo de backup de registros em formato JSON
+ */
+export function exportProductionLogsBackupFile(
+  logs: ProductionLog[],
+  notifs: AutoCloseNotification[] = []
+): { fileName: string; totalLogs: number } {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const mins = String(now.getMinutes()).padStart(2, '0');
+  const secs = String(now.getSeconds()).padStart(2, '0');
+
+  const fileName = `backup_mca_registros_producao_${year}-${month}-${day}_${hours}${mins}${secs}.json`;
+
+  const backupData = {
+    backupType: 'MCA_PRODUCTION_LOGS_BACKUP',
+    version: '1.0',
+    exportedAt: now.toISOString(),
+    exportedAtFormatted: `${day}/${month}/${year} ${hours}:${mins}:${secs}`,
+    totalLogs: logs.length,
+    totalNotifs: notifs.length,
+    logs,
+    autoCloseNotifs: notifs,
+  };
+
+  const jsonStr = JSON.stringify(backupData, null, 2);
+  const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  // Também guarda histórico de backup no LocalStorage por segurança adicional
+  try {
+    const backupKey = `mca_backup_${year}${month}${day}_${hours}${mins}${secs}`;
+    localStorage.setItem(backupKey, jsonStr);
+  } catch {
+    // quota may be exceeded
+  }
+
+  return { fileName, totalLogs: logs.length };
+}
+
+/**
  * Seed initial dataset to Firestore or upgrade legacy mock records with the real 14 operators
  */
 export async function seedInitialFirestoreDataIfEmpty(

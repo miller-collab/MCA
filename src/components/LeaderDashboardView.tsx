@@ -4,7 +4,7 @@ import {
   CheckCircle2, Clock, Lock, KeyRound, ArrowDown, UserCheck, 
   HelpCircle, ChevronRight, Zap, Settings, Activity, BellRing,
   Check, Trash2, ExternalLink, ShieldAlert, Search, Calendar,
-  RotateCcw, Filter
+  RotateCcw, Filter, Upload, Download, Database
 } from 'lucide-react';
 import { 
   ProductionLog, 
@@ -50,6 +50,9 @@ interface LeaderDashboardViewProps {
   onLock: () => void;
   onSimulateShiftAutoClose?: () => void;
   onDrilldownClick?: (operatorName: string) => void;
+  onResetProductionLogs?: () => Promise<void> | void;
+  onRestoreProductionLogs?: (logs: ProductionLog[], notifs?: AutoCloseNotification[]) => Promise<void> | void;
+  onExportBackup?: () => void;
   onUpdateCollaborators: (colabs: Collaborator[]) => void;
   onUpdateActivities: (activities: ActivityItem[]) => void;
   onUpdateShifts: (shifts: ShiftConfig[]) => void;
@@ -82,6 +85,9 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   onLock,
   onSimulateShiftAutoClose,
   onDrilldownClick,
+  onResetProductionLogs,
+  onRestoreProductionLogs,
+  onExportBackup,
   onUpdateCollaborators,
   onUpdateActivities,
   onUpdateShifts,
@@ -96,6 +102,12 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   // Leader Top Section Switch: 'indicadores' | 'configuracao'
   const [leaderSection, setLeaderSection] = useState<'indicadores' | 'configuracao'>('indicadores');
 
+  // Modal e Estados para Reset e Restauração de Produção
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetFeedback, setResetFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
   // Efficiency thresholds state in Leader view
   const [editGreen, setEditGreen] = useState<number>(propGreen);
   const [editYellow, setEditYellow] = useState<number>(propYellow);
@@ -108,6 +120,77 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   React.useEffect(() => {
     setEditYellow(propYellow);
   }, [propYellow]);
+
+  // Handler para confirmação de reset de produção
+  const handleConfirmReset = async () => {
+    if (!onResetProductionLogs) return;
+    try {
+      setIsResetting(true);
+      await onResetProductionLogs();
+      setIsResetting(false);
+      setShowResetModal(false);
+      setResetFeedback({
+        type: 'success',
+        message: 'Base de produção resetada com sucesso! O backup em JSON foi baixado automaticamente para seu computador.',
+      });
+      setTimeout(() => setResetFeedback(null), 7000);
+    } catch (err: any) {
+      setIsResetting(false);
+      setResetFeedback({
+        type: 'error',
+        message: `Erro ao resetar base: ${err?.message || 'Falha na operação'}`,
+      });
+      setTimeout(() => setResetFeedback(null), 7000);
+    }
+  };
+
+  // Handler para upload e restauração do arquivo de backup JSON
+  const handleRestoreFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const content = e.target?.result as string;
+        const parsed = JSON.parse(content);
+
+        let logsToRestore: ProductionLog[] = [];
+        let notifsToRestore: AutoCloseNotification[] = [];
+
+        if (Array.isArray(parsed)) {
+          logsToRestore = parsed;
+        } else if (parsed && Array.isArray(parsed.logs)) {
+          logsToRestore = parsed.logs;
+          if (Array.isArray(parsed.autoCloseNotifs)) {
+            notifsToRestore = parsed.autoCloseNotifs;
+          }
+        } else {
+          throw new Error('Arquivo JSON inválido ou não reconhecido como backup do MCA.');
+        }
+
+        if (onRestoreProductionLogs) {
+          await onRestoreProductionLogs(logsToRestore, notifsToRestore);
+          setResetFeedback({
+            type: 'success',
+            message: `Sucesso! ${logsToRestore.length} registros de produção restaurados na nuvem e sincronizados.`,
+          });
+          setTimeout(() => setResetFeedback(null), 7000);
+        }
+      } catch (err: any) {
+        setResetFeedback({
+          type: 'error',
+          message: `Falha ao carregar backup: ${err?.message || 'Formato JSON incorreto'}`,
+        });
+        setTimeout(() => setResetFeedback(null), 7000);
+      } finally {
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const handleSaveThresholds = () => {
     const validGreen = Math.max(1, Math.min(100, Number(editGreen) || 85));
@@ -354,6 +437,43 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
             </button>
           </div>
 
+          {/* Grupo de Ferramentas de Gerenciamento da Produção (Reset e Backup) */}
+          <div className="flex items-center gap-1.5 border-l border-[#333333] pl-2.5">
+            {/* Input File Oculto para Restaurar Backup JSON */}
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept=".json,application/json"
+              onChange={handleRestoreFileUpload}
+              className="hidden"
+            />
+
+            {/* Botão de Restaurar Backup JSON */}
+            {onRestoreProductionLogs && (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1.5 bg-[#161616] hover:bg-[#1E293B] text-[#94A3B8] hover:text-[#38BDF8] border border-[#2D2D2D] hover:border-[#38BDF8]/40 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                title="Carregar / Restaurar registros de produção a partir de arquivo de backup JSON salvo anteriormente"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#38BDF8]" />
+                <span className="hidden sm:inline">Restaurar Registros (JSON)</span>
+                <span className="sm:hidden">Restaurar</span>
+              </button>
+            )}
+
+            {/* Botão de Resetar Registros de Produção com Backup Automático */}
+            {onResetProductionLogs && (
+              <button
+                onClick={() => setShowResetModal(true)}
+                className="px-2.5 py-1.5 bg-[#2A0808] hover:bg-[#3D0C0C] text-[#FF8A80] hover:text-[#FF5252] border border-[#FF5252]/40 hover:border-[#FF5252] rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm shadow-[#FF5252]/10"
+                title="Resetar registros de produção (testes) mantendo colaboradores, turnos e configurações intactos. O backup será salvo automaticamente."
+              >
+                <Trash2 className="w-3.5 h-3.5 text-[#FF5252]" />
+                <span>Resetar Registros (Limpar Testes)</span>
+              </button>
+            )}
+          </div>
+
           {/* Botão de Simulação Discreto Apenas no Painel do Líder */}
           {onSimulateShiftAutoClose && (
             <button
@@ -376,6 +496,107 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Alerta / Feedback de Operações de Reset / Restauração */}
+      {resetFeedback && (
+        <div
+          className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs font-bold transition ${
+            resetFeedback.type === 'success'
+              ? 'bg-[#00E676]/10 border-[#00E676]/40 text-[#00E676]'
+              : 'bg-[#FF5252]/10 border-[#FF5252]/40 text-[#FF5252]'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {resetFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+            )}
+            <span>{resetFeedback.message}</span>
+          </div>
+          <button
+            onClick={() => setResetFeedback(null)}
+            className="text-xs underline hover:opacity-80 cursor-pointer"
+          >
+            Fechar
+          </button>
+        </div>
+      )}
+
+      {/* MODAL DE CONFIRMAÇÃO DO RESET DE REGISTROS DE PRODUÇÃO */}
+      {showResetModal && (
+        <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4">
+          <div className="bg-[#181818] border border-[#FF5252]/50 rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-start gap-3 border-b border-[#333333] pb-3">
+              <div className="p-2.5 rounded-xl bg-[#FF5252]/20 text-[#FF5252] shrink-0">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                  <span>Resetar Registros de Produção</span>
+                  <span className="text-[10px] bg-[#FF5252] text-black font-black px-1.5 py-0.5 rounded uppercase">
+                    Limpar Testes
+                  </span>
+                </h3>
+                <p className="text-xs text-[#AAAAAA] mt-0.5">
+                  Prepare a base para início operacional oficial zerando os logs de teste
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-[#241212] border border-[#FF5252]/30 rounded-xl p-3.5 text-xs text-[#FFCDD2] space-y-2">
+              <div className="font-bold flex items-center gap-1.5 text-[#FF5252]">
+                <ShieldAlert className="w-4 h-4" />
+                <span>O que vai acontecer:</span>
+              </div>
+              <ul className="list-disc list-inside space-y-1 text-[#E0E0E0] pl-1">
+                <li>
+                  <strong className="text-white">Backup Automático:</strong> Um arquivo JSON com todos os{' '}
+                  <strong className="text-[#00E676]">{logs.length} registros atuais</strong> será salvo e baixado no seu computador imediatamente antes da exclusão.
+                </li>
+                <li>
+                  <strong className="text-white">Apenas Registros:</strong> Somente os apontamentos de produção e alertas de fim de turno serão apagados.
+                </li>
+                <li>
+                  <strong className="text-[#00E676]">Configurações Preservadas:</strong> Colaboradores, Turnos, Horários, Atividades, Cores e Regras permanecerão <strong>100% intactos</strong>.
+                </li>
+                <li>
+                  <strong className="text-white">Restauração a Qualquer Momento:</strong> Você poderá restaurar os registros quando quiser usando o botão "Restaurar Registros (JSON)".
+                </li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-[#2A2A2A]">
+              <button
+                type="button"
+                onClick={() => setShowResetModal(false)}
+                disabled={isResetting}
+                className="px-4 py-2 bg-[#262626] hover:bg-[#333333] text-[#CCCCCC] hover:text-white rounded-lg text-xs font-bold transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReset}
+                disabled={isResetting}
+                className="px-4 py-2 bg-[#D32F2F] hover:bg-[#F44336] text-white rounded-lg text-xs font-black flex items-center gap-2 transition cursor-pointer shadow-lg shadow-[#D32F2F]/30"
+              >
+                {isResetting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Salvando Backup e Resetando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Baixar Backup e Resetar Agora</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* RENDERIZAÇÃO: SEÇÃO 1 - CONFIGURAÇÃO DA FÁBRICA */}
       {leaderSection === 'configuracao' && (
