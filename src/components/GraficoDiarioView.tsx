@@ -13,6 +13,12 @@ import {
   Users,
   Award,
   ArrowUpRight,
+  MessageSquare,
+  FileText,
+  X,
+  ChevronRight,
+  CheckCircle2,
+  ListOrdered,
 } from 'lucide-react';
 import {
   BarChart,
@@ -170,6 +176,15 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
   const [endDate, setEndDate] = useState<string>(() => {
     return toIsoDate(new Date());
   });
+
+  // Modal de Detalhamento de Histórico por Colaborador x Atividade Selecionada
+  const [selectedActivityDetail, setSelectedActivityDetail] = useState<{
+    activityName: string;
+    category?: string;
+    collaboratorName: string;
+    role?: string;
+    shift?: string;
+  } | null>(null);
 
   // Metas de Eficiência
   const targetGreen = 85;
@@ -463,6 +478,54 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
       totalLogsFiltrados: logsFiltrados.length,
     };
   }, [logs, startDate, endDate, collaborators]);
+
+  // Logs específicos do colaborador para a atividade selecionada no período escolhido (Ordem decrescente de tempo de duração)
+  const matchingActivityLogs = useMemo(() => {
+    if (!selectedActivityDetail) return [];
+    const targetColab = (selectedActivityDetail.collaboratorName || '').trim().toLowerCase();
+    const targetAct = (selectedActivityDetail.activityName || '').trim().toLowerCase();
+
+    return (logs || [])
+      .filter((l) => {
+        if (!l || !l.collaboratorName || !l.activity) return false;
+        const isColab = l.collaboratorName.trim().toLowerCase() === targetColab;
+        const isAct = l.activity.trim().toLowerCase() === targetAct;
+        const inPeriod = verificarDataNoPeriodo(l.date, startDate, endDate);
+        return isColab && isAct && inPeriod;
+      })
+      .sort((a, b) => {
+        const minsA =
+          typeof a.durationMinutes === 'number' && a.durationMinutes > 0
+            ? a.durationMinutes
+            : calcularDiferencaMinutos(a.startTime, a.endTime);
+        const minsB =
+          typeof b.durationMinutes === 'number' && b.durationMinutes > 0
+            ? b.durationMinutes
+            : calcularDiferencaMinutos(b.startTime, b.endTime);
+
+        // Maior tempo primeiro (decrescente)
+        if (minsB !== minsA) {
+          return minsB - minsA;
+        }
+
+        // Critério de desempate: data e hora mais recente
+        if (a.date !== b.date) {
+          return b.date.localeCompare(a.date);
+        }
+        return (b.startTime || '').localeCompare(a.startTime || '');
+      });
+  }, [logs, selectedActivityDetail, startDate, endDate]);
+
+  // Total de minutos somados para os apontamentos encontrados
+  const totalMatchingMinutes = useMemo(() => {
+    return matchingActivityLogs.reduce((acc, l) => {
+      const mins =
+        typeof l.durationMinutes === 'number' && l.durationMinutes > 0
+          ? l.durationMinutes
+          : calcularDiferencaMinutos(l.startTime, l.endTime);
+      return acc + mins;
+    }, 0);
+  }, [matchingActivityLogs]);
 
   // Presets de Data
   const setQuickRange = (tipo: 'hoje' | 'ontem' | '7dias' | '15dias' | 'mes') => {
@@ -1530,24 +1593,26 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
                         return (
                           <div
                             key={cIdx}
-                            className="bg-[#1E1E1E] hover:bg-[#252525] border border-[#2D2D2D] p-2.5 rounded-lg flex items-center justify-between gap-3 text-xs transition"
+                            onClick={() =>
+                              setSelectedActivityDetail({
+                                activityName: item.activityName,
+                                category: item.category,
+                                collaboratorName: colab.nome,
+                                role: colab.role,
+                                shift: colab.shift,
+                              })
+                            }
+                            className="bg-[#1E1E1E] hover:bg-[#252525] hover:border-[#007BFF]/70 border border-[#2D2D2D] p-2.5 rounded-lg flex items-center justify-between gap-3 text-xs transition cursor-pointer group shadow-sm hover:shadow-md"
+                            title={`Clique para ver o histórico e comentários de ${colab.nome} em "${item.activityName}"`}
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-7 h-7 rounded-full bg-[#007BFF]/20 text-[#007BFF] font-bold text-xs flex items-center justify-center shrink-0">
+                              <div className="w-7 h-7 rounded-full bg-[#007BFF]/20 text-[#007BFF] font-bold text-xs flex items-center justify-center shrink-0 group-hover:bg-[#007BFF] group-hover:text-white transition">
                                 {colab.nome.slice(0, 1).toUpperCase()}
                               </div>
                               <div className="min-w-0">
-                                <div className="font-bold text-white truncate flex items-center gap-1.5">
+                                <div className="font-bold text-white truncate flex items-center gap-1.5 group-hover:text-[#00E676] transition">
                                   <span>{colab.nome}</span>
-                                  {onNavigateToHistory && (
-                                    <button
-                                      onClick={() => onNavigateToHistory(colab.nome)}
-                                      className="text-[#666666] hover:text-[#007BFF] transition cursor-pointer"
-                                      title={`Ver histórico de ${colab.nome}`}
-                                    >
-                                      <ArrowUpRight className="w-3 h-3" />
-                                    </button>
-                                  )}
+                                  <MessageSquare className="w-3 h-3 text-[#777777] group-hover:text-[#00E676] transition shrink-0" />
                                 </div>
                                 <div className="text-[10px] text-[#888888] truncate">
                                   {colab.role} • {colab.shift} ({colab.vezes}x)
@@ -1555,13 +1620,16 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
                               </div>
                             </div>
 
-                            <div className="text-right shrink-0">
-                              <span className="font-mono text-[#00E676] font-bold text-xs block">
-                                {formatarHorasMinutos(colab.minutos)}
-                              </span>
-                              <span className="text-[9px] text-[#888888] font-mono">
-                                {pctDesteColab}% da tarefa
-                              </span>
+                            <div className="text-right shrink-0 flex items-center gap-2">
+                              <div>
+                                <span className="font-mono text-[#00E676] font-bold text-xs block">
+                                  {formatarHorasMinutos(colab.minutos)}
+                                </span>
+                                <span className="text-[9px] text-[#888888] font-mono">
+                                  {pctDesteColab}% da tarefa
+                                </span>
+                              </div>
+                              <ChevronRight className="w-4 h-4 text-[#555555] group-hover:text-[#00E676] group-hover:translate-x-0.5 transition shrink-0" />
                             </div>
                           </div>
                         );
@@ -1570,6 +1638,262 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Detalhamento de Histórico e Comentários por Operação */}
+      {selectedActivityDetail && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5"
+          onClick={() => setSelectedActivityDetail(null)}
+        >
+          <div
+            className="bg-[#141414] border border-[#333333] rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Cabeçalho do Modal */}
+            <div className="bg-[#1C1C1C] border-b border-[#2C2C2C] p-4 sm:p-5 flex items-start justify-between gap-4">
+              <div className="space-y-1.5 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[#007BFF]/20 text-[#007BFF] border border-[#007BFF]/30">
+                    {selectedActivityDetail.category || 'OPERAÇÃO'}
+                  </span>
+                  <span className="text-[11px] text-[#888888] font-mono flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-[#AAAAAA]" />
+                    {startDate === endDate
+                      ? `Data: ${startDate.split('-').reverse().join('/')}`
+                      : `Período: ${startDate.split('-').reverse().join('/')} até ${endDate.split('-').reverse().join('/')}`}
+                  </span>
+                </div>
+
+                <h3 className="text-base sm:text-lg font-black text-white leading-tight flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-[#00E676] shrink-0" />
+                  <span className="truncate">{selectedActivityDetail.activityName}</span>
+                </h3>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[#BBBBBB]">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-5 h-5 rounded-full bg-[#00E676]/20 text-[#00E676] font-bold text-[10px] flex items-center justify-center">
+                      {selectedActivityDetail.collaboratorName.slice(0, 1).toUpperCase()}
+                    </div>
+                    <strong className="text-white font-bold">{selectedActivityDetail.collaboratorName}</strong>
+                  </div>
+                  {selectedActivityDetail.role && (
+                    <span className="text-[11px] text-[#888888]">
+                      • {selectedActivityDetail.role}
+                    </span>
+                  )}
+                  {selectedActivityDetail.shift && (
+                    <span className="text-[11px] text-[#888888]">
+                      • {selectedActivityDetail.shift}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedActivityDetail(null)}
+                className="p-2 rounded-xl bg-[#252525] hover:bg-[#333333] text-[#AAAAAA] hover:text-white transition cursor-pointer shrink-0"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Barra de Resumo Rápido */}
+            <div className="bg-[#181818] border-b border-[#282828] px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-1.5 text-[#AAAAAA]">
+                  <ListOrdered className="w-4 h-4 text-[#FFD700]" />
+                  <span>Total de Execuções:</span>
+                  <strong className="text-white font-bold font-mono text-sm">
+                    {matchingActivityLogs.length}
+                  </strong>
+                </div>
+                <div className="flex items-center gap-1.5 text-[#AAAAAA]">
+                  <Clock className="w-4 h-4 text-[#00E676]" />
+                  <span>Tempo Total Acumulado:</span>
+                  <strong className="text-[#00E676] font-bold font-mono text-sm">
+                    {formatarHorasMinutos(totalMatchingMinutes)}
+                  </strong>
+                </div>
+              </div>
+
+              <span className="text-[11px] text-[#00E676] font-medium bg-[#00E676]/10 px-2.5 py-1 rounded-lg border border-[#00E676]/20">
+                ⚡ Ordenado do maior para o menor tempo de execução
+              </span>
+            </div>
+
+            {/* Lista Cronológica de Execuções com Comentários */}
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-3.5 flex-1 max-h-[calc(90vh-180px)]">
+              {matchingActivityLogs.length === 0 ? (
+                <div className="py-16 text-center space-y-2">
+                  <AlertTriangle className="w-8 h-8 text-[#FFD700] mx-auto opacity-70" />
+                  <p className="text-xs text-[#888888]">
+                    Nenhum apontamento desta operação encontrado para este operador nas datas selecionadas.
+                  </p>
+                </div>
+              ) : (
+                matchingActivityLogs.map((log, index) => {
+                  const mins =
+                    typeof log.durationMinutes === 'number' && log.durationMinutes > 0
+                      ? log.durationMinutes
+                      : calcularDiferencaMinutos(log.startTime, log.endTime);
+
+                  const hasInitialDesc = Boolean(log.initialDescription && log.initialDescription.trim());
+                  const hasObs = Boolean(
+                    log.observation &&
+                    log.observation.trim() &&
+                    log.observation.trim() !== 'Operação Concluída com Sucesso' &&
+                    log.observation.trim() !== log.initialDescription?.trim()
+                  );
+                  const hasNotes = Boolean(
+                    log.notes &&
+                    log.notes.trim() &&
+                    log.notes.trim() !== log.initialDescription?.trim() &&
+                    log.notes.trim() !== log.observation?.trim()
+                  );
+
+                  const isOngoing = log.status === 'Em Execução';
+                  const isPaused = log.status === 'Pausada';
+
+                  return (
+                    <div
+                      key={log.id || index}
+                      className="bg-[#1A1A1A] border border-[#2E2E2E] hover:border-[#3D3D3D] rounded-xl p-3.5 sm:p-4 space-y-3 transition shadow-sm"
+                    >
+                      {/* Linha de Status e Horários */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#262626] pb-2.5 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-black text-xs px-2 py-0.5 rounded bg-[#2A2A2A] text-white">
+                            #{index + 1}
+                          </span>
+                          <span className="font-bold text-white flex items-center gap-1.5 font-mono">
+                            <Calendar className="w-3.5 h-3.5 text-[#007BFF]" />
+                            {log.date}
+                          </span>
+                          <span className="text-[#888888] font-mono">
+                            {log.startTime} {log.endTime ? `às ${log.endTime}` : '(em aberto)'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[#00E676] font-bold text-xs bg-[#00E676]/10 px-2 py-0.5 rounded border border-[#00E676]/20">
+                            ⏱️ {formatarHorasMinutos(mins)}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                              isOngoing
+                                ? 'bg-[#00E676] text-black animate-pulse'
+                                : isPaused
+                                ? 'bg-[#FFD700] text-black'
+                                : 'bg-[#2E2E2E] text-[#AAAAAA]'
+                            }`}
+                          >
+                            {log.status || 'Concluída'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Bloco de Comentários / O que foi executado nesta abertura */}
+                      <div className="space-y-2">
+                        {hasInitialDesc ? (
+                          <div className="bg-[#121212] border border-[#2E2E2E] rounded-lg p-3 space-y-1">
+                            <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#FFD700]">
+                              <MessageSquare className="w-3.5 h-3.5" />
+                              <span>Comentário / O que foi executado nesta abertura:</span>
+                            </div>
+                            <p className="text-xs text-white leading-relaxed pl-5 whitespace-pre-wrap font-sans font-medium">
+                              "{log.initialDescription}"
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {hasObs ? (
+                          <div className="bg-[#121212] border border-[#2E2E2E] rounded-lg p-2.5 space-y-1">
+                            <div className="flex items-center gap-1.5 text-[10px] font-bold text-[#00E676]">
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Observação de Fechamento:</span>
+                            </div>
+                            <p className="text-xs text-[#CCCCCC] pl-4 whitespace-pre-wrap">
+                              {log.observation}
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {hasNotes ? (
+                          <div className="bg-[#121212] border border-[#2E2E2E] rounded-lg p-2.5 space-y-1">
+                            <div className="flex items-center gap-1.5 text-[10px] font-bold text-[#007BFF]">
+                              <FileText className="w-3 h-3" />
+                              <span>Notas Adicionais:</span>
+                            </div>
+                            <p className="text-xs text-[#CCCCCC] pl-4 whitespace-pre-wrap">
+                              {log.notes}
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {!hasInitialDesc && !hasObs && !hasNotes && (
+                          <div className="text-[11px] text-[#666666] italic bg-[#121212] border border-[#222222] rounded-lg p-2.5 flex items-center gap-2">
+                            <MessageSquare className="w-3 h-3 text-[#555555]" />
+                            <span>Nenhum comentário adicionado pelo operador nesta execução.</span>
+                          </div>
+                        )}
+
+                        {/* Informações adicionais se existirem */}
+                        {(log.machineId || log.partsProduced || log.scrapCount) && (
+                          <div className="flex flex-wrap items-center gap-2 pt-1 text-[10px] text-[#888888]">
+                            {log.machineId && (
+                              <span className="bg-[#222222] px-2 py-0.5 rounded border border-[#333333]">
+                                Máquina: <strong className="text-white">{log.machineId}</strong>
+                              </span>
+                            )}
+                            {typeof log.partsProduced === 'number' && log.partsProduced > 0 && (
+                              <span className="bg-[#222222] px-2 py-0.5 rounded border border-[#333333]">
+                                Peças Produzidas: <strong className="text-[#00E676]">{log.partsProduced}</strong>
+                              </span>
+                            )}
+                            {typeof log.scrapCount === 'number' && log.scrapCount > 0 && (
+                              <span className="bg-[#222222] px-2 py-0.5 rounded border border-[#333333]">
+                                Refugos: <strong className="text-[#FF5252]">{log.scrapCount}</strong>
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Rodapé do Modal */}
+            <div className="bg-[#1C1C1C] border-t border-[#2C2C2C] p-3 sm:p-4 flex items-center justify-between gap-3">
+              {onNavigateToHistory ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const name = selectedActivityDetail.collaboratorName;
+                    setSelectedActivityDetail(null);
+                    onNavigateToHistory(name);
+                  }}
+                  className="px-3.5 py-2 bg-[#252525] hover:bg-[#303030] text-[#007BFF] hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ArrowUpRight className="w-3.5 h-3.5" />
+                  <span>Ver Linha do Tempo Completa no Histórico</span>
+                </button>
+              ) : <div />}
+
+              <button
+                type="button"
+                onClick={() => setSelectedActivityDetail(null)}
+                className="px-5 py-2 bg-[#00E676] hover:bg-[#00C853] text-black font-black rounded-xl text-xs transition cursor-pointer shadow-lg shadow-[#00E676]/10"
+              >
+                Fechar
+              </button>
             </div>
           </div>
         </div>
