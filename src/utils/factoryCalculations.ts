@@ -87,10 +87,36 @@ export function timeToMinutesOfDay(timeStr: string): number {
 }
 
 /**
- * Obtém os horários e duração de refeição (almoço/janta) do turno do colaborador
+ * Obtém os horários e duração de refeição (almoço/janta) do colaborador ou turno
  */
-export function obterConfiguracaoRefeicao(colabShift: string, shifts: ShiftConfig[]): MealBreakConfig {
-  const normShift = (colabShift || 'Turno 1').toUpperCase().trim();
+export function obterConfiguracaoRefeicao(
+  colabOrShift: string,
+  shifts: ShiftConfig[],
+  collaborators?: Collaborator[]
+): MealBreakConfig {
+  // 1. Prioriza configuração individual do colaborador
+  if (collaborators && collaborators.length > 0 && colabOrShift) {
+    const colab = collaborators.find(
+      (c) =>
+        c.name.trim().toLowerCase() === colabOrShift.trim().toLowerCase() ||
+        c.id === colabOrShift
+    );
+    if (colab) {
+      if (colab.mealStart && colab.mealEnd) {
+        const dur = calcularDiferencaMinutos(colab.mealStart, colab.mealEnd);
+        return {
+          shiftName: colab.shift || 'Turno 1',
+          saidaAlmoco: colab.mealStart,
+          retornoAlmoco: colab.mealEnd,
+          duracaoMinutos: dur > 0 ? dur : 90,
+        };
+      }
+      // Se não tiver horário customizado, usa o turno do colaborador
+      colabOrShift = colab.shift || colabOrShift;
+    }
+  }
+
+  const normShift = (colabOrShift || 'Turno 1').toUpperCase().trim();
   const shift = shifts.find(
     (s) =>
       s.name.toUpperCase().trim() === normShift ||
@@ -208,9 +234,10 @@ export function calcularSobreposicaoRefeicaoMinutos(
 export function calcularDuracaoComDeducaoRefeicao(
   startTime: string,
   endTime: string,
-  colabShift: string,
+  colabOrShift: string,
   shifts: ShiftConfig[],
-  jaTeveRefeicaoNoDia: boolean = false
+  jaTeveRefeicaoNoDia: boolean = false,
+  collaborators?: Collaborator[]
 ): {
   duracaoLiquida: number;
   minutosRefeicaoDeduzidos: number;
@@ -225,17 +252,18 @@ export function calcularDuracaoComDeducaoRefeicao(
     };
   }
 
-  const mealConfig = obterConfiguracaoRefeicao(colabShift, shifts);
-  const sobreposicao = calcularSobreposicaoRefeicaoMinutos(
-    startTime,
-    endTime,
-    mealConfig.saidaAlmoco,
-    mealConfig.retornoAlmoco
-  );
+  const mealConfig = obterConfiguracaoRefeicao(colabOrShift, shifts, collaborators);
+  const startSec = timeToSecondsOfDay(startTime);
+  const endSec = timeToSecondsOfDay(endTime);
+  const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
+  const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
 
-  if (sobreposicao >= 15) {
-    // Se a sobreposição com o intervalo de almoço foi relevante (ex: >= 15 min), debita automaticamente
-    const deducao = sobreposicao;
+  // A dedução integral da refeição (ex: 90 min) ocorre quando a atividade começou antes ou no início do almoço e terminou após o retorno
+  const cruzouAlmoco = (startSec <= mealStartSec + 300 && endSec >= mealEndSec - 300) ||
+    (duracaoBruta >= mealConfig.duracaoMinutos + 15 && startSec < mealEndSec && endSec > mealStartSec);
+
+  if (cruzouAlmoco) {
+    const deducao = mealConfig.duracaoMinutos; // Sempre o valor integral configurado (ex: 90 min)
     const duracaoLiquida = Math.max(1, duracaoBruta - deducao);
     return {
       duracaoLiquida,
@@ -267,7 +295,8 @@ export interface ActivityTimerState {
 export function calcularEstadoTempoAtividade(
   log: ProductionLog,
   now: Date = new Date(),
-  shifts: ShiftConfig[] = []
+  shifts: ShiftConfig[] = [],
+  collaborators: Collaborator[] = []
 ): ActivityTimerState {
   if (!log || !log.startTime) {
     return {
@@ -297,8 +326,8 @@ export function calcularEstadoTempoAtividade(
   }
 
   const totalSegundosDesdeInicio = Math.max(0, Math.floor((nowMs - startDate.getTime()) / 1000));
-  const mealConfig = obterConfiguracaoRefeicao(log.shift || 'Turno 1', shifts);
-  const duracaoPausaMinutos = log.mealPauseDurationMinutes || mealConfig.duracaoMinutos || 90;
+  const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName || log.shift || 'Turno 1', shifts, collaborators);
+  const duracaoPausaMinutos = log.mealPauseDurationMinutes || log.mealBreakMinutes || mealConfig.duracaoMinutos || 90;
   const duracaoPausaSegundos = duracaoPausaMinutos * 60;
 
   // Se o log está em estado de pausa de refeição
@@ -362,18 +391,29 @@ export function calcularEstadoTempoAtividade(
     }
   }
 
-  // Se não está em pausa atualmente, desconta segundos de pausa anteriores
+  // Se não está em pausa atualmente, verifica se já atravessou o horário do almoço hoje ou se já teve dedução
+  const startSec = timeToSecondsOfDay(log.startTime);
+  const nowTimePtBr = formatarHoraPtBr(now);
+  const nowSec = timeToSecondsOfDay(nowTimePtBr);
+  const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
+  const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+
+  const cruzouHorarioAlmoco =
+    (startSec <= mealStartSec + 300 && nowSec >= mealEndSec - 60) ||
+    (totalSegundosDesdeInicio >= (duracaoPausaMinutos + 30) * 60 && startSec < mealStartSec + 600 && nowSec > mealEndSec - 600);
+
+  const deveDeduzirRefeicao = Boolean(log.mealBreakDeducted || cruzouHorarioAlmoco);
   const tempoPausadoAnterior =
-    log.totalPausedSeconds || (log.mealBreakDeducted ? (log.mealBreakMinutes || 90) * 60 : 0);
+    log.totalPausedSeconds || (deveDeduzirRefeicao ? (log.mealBreakMinutes || duracaoPausaMinutos) * 60 : 0);
   const tempoTrabalhadoSegundos = Math.max(0, totalSegundosDesdeInicio - tempoPausadoAnterior);
 
   return {
     tempoTrabalhadoSegundos,
     emPausaRefeicao: false,
     tempoRestantePausaSegundos: 0,
-    tempoDecorridoPausaSegundos: 0,
+    tempoDecorridoPausaSegundos: deveDeduzirRefeicao ? duracaoPausaSegundos : 0,
     duracaoPausaMinutos,
-    pausaVenceuRetomou: false,
+    pausaVenceuRetomou: deveDeduzirRefeicao,
   };
 }
 
@@ -469,7 +509,7 @@ export function desduplicarLogsAtivos(
     }
 
     const shiftEnded = isPreviousDay || verificarTurnoEncerrado(shiftSaida, shiftEntrada, shiftDias, agora);
-    const mealConfig = obterConfiguracaoRefeicao(colabShiftName, shifts || []);
+    const mealConfig = obterConfiguracaoRefeicao(colabKey, shifts || [], collaborators || []);
 
     // Ordena cronologicamente por horário de início (startTime)
     groupLogs.sort((a, b) => {
@@ -538,24 +578,30 @@ export function desduplicarLogsAtivos(
         const endCalculo = updatedLog.endTime || nextStartTime;
         const durBruta = calcularDiferencaMinutos(updatedLog.startTime, endCalculo);
 
-        // Aplica dedução de refeição se a janela cobriu o horário de almoço do turno
+        // Aplica dedução de refeição se a atividade atravessou o intervalo de refeição
         let mealMins = 0;
         let mealDeducted = Boolean(updatedLog.mealBreakDeducted);
 
-        if (!hasMealBeenDeductedToday && durBruta >= 60) {
-          const sobreposicao = calcularSobreposicaoRefeicaoMinutos(
-            updatedLog.startTime,
-            endCalculo,
-            mealConfig.saidaAlmoco,
-            mealConfig.retornoAlmoco
-          );
-          if (sobreposicao >= 15) {
-            mealMins = sobreposicao;
-            mealDeducted = true;
-            hasMealBeenDeductedToday = true;
-          }
-        } else if (mealDeducted) {
+        const startSec = timeToSecondsOfDay(updatedLog.startTime);
+        const endSec = timeToSecondsOfDay(endCalculo);
+        const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
+        const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+
+        const cruzouAlmoco =
+          (startSec <= mealStartSec + 300 && endSec >= mealEndSec - 300) ||
+          (durBruta >= mealConfig.duracaoMinutos + 15 && startSec < mealStartSec + 600 && endSec > mealEndSec - 600);
+
+        if (!hasMealBeenDeductedToday && durBruta >= mealConfig.duracaoMinutos && cruzouAlmoco) {
+          mealMins = mealConfig.duracaoMinutos; // Deduz sempre a refeição integral (ex: 90 min)
+          mealDeducted = true;
+          hasMealBeenDeductedToday = true;
+        } else if (updatedLog.isMealPause) {
+          mealDeducted = true;
           mealMins = updatedLog.mealBreakMinutes || mealConfig.duracaoMinutos || 90;
+        } else {
+          // Se não cruzou o almoço integralmente e não é pausa de refeição explícita, não deduz refeição
+          mealDeducted = false;
+          mealMins = 0;
         }
 
         const durLiquida = mealDeducted ? Math.max(1, durBruta - mealMins) : Math.max(1, durBruta);
@@ -563,7 +609,8 @@ export function desduplicarLogsAtivos(
         if (
           updatedLog.durationMinutes !== durLiquida ||
           updatedLog.mealBreakDeducted !== mealDeducted ||
-          (mealDeducted && updatedLog.mealBreakMinutes !== mealMins)
+          (mealDeducted && updatedLog.mealBreakMinutes !== mealMins) ||
+          (!mealDeducted && updatedLog.mealBreakMinutes !== undefined)
         ) {
           updatedLog.durationMinutes = durLiquida;
           updatedLog.mealBreakDeducted = mealDeducted;
@@ -596,24 +643,25 @@ export function desduplicarLogsAtivos(
           let mealMins = 0;
           let mealDeducted = Boolean(updatedLog.mealBreakDeducted);
 
-          if (!hasMealBeenDeductedToday && durBruta >= 90) {
-            const sobreposicao = calcularSobreposicaoRefeicaoMinutos(
-              updatedLog.startTime,
-              endCalculo,
-              mealConfig.saidaAlmoco,
-              mealConfig.retornoAlmoco
-            );
-            if (sobreposicao >= 15) {
-              mealMins = sobreposicao;
-              mealDeducted = true;
-              hasMealBeenDeductedToday = true;
-            } else if (durBruta >= 180) {
-              mealMins = mealConfig.duracaoMinutos || 90;
-              mealDeducted = true;
-              hasMealBeenDeductedToday = true;
-            }
-          } else if (mealDeducted) {
+          const startSec = timeToSecondsOfDay(updatedLog.startTime);
+          const endSec = timeToSecondsOfDay(endCalculo);
+          const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
+          const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+
+          const cruzouAlmoco =
+            (startSec <= mealStartSec + 300 && endSec >= mealEndSec - 300) ||
+            (durBruta >= mealConfig.duracaoMinutos + 15 && startSec < mealStartSec + 600 && endSec > mealEndSec - 600);
+
+          if (!hasMealBeenDeductedToday && durBruta >= mealConfig.duracaoMinutos && cruzouAlmoco) {
+            mealMins = mealConfig.duracaoMinutos; // Deduz sempre a refeição integral (ex: 90 min)
+            mealDeducted = true;
+            hasMealBeenDeductedToday = true;
+          } else if (updatedLog.isMealPause) {
+            mealDeducted = true;
             mealMins = updatedLog.mealBreakMinutes || mealConfig.duracaoMinutos || 90;
+          } else {
+            mealDeducted = false;
+            mealMins = 0;
           }
 
           const durLiquida = mealDeducted ? Math.max(1, durBruta - mealMins) : Math.max(1, durBruta);
@@ -621,7 +669,8 @@ export function desduplicarLogsAtivos(
           if (
             updatedLog.durationMinutes !== durLiquida ||
             updatedLog.mealBreakDeducted !== mealDeducted ||
-            (mealDeducted && updatedLog.mealBreakMinutes !== mealMins)
+            (mealDeducted && updatedLog.mealBreakMinutes !== mealMins) ||
+            (!mealDeducted && updatedLog.mealBreakMinutes !== undefined)
           ) {
             updatedLog.durationMinutes = durLiquida;
             updatedLog.mealBreakDeducted = mealDeducted;
@@ -729,6 +778,7 @@ export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: s
 export interface ShiftGapEntry {
   id: string;
   isGap: true;
+  isMealInterval?: boolean;
   date: string;
   collaboratorName: string;
   shift: string;
@@ -737,7 +787,8 @@ export interface ShiftGapEntry {
   endTime: string;
   durationMinutes: number;
   activity: string;
-  status: 'Sem Apontamento';
+  status: 'Sem Apontamento' | 'Refeição';
+  mealBreakMinutes?: number;
   observation: string;
 }
 
@@ -754,7 +805,8 @@ export interface ResumoJornadaOperador {
 
 /**
  * Calcula os períodos de tempo sem apontamento (GAPs) para cada operador na jornada de trabalho.
- * Mapeia desde o início do turno até o fim do turno, identificando onde não houve registro de atividade.
+ * Mapeia desde o início do turno até o fim do turno, identificando onde não houve registro de atividade
+ * e destacando os intervalos programados de refeição (almoço/janta).
  */
 export function calcularGapsJornadaColaboradores(
   logs: ProductionLog[],
@@ -800,35 +852,143 @@ export function calcularGapsJornadaColaboradores(
 
     const shiftEntrada = foundShift.entrada || '07:00';
     const shiftSaida = foundShift.saida || '17:30';
+    const mealConfig = obterConfiguracaoRefeicao(colabName, shifts, collaborators);
+    const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
+    const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+
+    // Identifica se alguma atividade já absorveu ou deduziu a refeição
+    let hasMealBeenProcessed = groupLogs.some(
+      (l) => l.isMealPause || (l.mealBreakDeducted && l.status === 'Concluída')
+    );
 
     // Ordena cronologicamente
     const sorted = [...groupLogs].sort(
       (a, b) => timeToSecondsOfDay(a.startTime) - timeToSecondsOfDay(b.startTime)
     );
 
+    // Helper interno para fatiar períodos ociosos considerando o horário do almoço
+    const registrarGapOuRefeicao = (
+      tipo: 'start' | 'mid' | 'end',
+      startStr: string,
+      endStr: string,
+      contextObs: string,
+      nextActName?: string
+    ) => {
+      const sSec = timeToSecondsOfDay(startStr);
+      const eSec = timeToSecondsOfDay(endStr);
+      if (eSec - sSec < 60) return; // Menos de 1 minuto
+
+      const cruzaAlmoco =
+        !hasMealBeenProcessed &&
+        sSec < mealEndSec - 60 &&
+        eSec > mealStartSec + 60;
+
+      if (cruzaAlmoco) {
+        // 1. Período antes do almoço (se houver)
+        if (sSec < mealStartSec && mealStartSec - sSec >= 60) {
+          const preMins = calcularDiferencaMinutos(startStr, mealConfig.saidaAlmoco);
+          if (preMins >= 1) {
+            gaps.push({
+              id: `gap-${tipo}-premeal-${colabName}-${dateStr}-${startStr}`,
+              isGap: true,
+              date: dateStr,
+              collaboratorName: colabName,
+              shift: shiftName,
+              role,
+              startTime: startStr,
+              endTime: mealConfig.saidaAlmoco,
+              durationMinutes: preMins,
+              activity: tipo === 'start' ? '⚠️ SEM APONTAMENTO (Início de Turno)' : '⚠️ SEM APONTAMENTO (Intervalo)',
+              status: 'Sem Apontamento',
+              observation: `Período sem atividade registrada antes do almoço (${startStr} às ${mealConfig.saidaAlmoco}).`,
+            });
+          }
+        }
+
+        // 2. Intervalo de Refeição (Almoço / Janta)
+        const mStartStr = sSec >= mealStartSec ? startStr : mealConfig.saidaAlmoco;
+        const mEndStr = eSec <= mealEndSec ? endStr : mealConfig.retornoAlmoco;
+        const mealDurationMins = calcularDiferencaMinutos(mStartStr, mEndStr);
+
+        if (mealDurationMins >= 1) {
+          gaps.push({
+            id: `meal-gap-${colabName}-${dateStr}-${mStartStr}`,
+            isGap: true,
+            isMealInterval: true,
+            date: dateStr,
+            collaboratorName: colabName,
+            shift: shiftName,
+            role,
+            startTime: mStartStr,
+            endTime: mEndStr,
+            durationMinutes: mealDurationMins,
+            activity: '🍽️ REFEIÇÃO / ALMOÇO (Intervalo)',
+            status: 'Refeição',
+            mealBreakMinutes: mealDurationMins,
+            observation: `Intervalo programado de refeição do colaborador (${mealConfig.saidaAlmoco} às ${mealConfig.retornoAlmoco}).`,
+          });
+          hasMealBeenProcessed = true;
+        }
+
+        // 3. Período após o almoço (se houver)
+        if (eSec > mealEndSec && eSec - mealEndSec >= 60) {
+          const postMins = calcularDiferencaMinutos(mealConfig.retornoAlmoco, endStr);
+          if (postMins >= 1) {
+            gaps.push({
+              id: `gap-${tipo}-postmeal-${colabName}-${dateStr}-${mealConfig.retornoAlmoco}`,
+              isGap: true,
+              date: dateStr,
+              collaboratorName: colabName,
+              shift: shiftName,
+              role,
+              startTime: mealConfig.retornoAlmoco,
+              endTime: endStr,
+              durationMinutes: postMins,
+              activity: tipo === 'end' ? '⚠️ SEM APONTAMENTO (Fim de Turno)' : '⚠️ SEM APONTAMENTO (Intervalo)',
+              status: 'Sem Apontamento',
+              observation: `Período sem atividade registrada após o almoço (${mealConfig.retornoAlmoco} às ${endStr}).`,
+            });
+          }
+        }
+      } else {
+        // Gap simples sem cruzamento de almoço
+        const gapMins = calcularDiferencaMinutos(startStr, endStr);
+        if (gapMins >= 1) {
+          let actLabel = '⚠️ SEM APONTAMENTO (Intervalo)';
+          if (tipo === 'start') actLabel = '⚠️ SEM APONTAMENTO (Início de Turno)';
+          if (tipo === 'end') actLabel = isToday && endStr !== shiftSaida ? '⚠️ SEM ATIVIDADE NO MOMENTO' : '⚠️ SEM APONTAMENTO (Fim de Turno)';
+
+          gaps.push({
+            id: `gap-${tipo}-${colabName}-${dateStr}-${startStr}`,
+            isGap: true,
+            date: dateStr,
+            collaboratorName: colabName,
+            shift: shiftName,
+            role,
+            startTime: startStr,
+            endTime: endStr,
+            durationMinutes: gapMins,
+            activity: actLabel,
+            status: 'Sem Apontamento',
+            observation: contextObs,
+          });
+        }
+      }
+    };
+
     // 1. GAP no início do turno (Entre a entrada do turno e a primeira atividade)
     const firstLog = sorted[0];
     const firstStartSec = timeToSecondsOfDay(firstLog.startTime);
     const shiftEntradaSec = timeToSecondsOfDay(shiftEntrada);
 
-    if (firstStartSec - shiftEntradaSec >= 60) { // Gap >= 1 minuto
-      const gapMins = calcularDiferencaMinutos(shiftEntrada, firstLog.startTime);
-      if (gapMins >= 1) {
-        gaps.push({
-          id: `gap-start-${colabName}-${dateStr}-${shiftEntrada}`,
-          isGap: true,
-          date: dateStr,
-          collaboratorName: colabName,
-          shift: shiftName,
-          role,
-          startTime: shiftEntrada,
-          endTime: firstLog.startTime,
-          durationMinutes: gapMins,
-          activity: '⚠️ SEM APONTAMENTO (Início de Turno)',
-          status: 'Sem Apontamento',
-          observation: `Colaborador não registrou atividade entre o início do turno (${shiftEntrada}) e o primeiro apontamento (${firstLog.startTime}).`,
-        });
-      }
+    if (firstStartSec - shiftEntradaSec >= 60) {
+      registrarGapOuRefeicao(
+        'start',
+        shiftEntrada,
+        firstLog.startTime,
+        `Colaborador não registrou atividade entre o início do turno (${shiftEntrada}) e o primeiro apontamento (${firstLog.startTime}).`,
+        firstLog.activity
+      );
     }
 
     // 2. GAPs intermediários entre atividades consecutivas
@@ -842,24 +1002,14 @@ export function calcularGapsJornadaColaboradores(
       const currentEndSec = timeToSecondsOfDay(currentEnd);
       const nextStartSec = timeToSecondsOfDay(next.startTime);
 
-      if (nextStartSec - currentEndSec >= 60) { // Gap >= 1 minuto
-        const gapMins = calcularDiferencaMinutos(currentEnd, next.startTime);
-        if (gapMins >= 1) {
-          gaps.push({
-            id: `gap-mid-${colabName}-${dateStr}-${currentEnd}`,
-            isGap: true,
-            date: dateStr,
-            collaboratorName: colabName,
-            shift: shiftName,
-            role,
-            startTime: currentEnd,
-            endTime: next.startTime,
-            durationMinutes: gapMins,
-            activity: '⚠️ SEM APONTAMENTO (Intervalo)',
-            status: 'Sem Apontamento',
-            observation: `Período sem atividade registrada entre "${current.activity}" (${currentEnd}) e "${next.activity}" (${next.startTime}).`,
-          });
-        }
+      if (nextStartSec - currentEndSec >= 60) {
+        registrarGapOuRefeicao(
+          'mid',
+          currentEnd,
+          next.startTime,
+          `Período sem atividade registrada entre "${current.activity}" (${currentEnd}) e "${next.activity}" (${next.startTime}).`,
+          next.activity
+        );
       }
     }
 
@@ -869,7 +1019,6 @@ export function calcularGapsJornadaColaboradores(
       const lastEndSec = timeToSecondsOfDay(lastLog.endTime);
       const shiftSaidaSec = timeToSecondsOfDay(shiftSaida);
 
-      // Limite final a considerar
       let limiteFim = shiftSaida;
       let limiteFimSec = shiftSaidaSec;
 
@@ -882,26 +1031,15 @@ export function calcularGapsJornadaColaboradores(
         }
       }
 
-      if (limiteFimSec - lastEndSec >= 60) { // Gap >= 1 minuto
-        const gapMins = calcularDiferencaMinutos(lastLog.endTime, limiteFim);
-        if (gapMins >= 1) {
-          gaps.push({
-            id: `gap-end-${colabName}-${dateStr}-${lastLog.endTime}`,
-            isGap: true,
-            date: dateStr,
-            collaboratorName: colabName,
-            shift: shiftName,
-            role,
-            startTime: lastLog.endTime,
-            endTime: limiteFim,
-            durationMinutes: gapMins,
-            activity: isToday && limiteFim !== shiftSaida ? '⚠️ SEM ATIVIDADE NO MOMENTO' : '⚠️ SEM APONTAMENTO (Fim de Turno)',
-            status: 'Sem Apontamento',
-            observation: isToday && limiteFim !== shiftSaida
-              ? `Última atividade concluída às ${lastLog.endTime}. Colaborador está livre sem apontamento até o momento.`
-              : `Atividade finalizada às ${lastLog.endTime} antes do encerramento do turno (${shiftSaida}). Nenhuma outra atividade foi apontada até as ${shiftSaida}.`,
-          });
-        }
+      if (limiteFimSec - lastEndSec >= 60) {
+        registrarGapOuRefeicao(
+          'end',
+          lastLog.endTime,
+          limiteFim,
+          isToday && limiteFim !== shiftSaida
+            ? `Última atividade concluída às ${lastLog.endTime}. Colaborador está livre sem apontamento até o momento.`
+            : `Atividade finalizada às ${lastLog.endTime} antes do encerramento do turno (${shiftSaida}). Nenhuma outra atividade foi apontada até as ${shiftSaida}.`
+        );
       }
     }
   }

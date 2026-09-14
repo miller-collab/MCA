@@ -61,6 +61,9 @@ export function findSavedCollaboratorsInBrowser(): {
               shift: c.shift || c.turno || 'Turno 1',
               active: c.active !== false,
               avatarColor: c.avatarColor,
+              mealStart: c.mealStart || c.almocoInicio || c.saidaAlmoco,
+              mealEnd: c.mealEnd || c.almocoFim || c.retornoAlmoco,
+              mealDurationMinutes: c.mealDurationMinutes,
             }));
             return {
               found: true,

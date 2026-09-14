@@ -5,6 +5,9 @@ export interface Collaborator {
   shift: string; // "TURNO 1" | "TURNO 2" | "TURNO 3"
   active: boolean;
   avatarColor?: string;
+  mealStart?: string; // Horário individual de saída para refeição (ex: "12:00")
+  mealEnd?: string;   // Horário individual de retorno da refeição (ex: "13:30")
+  mealDurationMinutes?: number;
 }
 
 export type ActivityCategory = 

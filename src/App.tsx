@@ -36,6 +36,7 @@ import {
   obterConfiguracaoRefeicao,
   colaboradorJaUsouRefeicaoHoje,
   calcularDuracaoComDeducaoRefeicao,
+  timeToSecondsOfDay,
 } from './utils/factoryCalculations';
 
 import {
@@ -468,14 +469,51 @@ export function App() {
         const newNotifs: AutoCloseNotification[] = [];
         const newResumedLogs: ProductionLog[] = [];
 
-        // 1. Process existing logs (meal resume, shift auto-close, and update pending resumes)
+        // 1. Process existing logs (meal pause, meal resume, shift auto-close, and update pending resumes)
         const updated = prevLogs.map((log) => {
-          // A. Retomada Automática de Refeição ao Vencer os Minutos Configurados (ex: 90 min)
+          const colab = collaborators.find(
+            (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+          );
+          const colabShiftName = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
+          const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName, shifts, collaborators);
+
+          // A. Pausa Automática de Refeição ao atingir o Horário de Início do Almoço/Janta do Colaborador
+          const isTodayLog = !log.date || log.date === todayDateStr;
+          const nowTimePtBr = formatarHoraPtBr(now);
+          const nowSec = timeToSecondsOfDay(nowTimePtBr);
+          const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
+          const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+
+          if (
+            log.status === 'Em Execução' &&
+            isTodayLog &&
+            nowSec >= mealStartSec &&
+            nowSec < mealEndSec &&
+            !log.mealBreakDeducted &&
+            !colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs)
+          ) {
+            changed = true;
+            const pausedLog: ProductionLog = {
+              ...log,
+              status: 'Pausada',
+              isMealPause: true,
+              mealPauseStartTime: formatarHoraPtBr(now),
+              mealPauseTimestampMs: nowMs,
+              mealPauseDurationMinutes: mealConfig.duracaoMinutos,
+              observation: log.observation
+                ? `${log.observation} | 🍽️ Pausa Automática de Refeição (${mealConfig.saidaAlmoco} - ${mealConfig.retornoAlmoco})`
+                : `🍽️ Pausa Automática de Refeição (${mealConfig.saidaAlmoco} - ${mealConfig.retornoAlmoco})`,
+            };
+            saveLogToFirestore(pausedLog);
+            return pausedLog;
+          }
+
+          // B. Retomada Automática de Refeição ao Vencer os Minutos Configurados (ex: 90 min) ou chegar no Retorno do Almoço
           if (
             log.status === 'Pausada' &&
             (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime || log.observation?.includes('Refeição'))
           ) {
-            const mealMinutes = log.mealPauseDurationMinutes || log.mealBreakMinutes || 90;
+            const mealMinutes = log.mealPauseDurationMinutes || mealConfig.duracaoMinutos || 90;
             let pauseStartMs = log.mealPauseTimestampMs;
             if (!pauseStartMs && log.mealPauseStartTime) {
               const pParts = log.mealPauseStartTime.split(':');
@@ -497,7 +535,10 @@ export function App() {
               pauseStartMs = dI.getTime() + (log.durationMinutes * 60 * 1000);
             }
 
-            if (pauseStartMs && (nowMs - pauseStartMs) >= mealMinutes * 60 * 1000) {
+            const mealTimeReached = isTodayLog && nowSec >= mealEndSec;
+            const mealDurationElapsed = pauseStartMs && (nowMs - pauseStartMs) >= mealMinutes * 60 * 1000;
+
+            if (mealDurationElapsed || mealTimeReached) {
               // Venceu o tempo de refeição! Retoma automaticamente a contagem na mesma atividade
               changed = true;
               const resumedLog: ProductionLog = {
@@ -513,12 +554,28 @@ export function App() {
             }
           }
 
-          // B. Encerramento Automático no Fim do Turno Específico do Colaborador
+          // B2. Dedução Automática de Refeição se a tarefa continuou em execução e já passou do horário de almoço
+          const startSec = timeToSecondsOfDay(log.startTime);
+          if (
+            log.status === 'Em Execução' &&
+            isTodayLog &&
+            nowSec >= mealEndSec &&
+            startSec <= mealStartSec + 300 &&
+            !log.mealBreakDeducted
+          ) {
+            changed = true;
+            const updatedWithMeal: ProductionLog = {
+              ...log,
+              mealBreakDeducted: true,
+              mealBreakMinutes: mealConfig.duracaoMinutos || 90,
+              mealBreakSource: 'automatic',
+            };
+            saveLogToFirestore(updatedWithMeal);
+            return updatedWithMeal;
+          }
+
+          // C. Encerramento Automático no Fim do Turno Específico do Colaborador
           if (log.status === 'Em Execução' || log.status === 'Pausada') {
-            const colab = collaborators.find(
-              (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
-            );
-            const colabShiftName = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
             const shift = shifts.find(
               (s) =>
                 s.name.toUpperCase() === colabShiftName ||
@@ -541,14 +598,13 @@ export function App() {
 
             if (turnoEncerrou) {
               changed = true;
-              const mealConfig = obterConfiguracaoRefeicao(shift.name, shifts);
               const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs);
               let dur = calcularDiferencaMinutos(log.startTime, shift.saida);
               if (dur <= 0) dur = 60;
               let debitouRefeicaoAuto = false;
               let minsRefeicao = 0;
 
-              // Se o colaborador não acionou pausa de refeição durante o dia, deduz automaticamente a refeição do turno no final do turno
+              // Se o colaborador não acionou pausa de refeição durante o dia, deduz automaticamente a refeição do colaborador no final do turno
               if (!jaTeveRefeicao && dur > mealConfig.duracaoMinutos) {
                 dur = Math.max(1, dur - mealConfig.duracaoMinutos);
                 debitouRefeicaoAuto = true;
@@ -801,7 +857,7 @@ export function App() {
             const colab = collaborators.find(
               (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
             );
-            const mealConfig = obterConfiguracaoRefeicao(colab?.shift || log.shift || 'Turno 1', shifts);
+            const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName || colab?.shift || log.shift || 'Turno 1', shifts, collaborators);
 
             // Garante regra de 1x ao dia
             const jaUsou = colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date || dateStr, prev);
@@ -884,7 +940,7 @@ export function App() {
             const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
 
             const { duracaoLiquida, minutosRefeicaoDeduzidos, deveDebitarRefeicao } =
-              calcularDuracaoComDeducaoRefeicao(log.startTime, endTimeStr, colabShift, shifts, !!jaTeveRefeicao);
+              calcularDuracaoComDeducaoRefeicao(log.startTime, endTimeStr, log.collaboratorName || colabShift, shifts, !!jaTeveRefeicao, collaborators);
 
             let obsFinal = observation || 'Operação Concluída com Sucesso sem Anomalias';
             if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
@@ -1307,6 +1363,7 @@ export function App() {
             shifts={shifts}
             collaborators={collaborators}
             onSaveShifts={handleUpdateShifts}
+            onSaveCollaborators={handleSaveCollaborators}
             onAddCollaborator={handleAddCollaborator}
             onDeleteCollaborator={handleDeleteCollaborator}
             onToggleCollaboratorActive={handleToggleCollaboratorActive}

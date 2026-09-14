@@ -104,6 +104,9 @@ export function subscribeToCollaborators(
           shift: data.shift || 'Turno 1',
           active: data.active !== false,
           avatarColor: data.avatarColor,
+          mealStart: data.mealStart,
+          mealEnd: data.mealEnd,
+          mealDurationMinutes: data.mealDurationMinutes,
         });
       });
       if (items.length > 0 || !snapshot.empty) {
@@ -431,6 +434,9 @@ export async function fetchAllDataFromFirestore(): Promise<{
         shift: data.shift || 'Turno 1',
         active: data.active !== false,
         avatarColor: data.avatarColor,
+        mealStart: data.mealStart,
+        mealEnd: data.mealEnd,
+        mealDurationMinutes: data.mealDurationMinutes,
       });
     });
 

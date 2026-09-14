@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { 
   Search, Download, Trash2, Edit3, X, Check, Filter, Lock, KeyRound, 
   AlertTriangle, RotateCcw, Calendar, Clock, ShieldCheck, PlusCircle, 
-  Activity, User, Layers
+  Activity, User, Layers, Printer, Utensils
 } from 'lucide-react';
 import { ProductionLog, Collaborator, ShiftConfig, ActivityCategory, ActivityItem } from '../types';
 import { 
@@ -15,6 +15,7 @@ import {
   ShiftGapEntry,
   timeToSecondsOfDay
 } from '../utils/factoryCalculations';
+import { generateAndDownloadReportPDF } from '../utils/pdfReportGenerator';
 
 interface HistoryViewProps {
   logs: ProductionLog[];
@@ -55,6 +56,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   const [filterStatus, setFilterStatus] = useState('TODOS');
   const [filterMeal, setFilterMeal] = useState('TODOS');
   const [showGaps, setShowGaps] = useState(true); // Exibir lacunas sem apontamento por padrão
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   // Lista de Colaboradores únicos para o seletor de filtro
   const listaColaboradoresFiltro = useMemo(() => {
@@ -212,7 +214,13 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           filterStatus === 'TODOS' || 
           (filterStatus === 'SEM_APONTAMENTO' ? false : log.status === filterStatus);
 
-        const hasMeal = Boolean(log.mealBreakDeducted || log.isMealPause || (log.mealBreakMinutes && log.mealBreakMinutes > 0));
+        const hasMeal = Boolean(
+          log.mealBreakDeducted || 
+          log.isMealPause || 
+          (log.mealBreakMinutes && log.mealBreakMinutes > 0) ||
+          log.observation?.toLowerCase().includes('refeição') ||
+          log.observation?.toLowerCase().includes('refeicao')
+        );
         let matchMeal = true;
         if (filterMeal === 'COM_REFEICAO') matchMeal = hasMeal;
         if (filterMeal === 'SEM_REFEICAO') matchMeal = !hasMeal;
@@ -502,6 +510,37 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     document.body.removeChild(link);
   };
 
+  // Função para gerar e salvar instantaneamente o relatório em PDF (Preto e Branco / Alta Legibilidade)
+  const handlePrintReport = () => {
+    try {
+      setIsExportingPdf(true);
+
+      const colabNome =
+        selectedCollaborator !== 'TODOS'
+          ? selectedCollaborator
+          : searchTerm.trim()
+          ? `Filtro: "${searchTerm}"`
+          : 'Todos os Colaboradores';
+
+      generateAndDownloadReportPDF({
+        collaboratorName: colabNome,
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        selectedShift: selectedShift !== 'TODOS' ? selectedShift : 'Todos os Turnos',
+        filterStatus: filterStatus !== 'TODOS' ? filterStatus : 'Todos Status',
+        conciliationMetrics,
+        timelineItems: filteredTimeline,
+        gapsCount: allGaps.length,
+      });
+    } catch (error) {
+      console.error('Erro ao gerar relatório em PDF:', error);
+    } finally {
+      setTimeout(() => {
+        setIsExportingPdf(false);
+      }, 800);
+    }
+  };
+
   return (
     <div className="max-w-[1200px] mx-auto p-3 sm:p-4 space-y-4 animate-in fade-in duration-200">
       {/* Header com Aviso de Proteção do Histórico */}
@@ -519,14 +558,29 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </p>
         </div>
 
-        {/* Botão de Exportação CSV */}
-        <button
-          onClick={exportToCSV}
-          className="px-3.5 py-2 bg-[#222222] hover:bg-[#333333] text-white border border-[#444444] rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer shadow-sm hover:border-[#007BFF]"
-        >
-          <Download className="w-4 h-4 text-[#00E676]" />
-          <span>Exportar Planilha (CSV)</span>
-        </button>
+        {/* Botões de Ação do Topo: Imprimir (PDF) e Exportar Planilha (CSV) */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handlePrintReport}
+            disabled={isExportingPdf}
+            className="px-3.5 py-2 bg-[#1A1A1A] hover:bg-[#282828] text-white border border-[#444444] hover:border-[#00E676] rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer shadow-sm group disabled:opacity-60"
+            title="Gerar e salvar relatório da tabela e auditoria diretamente em PDF"
+          >
+            <Printer className={`w-4 h-4 text-[#00E676] ${isExportingPdf ? 'animate-spin' : 'group-hover:scale-110'} transition`} />
+            <span>{isExportingPdf ? 'Gerando PDF...' : 'Imprimir (PDF)'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={exportToCSV}
+            className="px-3.5 py-2 bg-[#222222] hover:bg-[#333333] text-white border border-[#444444] rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer shadow-sm hover:border-[#007BFF]"
+            title="Exportar dados filtrados para planilha Excel/CSV"
+          >
+            <Download className="w-4 h-4 text-[#007BFF]" />
+            <span>Exportar Planilha (CSV)</span>
+          </button>
+        </div>
       </div>
 
       {/* CARD DE CONCILIAÇÃO INTEGRAL DA JORNADA (100% DO TURNO AUDITADO) */}
@@ -827,7 +881,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                   const isExec = log.status === 'Em Execução';
                   const isAuto = log.autoClosed || log.autoClosedAtShiftEnd;
                   const shiftLabel = obterTurnoDoLog(log, collaborators);
-                  const hasMeal = Boolean(log.mealBreakDeducted || log.isMealPause || (log.mealBreakMinutes && log.mealBreakMinutes > 0));
+                  const hasMeal = Boolean(
+                    log.mealBreakDeducted || 
+                    log.isMealPause || 
+                    (log.mealBreakMinutes && log.mealBreakMinutes > 0) ||
+                    log.observation?.toLowerCase().includes('refeição') ||
+                    log.observation?.toLowerCase().includes('refeicao')
+                  );
+                  const mealMinsExibir = log.mealBreakMinutes || 90;
                   const minExibicao =
                     log.durationMinutes !== undefined
                       ? `${log.durationMinutes} min`
@@ -857,7 +918,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                           <span className="font-bold">{minExibicao}</span>
                           {hasMeal && log.durationMinutes !== undefined && (
                             <span className="text-[10px] text-[#FF8C00] font-mono font-medium" title="Tempo líquido com intervalo de refeição deduzido">
-                              (Líq. / -{log.mealBreakMinutes || 90}m ref.)
+                              (Líq. / -{mealMinsExibir}m ref.)
                             </span>
                           )}
                         </div>
@@ -867,9 +928,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                         {hasMeal ? (
                           <span
                             className="px-2 py-0.5 bg-[#FF8C00]/15 text-[#FFB74D] border border-[#FF8C00]/40 rounded-full text-xs font-mono font-bold inline-flex items-center gap-1 shadow-xs"
-                            title={`Intervalo de Refeição de ${log.mealBreakMinutes || 90} min registrado/deduzido`}
+                            title={`Intervalo de Refeição de ${mealMinsExibir} min registrado/deduzido`}
                           >
-                            <span>🍽️ {log.mealBreakMinutes || 90} min</span>
+                            <span>🍽️ {mealMinsExibir} min</span>
                           </span>
                         ) : (
                           <span className="text-[#555555] font-mono text-xs pl-2">-</span>
@@ -909,8 +970,57 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                     </tr>
                   );
                 } else {
-                  // Renderiza Linha de GAP (Período Sem Apontamento)
+                  // Renderiza Linha de GAP (Período Sem Apontamento) ou Intervalo de Refeição
                   const gap = item.data;
+                  const isMeal = gap.isMealInterval || gap.status === 'Refeição';
+
+                  if (isMeal) {
+                    return (
+                      <tr 
+                        key={gap.id} 
+                        className="bg-[#2A1D0D]/45 hover:bg-[#382611]/55 transition-colors border-y border-[#FF8C00]/30 group"
+                      >
+                        <td className="p-3 text-[#FFB74D] font-mono whitespace-nowrap">{gap.date}</td>
+                        <td className="p-3 font-bold text-white whitespace-nowrap">
+                          <span>{gap.collaboratorName}</span>
+                        </td>
+                        <td className="p-3 text-[#FFB74D] font-mono text-xs whitespace-nowrap font-semibold">
+                          {gap.shift}
+                        </td>
+                        <td className="p-3 font-semibold text-[#FFB74D] min-w-[160px] flex items-center gap-1.5">
+                          <Utensils className="w-4 h-4 text-[#FF8C00] shrink-0" />
+                          <span>{gap.activity}</span>
+                        </td>
+                        <td className="p-3 text-[#FFB74D] font-mono font-bold whitespace-nowrap">{gap.startTime}</td>
+                        <td className="p-3 text-[#FFB74D] font-mono font-bold whitespace-nowrap">{gap.endTime}</td>
+                        <td className="p-3 font-mono text-[#FF8C00] font-bold whitespace-nowrap">
+                          <div className="flex flex-col">
+                            <span>{gap.durationMinutes} min</span>
+                            <span className="text-[10px] text-[#FFB74D]/70 font-mono font-normal">
+                              ({formatarHorasMinutos(gap.durationMinutes)})
+                            </span>
+                          </div>
+                        </td>
+                        <td className="p-3 whitespace-nowrap text-[#FFB74D] font-mono text-xs pl-2 font-bold">
+                          🍽️ {gap.durationMinutes} min
+                        </td>
+                        <td className="p-3 whitespace-nowrap">
+                          <span className="px-2 py-0.5 bg-[#FF8C00]/20 text-[#FFB74D] border border-[#FF8C00]/40 rounded-full text-xs font-mono font-bold inline-flex items-center gap-1">
+                            <span>🍽️ Refeição</span>
+                          </span>
+                        </td>
+                        <td className="p-3 text-[#FFE082] text-xs max-w-[220px] truncate" title={gap.observation}>
+                          {gap.observation}
+                        </td>
+                        <td className="p-3 text-right sticky right-0 bg-[#22170B] group-hover:bg-[#2A1D0D] transition-colors z-10 shadow-[-6px_0_10px_rgba(0,0,0,0.6)] whitespace-nowrap">
+                          <span className="text-[11px] text-[#888888] font-mono italic">
+                            Programado
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  }
+
                   return (
                     <tr 
                       key={gap.id} 

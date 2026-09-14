@@ -284,21 +284,21 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     }
   };
 
-  // Helper to check if card should flash red (end of shift with open task or excessive duration)
-  const isCardFlashing = (log: ProductionLog) => {
-    const colab = collaborators.find(c => c.name === log.collaboratorName);
-    const shiftName = colab?.shift || 'Turno 1';
+  // Helper to check if collaborator's shift has ended according to official shift hours
+  const isShiftEndedForLog = (log: ProductionLog) => {
+    const colab = collaborators.find(c => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase());
+    const shiftName = colab?.shift || log.shift || 'Turno 1';
     const shift = shifts.find(s => s.name.toUpperCase() === shiftName.toUpperCase() || s.code.toUpperCase() === shiftName.toUpperCase());
     
-    if (shift && verificarTurnoEncerrado(shift.saida, shift.entrada)) {
-      return true;
-    }
-    // Also flash if duration exceeds 6 hours without update
-    const elapsedMinutes = getElapsedSeconds(log.startTime) / 60;
-    if (elapsedMinutes > 360) {
+    if (shift && verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias, new Date())) {
       return true;
     }
     return false;
+  };
+
+  // Helper to check if card should flash red
+  const isCardFlashing = (log: ProductionLog) => {
+    return isShiftEndedForLog(log);
   };
 
   // Helper for role color
@@ -1021,9 +1021,9 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 {isPausedMeal ? 'Atividade em Pausa de Refeição' : 'Concluir Atividade'}
               </h2>
 
-              {/* Box de Informações com Botão de Refeição (Foto 1) */}
-              <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="text-xs sm:text-sm space-y-1.5 flex-1">
+              {/* Box de Informações da Atividade */}
+              <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2">
+                <div className="text-xs sm:text-sm space-y-1.5">
                   <p className="text-[#BBB]">
                     Colaborador: <b className="text-white text-base">{logToFinish.collaboratorName}</b>
                   </p>
@@ -1036,37 +1036,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                       {formatarTempoSegundos(getElapsedSeconds(logToFinish.startTime))}
                     </b>
                   </p>
-                </div>
-
-                {/* BOTÃO DE REFEIÇÃO INDICADO NA FOTO 1 (1x ao dia) */}
-                <div className="flex flex-col items-center justify-center shrink-0">
-                  {jaUsouRefeicaoHoje ? (
-                    <div className="px-3.5 py-2.5 bg-[#1E1E1E] border border-[#3A3A3A] text-[#888888] rounded-xl flex items-center gap-2 select-none">
-                      <Check className="w-4 h-4 text-[#00E676] shrink-0" />
-                      <div className="text-left">
-                        <div className="text-xs font-bold text-[#EEEEEE]">Refeição Registrada</div>
-                        <div className="text-[10px] text-[#777777]">1/1 do dia utilizada</div>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      id="btn-refeicao-fechamento"
-                      onClick={() => handleOpenMealModal(logToFinish)}
-                      className="w-full sm:w-auto px-4 py-3 bg-[#FF6D00]/20 hover:bg-[#FF6D00]/30 active:bg-[#FF6D00]/40 border-2 border-[#FF6D00] text-[#FF9E40] hover:text-white rounded-xl font-black text-xs sm:text-sm flex items-center justify-center gap-2.5 transition cursor-pointer shadow-lg shadow-[#FF6D00]/20 hover:scale-[1.02] active:scale-[0.98] min-h-[48px]"
-                      title={`Pausar atividade para Refeição (${mealConfig.duracaoMinutos} min). Limite: 1x ao dia.`}
-                    >
-                      <Utensils className="w-5 h-5 text-[#FF9E40] shrink-0" />
-                      <div className="text-left">
-                        <div className="font-black text-xs sm:text-sm uppercase tracking-wide flex items-center gap-1">
-                          <span>PAUSAR REFEIÇÃO</span>
-                        </div>
-                        <div className="text-[11px] text-[#FFB74D] font-mono font-bold">
-                          {mealConfig.duracaoMinutos} MINUTOS
-                        </div>
-                      </div>
-                    </button>
-                  )}
                 </div>
               </div>
             </div>
