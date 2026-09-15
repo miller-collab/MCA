@@ -34,18 +34,14 @@ import {
 import { ProductionLog, Collaborator, ShiftConfig } from '../types';
 import {
   formatarDataPtBr,
+  formatarDataIsoPtBr,
   formatarHorasMinutos,
   calcularEficienciaIndividualDiaria,
   calcularDiferencaMinutos,
   verificarDataNoPeriodo,
 } from '../utils/factoryCalculations';
 
-const toIsoDate = (d: Date): string => {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
+const toIsoDate = (d: Date): string => formatarDataIsoPtBr(d);
 
 interface ErrorBoundaryProps {
   children: ReactNode;

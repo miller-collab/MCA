@@ -48,23 +48,91 @@ export function formatarHorasMinutos(minutosTotais: number): string {
 }
 
 /**
- * Formats Date to "DD/MM/YYYY"
+ * Formats Date to "DD/MM/YYYY" using America/Sao_Paulo timezone
  */
 export function formatarDataPtBr(date: Date): string {
-  const dia = String(date.getDate()).padStart(2, '0');
-  const mes = String(date.getMonth() + 1).padStart(2, '0');
-  const ano = date.getFullYear();
-  return `${dia}/${mes}/${ano}`;
+  if (!date || isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(date);
 }
 
 /**
- * Formats Date to "HH:mm:ss"
+ * Formats Date to "YYYY-MM-DD" (ISO input format) using America/Sao_Paulo timezone
+ */
+export function formatarDataIsoPtBr(date: Date): string {
+  if (!date || isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+/**
+ * Returns today's date formatted as "YYYY-MM-DD" in America/Sao_Paulo timezone
+ */
+export function obterDataHojeIsoPtBr(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+/**
+ * Formats Date to "HH:mm:ss" using America/Sao_Paulo timezone
  */
 export function formatarHoraPtBr(date: Date): string {
-  const h = String(date.getHours()).padStart(2, '0');
-  const m = String(date.getMinutes()).padStart(2, '0');
-  const s = String(date.getSeconds()).padStart(2, '0');
-  return `${h}:${m}:${s}`;
+  if (!date || isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
+}
+
+/**
+ * Returns "HH:mm" in America/Sao_Paulo timezone
+ */
+export function obterHoraMinutoPtBr(date: Date = new Date()): string {
+  if (!date || isNaN(date.getTime())) return '00:00';
+  const parts = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const h = parts.find((p) => p.type === 'hour')?.value || '00';
+  const m = parts.find((p) => p.type === 'minute')?.value || '00';
+  return `${h.padStart(2, '0')}:${m.padStart(2, '0')}`;
+}
+
+/**
+ * Returns day-of-week abbreviation ('Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab') in America/Sao_Paulo timezone
+ */
+export function obterDiaSemanaSiglaPtBr(date: Date = new Date()): string {
+  if (!date || isNaN(date.getTime())) return 'Seg';
+  const weekdayStr = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    weekday: 'short',
+  }).format(date).toLowerCase();
+
+  if (weekdayStr.startsWith('dom')) return 'Dom';
+  if (weekdayStr.startsWith('seg')) return 'Seg';
+  if (weekdayStr.startsWith('ter')) return 'Ter';
+  if (weekdayStr.startsWith('qua')) return 'Qua';
+  if (weekdayStr.startsWith('qui')) return 'Qui';
+  if (weekdayStr.startsWith('sex')) return 'Sex';
+  if (weekdayStr.startsWith('s')) return 'Sab';
+  return 'Seg';
 }
 
 export interface MealBreakConfig {
@@ -731,8 +799,7 @@ export function obterStatusTurno(
 
   // Verifica se hoje é um dia de trabalho ativo para este turno
   if (dias && dias.length > 0) {
-    const DIAS_SIGLAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
-    const diaHoje = DIAS_SIGLAS[date.getDay()];
+    const diaHoje = obterDiaSemanaSiglaPtBr(date);
     const diasNorm = dias.map((d) => d.trim().toLowerCase().slice(0, 3));
     const diaHojeNorm = diaHoje.trim().toLowerCase().slice(0, 3);
     if (!diasNorm.includes(diaHojeNorm)) {
@@ -740,7 +807,7 @@ export function obterStatusTurno(
     }
   }
 
-  const currentHourMin = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const currentHourMin = obterHoraMinutoPtBr(date);
   const ent = entrada.slice(0, 5);
   const sai = saida.slice(0, 5);
 
@@ -1167,7 +1234,7 @@ export function calcularEficienciaEquipePeriodo(
   const setDatasPtBr = new Set(diasIntervalo.map((d) => d.datePtBr));
   const hojePtBr = formatarDataPtBr(new Date());
   const agora = new Date();
-  const currentHourMin = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+  const currentHourMin = obterHoraMinutoPtBr(agora);
 
   // 1. Mapa de turnos e horas úteis por turno
   const turnosMap: Record<string, { shift: ShiftConfig; min: number; ent: string; sai: string; entAlmoco?: string; saiAlmoco?: string; dias: string[] }> = {};
@@ -1521,7 +1588,7 @@ export function calcularEficienciaIndividualDiaria(
 
   const hojePtBr = formatarDataPtBr(new Date());
   const agora = new Date();
-  const currentHourMin = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+  const currentHourMin = obterHoraMinutoPtBr(agora);
 
   // Encontra configuração do turno do operador
   const turnoKey = (colab.shift || 'Turno 1').toUpperCase().trim();
@@ -1844,9 +1911,8 @@ export function obterTurnoDoLog(log: ProductionLog, collaborators: Collaborator[
  */
 export function obterTurnosAtivosNoMomento(shifts: ShiftConfig[], date: Date = new Date()): ShiftConfig[] {
   if (!shifts || shifts.length === 0) return [];
-  const DIAS_SIGLAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab'];
-  const currentDayName = DIAS_SIGLAS[date.getDay()];
-  const currentHourMin = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const currentDayName = obterDiaSemanaSiglaPtBr(date);
+  const currentHourMin = obterHoraMinutoPtBr(date);
 
   return shifts.filter((s) => {
     if (s.dias && s.dias.length > 0 && !s.dias.includes(currentDayName)) {

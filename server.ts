@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
@@ -21,6 +22,250 @@ function getGenAI(): GoogleGenAI {
   return aiClient;
 }
 
+// ============================================================================
+// CLOUD RUN CENTRAL DATABASE ENGINE (PERSISTENCE & REAL-TIME SSE)
+// ============================================================================
+const DATA_DIR = path.join(process.cwd(), 'data');
+const DB_FILE = path.join(DATA_DIR, 'mca_central_database.json');
+const BACKUP_FILE = path.join(DATA_DIR, 'mca_logs_backup.json');
+
+interface CentralDatabase {
+  collaborators: any[];
+  shifts: any[];
+  activities: any[];
+  factoryConfig: {
+    toleranceMinutes: number;
+    efficiencyThresholdGreen: number;
+    efficiencyThresholdYellow: number;
+    observations: string[];
+    customRoleColors: Record<string, string>;
+  };
+  logs: any[];
+  autocloseNotifs: any[];
+  lastUpdated: string;
+}
+
+const DEFAULT_COLLABORATORS = [
+  { id: 'col-1', name: 'GERALDO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-2', name: 'DIEGO', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
+  { id: 'col-3', name: 'CARLOS', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 2', active: true },
+  { id: 'col-4', name: 'EVANDRO', role: 'AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true },
+  { id: 'col-5', name: 'GABRIEL', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
+  { id: 'col-6', name: 'ALEXANDER', role: 'INSPETOR / OPERADOR TA', shift: 'Turno 1', active: true },
+  { id: 'col-7', name: 'WANDERSON', role: 'SISTEMA / AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true },
+  { id: 'col-8', name: 'ANSELMO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-9', name: 'CRISTIAN', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 1', active: true },
+  { id: 'col-10', name: 'IGOR', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
+  { id: 'col-11', name: 'CLEMILSON', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
+  { id: 'col-12', name: 'JULIO', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-13', name: 'VITOR', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-14', name: 'DANIEL', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+];
+
+const DEFAULT_SHIFTS = [
+  {
+    id: 's1',
+    name: 'Turno 1',
+    code: 't1',
+    entrada: '07:00',
+    saidaAlmoco: '12:00',
+    retornoAlmoco: '13:30',
+    saida: '17:30',
+    dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+    color: '#007BFF',
+  },
+  {
+    id: 's2',
+    name: 'Turno 2',
+    code: 't2',
+    entrada: '15:30',
+    saidaAlmoco: '20:00',
+    retornoAlmoco: '21:00',
+    saida: '01:30',
+    dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+    color: '#FF8C00',
+  },
+  {
+    id: 's3',
+    name: 'Turno 3',
+    code: 't3',
+    entrada: '20:00',
+    saidaAlmoco: '02:00',
+    retornoAlmoco: '03:00',
+    saida: '06:00',
+    dias: ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+    color: '#9C27B0',
+  },
+];
+
+const DEFAULT_OBSERVATIONS = [
+  'Operação Concluída com Sucesso sem Anomalias',
+  'Falta de Material / Barra de Matéria-Prima',
+  'Ajuste / Troca de Inserto ou Ferramenta Quebrada',
+  'Manutenção Mecânica / Elétrica do Torno',
+  'Aguardando Liberação da Qualidade / Inspeção Metrológica',
+  'Limpeza de Cavaco e Troca de Fluido de Corte',
+  'Setup de Novo Lote de Produção',
+  'Retrabalho de Lote Fora do Dimensional',
+  'Parada Programada / Reunião 5S',
+  'Queda de Energia / Ar Comprimido',
+];
+
+import { INITIAL_ACTIVITIES, INITIAL_OBSERVATIONS } from './src/data/initialData';
+
+function getTodayPtBr(): string {
+  // Always use America/Sao_Paulo (Horário de Brasília) for manufacturing date
+  return new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date());
+}
+
+const DEFAULT_INITIAL_LOGS: any[] = [];
+const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+const AUDIT_LOG_FILE = path.join(DATA_DIR, 'audit_production_events.log');
+
+let centralDb: CentralDatabase;
+
+function createBackupSnapshot(db: CentralDatabase) {
+  try {
+    if (!fs.existsSync(BACKUPS_DIR)) {
+      fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const snapshotFile = path.join(BACKUPS_DIR, `snapshot_${timestamp}.json`);
+    fs.writeFileSync(snapshotFile, JSON.stringify(db, null, 2), 'utf-8');
+
+    // Keep only last 30 snapshots to manage disk space cleanly
+    const files = fs.readdirSync(BACKUPS_DIR).filter(f => f.startsWith('snapshot_') && f.endsWith('.json')).sort();
+    if (files.length > 30) {
+      for (let i = 0; i < files.length - 30; i++) {
+        try { fs.unlinkSync(path.join(BACKUPS_DIR, files[i])); } catch {}
+      }
+    }
+  } catch (e) {
+    console.error('Snapshot backup error:', e);
+  }
+}
+
+function appendAuditLog(action: string, details: any) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const entry = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      action,
+      details,
+    }) + '\n';
+    fs.appendFileSync(AUDIT_LOG_FILE, entry, 'utf-8');
+  } catch (e) {
+    console.warn('Audit log write error:', e);
+  }
+}
+
+function loadOrInitDatabase(): CentralDatabase {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (fs.existsSync(DB_FILE)) {
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.collaborators) && parsed.collaborators.length > 0) {
+        // Ensure Turno 2 has ONLY CARLOS as specifically required
+        const turno2Members = parsed.collaborators.filter((c: any) => c.shift === 'Turno 2');
+        const hasExtraInTurno2 = turno2Members.some((c: any) => c.name !== 'CARLOS');
+        if (hasExtraInTurno2) {
+          parsed.collaborators = parsed.collaborators.map((c: any) => {
+            if (c.shift === 'Turno 2' && c.name !== 'CARLOS') {
+              return { ...c, shift: 'Turno 1' };
+            }
+            return c;
+          });
+        }
+
+        // Clean out any synthetic/mock logs starting with 'log-' that were auto-generated
+        if (Array.isArray(parsed.logs)) {
+          parsed.logs = parsed.logs.filter((l: any) => l && l.id && !l.id.startsWith('log-'));
+        } else {
+          parsed.logs = [];
+        }
+
+        // Ensure activities catalog is always populated with genuine factory activities
+        if (!Array.isArray(parsed.activities) || parsed.activities.length === 0) {
+          parsed.activities = INITIAL_ACTIVITIES;
+        }
+
+        // Ensure shifts are populated
+        if (!Array.isArray(parsed.shifts) || parsed.shifts.length === 0) {
+          parsed.shifts = DEFAULT_SHIFTS;
+        }
+
+        saveDatabaseToDisk(parsed);
+        return parsed;
+      }
+    }
+  } catch (err) {
+    console.error('Error loading central database from disk:', err);
+  }
+
+  const initial: CentralDatabase = {
+    collaborators: DEFAULT_COLLABORATORS,
+    shifts: DEFAULT_SHIFTS,
+    activities: INITIAL_ACTIVITIES,
+    factoryConfig: {
+      toleranceMinutes: 60,
+      efficiencyThresholdGreen: 85,
+      efficiencyThresholdYellow: 70,
+      observations: DEFAULT_OBSERVATIONS,
+      customRoleColors: {},
+    },
+    logs: DEFAULT_INITIAL_LOGS,
+    autocloseNotifs: [],
+    lastUpdated: new Date().toISOString(),
+  };
+
+  saveDatabaseToDisk(initial);
+  return initial;
+}
+
+function saveDatabaseToDisk(db: CentralDatabase) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    db.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    // Maintain secondary persistent backup copy
+    try {
+      fs.writeFileSync(BACKUP_FILE, JSON.stringify(db.logs, null, 2), 'utf-8');
+    } catch {
+      // Ignore backup error
+    }
+  } catch (err) {
+    console.error('Error saving central database to disk:', err);
+  }
+}
+
+// SSE connected clients
+const sseClients: express.Response[] = [];
+
+function broadcastToClients(eventType: string, data: any) {
+  const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (let i = sseClients.length - 1; i >= 0; i--) {
+    try {
+      sseClients[i].write(payload);
+    } catch {
+      sseClients.splice(i, 1);
+    }
+  }
+}
+
+centralDb = loadOrInitDatabase();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -29,7 +274,252 @@ async function startServer() {
 
   // Health check
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
+    res.json({
+      status: 'ok',
+      time: new Date().toISOString(),
+      connectedClients: sseClients.length,
+      totalLogs: centralDb.logs.length,
+      collaboratorsCount: centralDb.collaborators.length,
+    });
+  });
+
+  // ============================================================================
+  // REAL-TIME SERVER-SENT EVENTS (SSE) STREAM
+  // ============================================================================
+  app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    if (typeof (res as any).flushHeaders === 'function') {
+      (res as any).flushHeaders();
+    }
+    res.write(`event: connected\ndata: {"time":"${new Date().toISOString()}"}\n\n`);
+    sseClients.push(res);
+
+    req.on('close', () => {
+      const idx = sseClients.indexOf(res);
+      if (idx !== -1) {
+        sseClients.splice(idx, 1);
+      }
+    });
+  });
+
+  // ============================================================================
+  // CENTRAL DATABASE SYNC REST ENDPOINTS
+  // ============================================================================
+
+  // 1. Get complete current database state
+  app.get('/api/sync', (req, res) => {
+    res.json({
+      ...centralDb,
+      serverTime: new Date().toISOString(),
+    });
+  });
+
+  // 2. Save or update a production log
+  app.post('/api/logs', (req, res) => {
+    try {
+      const log = req.body;
+      if (!log || !log.id) {
+        return res.status(400).json({ error: 'Log must have an id' });
+      }
+      const existingIdx = centralDb.logs.findIndex((l) => l.id === log.id);
+      if (existingIdx >= 0) {
+        centralDb.logs[existingIdx] = { ...centralDb.logs[existingIdx], ...log };
+        appendAuditLog('UPDATE_LOG', log);
+      } else {
+        centralDb.logs.push(log);
+        appendAuditLog('CREATE_LOG', log);
+      }
+      saveDatabaseToDisk(centralDb);
+      createBackupSnapshot(centralDb);
+      broadcastToClients('log_saved', log);
+      return res.json({ success: true, log });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 2.1 Merge multiple logs (ensures historical recovery never overwrites)
+  app.post('/api/logs/merge', (req, res) => {
+    try {
+      const incomingLogs = Array.isArray(req.body) ? req.body : req.body?.logs;
+      if (!Array.isArray(incomingLogs)) {
+        return res.status(400).json({ error: 'Body must contain a logs array' });
+      }
+      const existingMap = new Map<string, any>();
+      for (const log of centralDb.logs) {
+        if (log && log.id) existingMap.set(log.id, log);
+      }
+      let addedCount = 0;
+      for (const log of incomingLogs) {
+        if (!log || !log.id) continue;
+        if (!existingMap.has(log.id)) {
+          existingMap.set(log.id, log);
+          addedCount++;
+          appendAuditLog('MERGE_ADD_LOG', log);
+        } else {
+          const existing = existingMap.get(log.id);
+          if (log.status === 'Concluída' && existing.status !== 'Concluída') {
+            existingMap.set(log.id, { ...existing, ...log });
+            appendAuditLog('MERGE_UPDATE_LOG', log);
+          }
+        }
+      }
+      centralDb.logs = Array.from(existingMap.values());
+      saveDatabaseToDisk(centralDb);
+      createBackupSnapshot(centralDb);
+      broadcastToClients('logs_restored', centralDb.logs);
+      return res.json({ success: true, count: centralDb.logs.length, addedCount });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 3. Delete a log
+  app.delete('/api/logs/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      appendAuditLog('DELETE_LOG', { id });
+      centralDb.logs = centralDb.logs.filter((l) => l.id !== id);
+      saveDatabaseToDisk(centralDb);
+      broadcastToClients('log_deleted', { id });
+      return res.json({ success: true, id });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 4. Save collaborators
+  app.post('/api/collaborators', (req, res) => {
+    try {
+      const colabs = Array.isArray(req.body) ? req.body : req.body?.collaborators;
+      if (!Array.isArray(colabs)) {
+        return res.status(400).json({ error: 'Expected an array of collaborators' });
+      }
+      // Guarantee Turno 2 has ONLY CARLOS
+      const sanitized = colabs.map((c: any) => {
+        if (c.shift === 'Turno 2' && c.name !== 'CARLOS') {
+          return { ...c, shift: 'Turno 1' };
+        }
+        return c;
+      });
+      centralDb.collaborators = sanitized;
+      appendAuditLog('UPDATE_COLLABORATORS', { count: sanitized.length });
+      saveDatabaseToDisk(centralDb);
+      createBackupSnapshot(centralDb);
+      broadcastToClients('collaborators_updated', sanitized);
+      return res.json({ success: true, count: sanitized.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 5. Save shifts
+  app.post('/api/shifts', (req, res) => {
+    try {
+      const shifts = Array.isArray(req.body) ? req.body : req.body?.shifts;
+      if (!Array.isArray(shifts)) {
+        return res.status(400).json({ error: 'Expected an array of shifts' });
+      }
+      centralDb.shifts = shifts;
+      appendAuditLog('UPDATE_SHIFTS', { count: shifts.length });
+      saveDatabaseToDisk(centralDb);
+      createBackupSnapshot(centralDb);
+      broadcastToClients('shifts_updated', shifts);
+      return res.json({ success: true, count: shifts.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 6. Save activities
+  app.post('/api/activities', (req, res) => {
+    try {
+      const activities = Array.isArray(req.body) ? req.body : req.body?.activities;
+      if (!Array.isArray(activities)) {
+        return res.status(400).json({ error: 'Expected an array of activities' });
+      }
+      centralDb.activities = activities;
+      appendAuditLog('UPDATE_ACTIVITIES', { count: activities.length });
+      saveDatabaseToDisk(centralDb);
+      createBackupSnapshot(centralDb);
+      broadcastToClients('activities_updated', activities);
+      return res.json({ success: true, count: activities.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 7. Save factory config
+  app.post('/api/factory-config', (req, res) => {
+    try {
+      const cfg = req.body;
+      centralDb.factoryConfig = { ...centralDb.factoryConfig, ...cfg };
+      appendAuditLog('UPDATE_FACTORY_CONFIG', cfg);
+      saveDatabaseToDisk(centralDb);
+      createBackupSnapshot(centralDb);
+      broadcastToClients('config_updated', centralDb.factoryConfig);
+      return res.json({ success: true, config: centralDb.factoryConfig });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 8. Reset production logs (with backup)
+  app.post('/api/reset-logs', (req, res) => {
+    try {
+      // Save backup before clearing
+      fs.writeFileSync(BACKUP_FILE, JSON.stringify(centralDb.logs, null, 2), 'utf-8');
+      centralDb.logs = [];
+      saveDatabaseToDisk(centralDb);
+      broadcastToClients('logs_reset', { time: new Date().toISOString() });
+      return res.json({ success: true, message: 'Production logs reset and backed up' });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 9. Restore production logs from backup
+  app.post('/api/restore-logs', (req, res) => {
+    try {
+      let restoredLogs = [];
+      if (req.body && Array.isArray(req.body.logs) && req.body.logs.length > 0) {
+        restoredLogs = req.body.logs;
+      } else if (fs.existsSync(BACKUP_FILE)) {
+        const raw = fs.readFileSync(BACKUP_FILE, 'utf-8');
+        restoredLogs = JSON.parse(raw);
+      }
+      centralDb.logs = restoredLogs;
+      saveDatabaseToDisk(centralDb);
+      broadcastToClients('logs_restored', restoredLogs);
+      return res.json({ success: true, count: restoredLogs.length });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 10. Save auto-close notification
+  app.post('/api/autoclose-notif', (req, res) => {
+    try {
+      const notif = req.body;
+      if (notif && notif.id) {
+        const idx = centralDb.autocloseNotifs.findIndex((n) => n.id === notif.id);
+        if (idx >= 0) {
+          centralDb.autocloseNotifs[idx] = notif;
+        } else {
+          centralDb.autocloseNotifs.unshift(notif);
+        }
+        if (centralDb.autocloseNotifs.length > 50) {
+          centralDb.autocloseNotifs = centralDb.autocloseNotifs.slice(0, 50);
+        }
+        saveDatabaseToDisk(centralDb);
+        broadcastToClients('notif_updated', notif);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
   // AI Leader Diagnosis & Operational Insights Endpoint

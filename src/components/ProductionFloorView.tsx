@@ -104,7 +104,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [finishNotes, setFinishNotes] = useState('');
   const [partsProduced, setPartsProduced] = useState<string>('');
   const [scrapCount, setScrapCount] = useState<string>('');
-  const [mealConfirmModal, setMealConfirmModal] = useState<ProductionLog | null>(null);
 
   // Real-time ticking state (updates every second)
   const [secondsTick, setSecondsTick] = useState(0);
@@ -365,28 +364,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setCurrentScreen('painel');
   };
 
-  const handleOpenMealModal = (log: ProductionLog) => {
-    setMealConfirmModal(log);
-  };
-
-  const handleConfirmMealPause = () => {
-    if (!mealConfirmModal) return;
-    const targetId = mealConfirmModal.id;
-    setMealConfirmModal(null);
-    setLogToFinish(null);
-    if (onPauseMeal) {
-      onPauseMeal(targetId);
-    }
-    setCurrentScreen('painel');
-  };
-
-  const handleResumeCard = (e: React.MouseEvent, logId: string) => {
-    e.stopPropagation();
-    if (onResumeActivity) {
-      onResumeActivity(logId);
-    }
-  };
-
   const handleCardClick = (log: ProductionLog) => {
     const initTime = formatarHoraPtBr(new Date());
     setLogToFinish(log);
@@ -595,17 +572,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                               Trabalho: {formatarTempoSegundos(mealState.tempoTrabalhadoSegundos)}
                             </div>
                           </div>
-                          {onResumeActivity && (
-                            <button
-                              type="button"
-                              onClick={(e) => handleResumeCard(e, tarefa.id)}
-                              className="w-full py-1.5 px-2 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-xs rounded-lg flex items-center justify-center gap-1 cursor-pointer transition shadow"
-                              title="Retomar atividade manualmente antes de vencer o tempo"
-                            >
-                              <Play className="w-3 h-3 fill-black text-black" />
-                              <span>RETOMAR ANTES</span>
-                            </button>
-                          )}
                         </div>
                       ) : (
                         <div>
@@ -1236,71 +1202,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
           return false;
         }}
       />
-
-      {/* MODAL DE CONFIRMAÇÃO DE PAUSA PARA REFEIÇÃO (1X AO DIA) */}
-      {mealConfirmModal && (() => {
-        const colab = collaborators.find(
-          (c) => c.name.trim().toLowerCase() === mealConfirmModal.collaboratorName.trim().toLowerCase()
-        );
-        const mealConfig = obterConfiguracaoRefeicao(colab?.shift || mealConfirmModal.shift || 'Turno 1', shifts);
-
-        return (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-            <div className="bg-[#181818] border-2 border-[#FF8C00] rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-              <div className="flex items-center gap-3 text-[#FF9800] border-b border-[#FF8C00]/30 pb-3">
-                <div className="p-3 bg-[#FF8C00]/20 rounded-xl">
-                  <Utensils className="w-6 h-6 text-[#FF9800]" />
-                </div>
-                <div>
-                  <h3 className="font-black text-lg text-white">Confirmar Pausa para Refeição</h3>
-                  <p className="text-xs text-[#AAAAAA]">{mealConfig.shiftName} • Almoço / Janta</p>
-                </div>
-              </div>
-
-              <div className="p-4 bg-[#221800] border border-[#FF8C00]/40 rounded-xl space-y-2 text-sm text-[#DDDDDD]">
-                <p>
-                  Colaborador: <b className="text-white text-base">{mealConfirmModal.collaboratorName}</b>
-                </p>
-                <p>
-                  Operação atual: <b className="text-[#007BFF]">{mealConfirmModal.activity}</b>
-                </p>
-                <div className="pt-2 border-t border-[#FF8C00]/20 flex items-center justify-between text-xs font-mono">
-                  <span className="text-[#FFB74D] font-bold">Duração do Intervalo:</span>
-                  <span className="text-white font-black text-sm bg-[#FF8C00]/30 px-2.5 py-1 rounded border border-[#FF8C00]/40">
-                    {mealConfig.duracaoMinutos} MINUTOS
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-3 bg-[#111111] rounded-xl text-xs text-[#999999] space-y-1">
-                <p className="font-bold text-[#FFB74D]">⏱️ Como funciona a contagem:</p>
-                <p>• A contagem inicia a partir do momento em que a pausa for confirmada.</p>
-                <p>• Ao vencer os <b>{mealConfig.duracaoMinutos} minutos</b>, o sistema volta a contar o tempo de trabalho automaticamente na mesma atividade (tipo PAUSE), ou você pode clicar em RETOMAR a qualquer momento.</p>
-                <p>• Limite: <b>1 única vez ao dia</b> por colaborador.</p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setMealConfirmModal(null)}
-                  className="py-3 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold rounded-xl border border-[#444444] transition cursor-pointer min-h-[46px]"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  id="btn-confirmar-pausa-refeicao"
-                  onClick={handleConfirmMealPause}
-                  className="py-3 bg-[#FF8C00] hover:bg-[#FFA000] active:bg-[#F57C00] text-black font-black text-sm rounded-xl border border-[#FFA000] shadow-lg transition cursor-pointer flex items-center justify-center gap-1.5 min-h-[46px]"
-                >
-                  <Utensils className="w-4 h-4 text-black" />
-                  <span>CONFIRMAR PAUSA</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
     </div>
   );
 };

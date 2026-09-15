@@ -108,18 +108,21 @@ export function savePermanentLocalBackup(
       localStorage.setItem('mca_shifts_v3', JSON.stringify(shifts));
       localStorage.setItem('mca_shifts_permanent_backup', JSON.stringify(shifts));
     }
-    if (logs && logs.length > 0) {
-      localStorage.setItem('mca_logs_v3', JSON.stringify(logs));
+    if (logs !== undefined) {
+      const cleanLogs = logs.filter((l) => l && l.id && !l.id.startsWith('log-'));
+      localStorage.setItem('mca_logs_v3', JSON.stringify(cleanLogs));
+      localStorage.setItem('mca_logs_backup_permanent', JSON.stringify(cleanLogs));
     }
 
     // Full bundle backup
+    const cleanLogs = (logs || []).filter((l) => l && l.id && !l.id.startsWith('log-'));
     const fullBackup = {
       version: '3.0',
       timestamp: new Date().toISOString(),
       collaborators,
       activities,
       shifts,
-      logsCount: logs?.length || 0,
+      logsCount: cleanLogs.length,
     };
     localStorage.setItem('mca_full_factory_backup', JSON.stringify(fullBackup));
   } catch (e) {

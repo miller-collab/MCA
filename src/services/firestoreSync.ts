@@ -11,6 +11,7 @@ import {
   limit
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { centralSync } from './centralSync';
 import { 
   Collaborator, 
   ActivityItem, 
@@ -160,16 +161,38 @@ export function subscribeToShifts(
       const items: ShiftConfig[] = [];
       snapshot.forEach((d) => {
         const data = d.data();
+        const code = (data.code || (data.name?.toLowerCase().includes('2') ? 't2' : data.name?.toLowerCase().includes('3') ? 't3' : 't1')).toLowerCase();
+        
+        let defaultEntrada = '07:00';
+        let defaultSaidaAlmoco = '12:00';
+        let defaultRetornoAlmoco = '13:30';
+        let defaultSaida = '17:30';
+        let defaultColor = '#007BFF';
+
+        if (code === 't2' || data.name?.toLowerCase().includes('2')) {
+          defaultEntrada = '15:30';
+          defaultSaidaAlmoco = '20:00';
+          defaultRetornoAlmoco = '21:00';
+          defaultSaida = '01:30';
+          defaultColor = '#FF8C00';
+        } else if (code === 't3' || data.name?.toLowerCase().includes('3')) {
+          defaultEntrada = '20:00';
+          defaultSaidaAlmoco = '02:00';
+          defaultRetornoAlmoco = '03:00';
+          defaultSaida = '06:00';
+          defaultColor = '#9C27B0';
+        }
+
         items.push({
           id: d.id,
-          name: data.name || '',
-          code: data.code || 't1',
-          entrada: data.entrada || '08:00',
-          saidaAlmoco: data.saidaAlmoco || '12:00',
-          retornoAlmoco: data.retornoAlmoco || '13:00',
-          saida: data.saida || '17:48',
+          name: data.name || (code === 't2' ? 'Turno 2' : code === 't3' ? 'Turno 3' : 'Turno 1'),
+          code: data.code || code,
+          entrada: data.entrada || defaultEntrada,
+          saidaAlmoco: data.saidaAlmoco || defaultSaidaAlmoco,
+          retornoAlmoco: data.retornoAlmoco || defaultRetornoAlmoco,
+          saida: data.saida || defaultSaida,
           dias: data.dias || ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
-          color: data.color || '#007BFF',
+          color: data.color || defaultColor,
         });
       });
       if (items.length > 0 || !snapshot.empty) {
@@ -280,9 +303,13 @@ function sanitizeForFirestore<T>(data: T): any {
   return clean;
 }
 
-// === MUTATION HELPERS (Real-time writes) ===
+// === MUTATION HELPERS (Real-time writes to Cloud Run and Firestore) ===
 
 export async function saveLogToFirestore(log: ProductionLog) {
+  // 1. Instantly persist to Cloud Run central database & broadcast to all tablets via SSE
+  centralSync.saveLog(log);
+
+  // 2. Mirror to Firestore in background
   try {
     const docRef = doc(db, 'logs', log.id);
     const sanitized = sanitizeForFirestore({
@@ -291,20 +318,28 @@ export async function saveLogToFirestore(log: ProductionLog) {
     });
     await setDoc(docRef, sanitized, { merge: true });
   } catch (err) {
-    console.error('Error saving log to Firestore:', err);
+    console.warn('Firestore mirror log notice (Cloud Run persistent sync is active):', err);
   }
 }
 
 export async function deleteLogFromFirestore(logId: string) {
+  // 1. Instantly delete from Cloud Run central database & broadcast to all tablets via SSE
+  centralSync.deleteLog(logId);
+
+  // 2. Mirror to Firestore in background
   try {
     const docRef = doc(db, 'logs', logId);
     await deleteDoc(docRef);
   } catch (err) {
-    console.error('Error deleting log from Firestore:', err);
+    console.warn('Firestore mirror delete log notice:', err);
   }
 }
 
 export async function saveCollaboratorsToFirestore(collaborators: Collaborator[]) {
+  // 1. Instantly persist to Cloud Run central database & broadcast to all tablets via SSE
+  centralSync.saveCollaborators(collaborators);
+
+  // 2. Mirror to Firestore in background
   try {
     const colabsCol = collection(db, 'collaborators');
     const existingSnap = await getDocs(colabsCol);
@@ -323,11 +358,15 @@ export async function saveCollaboratorsToFirestore(collaborators: Collaborator[]
     });
     await batch.commit();
   } catch (err) {
-    console.error('Error saving collaborators to Firestore:', err);
+    console.warn('Firestore mirror collaborators notice:', err);
   }
 }
 
 export async function saveActivitiesToFirestore(activities: ActivityItem[]) {
+  // 1. Instantly persist to Cloud Run central database & broadcast to all tablets via SSE
+  centralSync.saveActivities(activities);
+
+  // 2. Mirror to Firestore in background
   try {
     const actCol = collection(db, 'activities');
     const existingSnap = await getDocs(actCol);
@@ -346,11 +385,15 @@ export async function saveActivitiesToFirestore(activities: ActivityItem[]) {
     });
     await batch.commit();
   } catch (err) {
-    console.error('Error saving activities to Firestore:', err);
+    console.warn('Firestore mirror activities notice:', err);
   }
 }
 
 export async function saveShiftsToFirestore(shifts: ShiftConfig[]) {
+  // 1. Instantly persist to Cloud Run central database & broadcast to all tablets via SSE
+  centralSync.saveShifts(shifts);
+
+  // 2. Mirror to Firestore in background
   try {
     const shiftsCol = collection(db, 'shifts');
     const existingSnap = await getDocs(shiftsCol);
@@ -369,7 +412,7 @@ export async function saveShiftsToFirestore(shifts: ShiftConfig[]) {
     });
     await batch.commit();
   } catch (err) {
-    console.error('Error saving shifts to Firestore:', err);
+    console.warn('Firestore mirror shifts notice:', err);
   }
 }
 
@@ -457,16 +500,38 @@ export async function fetchAllDataFromFirestore(): Promise<{
     const shifts: ShiftConfig[] = [];
     shiftsSnap.forEach((d) => {
       const data = d.data();
+      const code = (data.code || (data.name?.toLowerCase().includes('2') ? 't2' : data.name?.toLowerCase().includes('3') ? 't3' : 't1')).toLowerCase();
+      
+      let defaultEntrada = '07:00';
+      let defaultSaidaAlmoco = '12:00';
+      let defaultRetornoAlmoco = '13:30';
+      let defaultSaida = '17:30';
+      let defaultColor = '#007BFF';
+
+      if (code === 't2' || data.name?.toLowerCase().includes('2')) {
+        defaultEntrada = '15:30';
+        defaultSaidaAlmoco = '20:00';
+        defaultRetornoAlmoco = '21:00';
+        defaultSaida = '01:30';
+        defaultColor = '#FF8C00';
+      } else if (code === 't3' || data.name?.toLowerCase().includes('3')) {
+        defaultEntrada = '20:00';
+        defaultSaidaAlmoco = '02:00';
+        defaultRetornoAlmoco = '03:00';
+        defaultSaida = '06:00';
+        defaultColor = '#9C27B0';
+      }
+
       shifts.push({
         id: d.id,
-        name: data.name || '',
-        code: data.code || 't1',
-        entrada: data.entrada || '08:00',
-        saidaAlmoco: data.saidaAlmoco || '12:00',
-        retornoAlmoco: data.retornoAlmoco || '13:00',
-        saida: data.saida || '17:48',
+        name: data.name || (code === 't2' ? 'Turno 2' : code === 't3' ? 'Turno 3' : 'Turno 1'),
+        code: data.code || code,
+        entrada: data.entrada || defaultEntrada,
+        saidaAlmoco: data.saidaAlmoco || defaultSaidaAlmoco,
+        retornoAlmoco: data.retornoAlmoco || defaultRetornoAlmoco,
+        saida: data.saida || defaultSaida,
         dias: data.dias || ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
-        color: data.color || '#007BFF',
+        color: data.color || defaultColor,
       });
     });
 
@@ -483,20 +548,22 @@ export async function fetchAllDataFromFirestore(): Promise<{
 }
 
 export async function saveFactoryConfigToFirestore(config: Partial<FactoryConfigState>) {
+  centralSync.saveFactoryConfig(config);
   try {
     const docRef = doc(db, 'factory_config', 'main_config');
     await setDoc(docRef, sanitizeForFirestore(config), { merge: true });
   } catch (err) {
-    console.error('Error saving factory config to Firestore:', err);
+    console.warn('Firestore mirror config notice:', err);
   }
 }
 
 export async function saveAutoCloseNotifToFirestore(notif: AutoCloseNotification) {
+  centralSync.saveAutoCloseNotif(notif);
   try {
     const docRef = doc(db, 'autoclose_notifs', notif.id);
     await setDoc(docRef, sanitizeForFirestore(notif), { merge: true });
   } catch (err) {
-    console.error('Error saving auto close notif to Firestore:', err);
+    console.warn('Firestore mirror auto close notif notice:', err);
   }
 }
 
@@ -505,7 +572,7 @@ export async function dismissAutoCloseNotifInFirestore(notifId: string) {
     const docRef = doc(db, 'autoclose_notifs', notifId);
     await deleteDoc(docRef);
   } catch (err) {
-    console.error('Error dismissing auto close notif in Firestore:', err);
+    console.warn('Firestore mirror dismiss notif notice:', err);
   }
 }
 
@@ -517,7 +584,7 @@ export async function clearAllNotifsInFirestore() {
     snapshot.forEach((d) => batch.delete(d.ref));
     await batch.commit();
   } catch (err) {
-    console.error('Error clearing notifs in Firestore:', err);
+    console.warn('Firestore mirror clear notifs notice:', err);
   }
 }
 
@@ -526,6 +593,10 @@ export async function clearAllNotifsInFirestore() {
  * mantendo colaboradores, turnos, atividades, regras e configurações intactas.
  */
 export async function resetProductionLogsInFirestore(): Promise<boolean> {
+  // 1. Reset on Cloud Run central server (creates server-side backup)
+  await centralSync.resetLogs();
+
+  // 2. Mirror to Firestore if available
   try {
     const logsCol = collection(db, 'logs');
     const notifsCol = collection(db, 'autoclose_notifs');
@@ -548,20 +619,19 @@ export async function resetProductionLogsInFirestore(): Promise<boolean> {
       chunk.forEach((ref) => batch.delete(ref));
       await batch.commit();
     }
-
-    // Limpar caches locais de logs também
-    try {
-      localStorage.setItem('mca_logs_v3', JSON.stringify([]));
-      localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify([]));
-    } catch {
-      // ignore
-    }
-
-    return true;
   } catch (err) {
-    console.error('Erro ao resetar registros de produção no Firestore:', err);
-    throw err;
+    console.warn('Firestore mirror reset logs notice (Cloud Run backup was saved):', err);
   }
+
+  // Limpar caches locais de logs também
+  try {
+    localStorage.setItem('mca_logs_v3', JSON.stringify([]));
+    localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify([]));
+  } catch {
+    // ignore
+  }
+
+  return true;
 }
 
 /**
@@ -571,10 +641,12 @@ export async function restoreProductionLogsToFirestore(
   logs: ProductionLog[],
   notifs: AutoCloseNotification[] = []
 ): Promise<boolean> {
+  // 1. Restore on Cloud Run central database
+  await centralSync.restoreLogs(logs);
+
+  // 2. Mirror to Firestore if available
   try {
     const chunkSize = 350;
-    
-    // 1. Gravar Logs
     for (let i = 0; i < logs.length; i += chunkSize) {
       const batch = writeBatch(db);
       const chunk = logs.slice(i, i + chunkSize);
@@ -585,7 +657,7 @@ export async function restoreProductionLogsToFirestore(
       await batch.commit();
     }
 
-    // 2. Gravar Notificações se existirem
+    // Gravar Notificações se existirem
     if (notifs.length > 0) {
       for (let i = 0; i < notifs.length; i += chunkSize) {
         const batch = writeBatch(db);
@@ -597,22 +669,21 @@ export async function restoreProductionLogsToFirestore(
         await batch.commit();
       }
     }
-
-    // Atualizar LocalStorage
-    try {
-      localStorage.setItem('mca_logs_v3', JSON.stringify(logs));
-      if (notifs.length > 0) {
-        localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(notifs));
-      }
-    } catch {
-      // ignore
-    }
-
-    return true;
   } catch (err) {
-    console.error('Erro ao restaurar logs para o Firestore:', err);
-    throw err;
+    console.warn('Firestore mirror restore logs notice:', err);
   }
+
+  // Atualizar LocalStorage
+  try {
+    localStorage.setItem('mca_logs_v3', JSON.stringify(logs));
+    if (notifs.length > 0) {
+      localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(notifs));
+    }
+  } catch {
+    // ignore
+  }
+
+  return true;
 }
 
 /**

@@ -38,7 +38,9 @@ import {
   padronizarNomeTurno,
   padronizarDataIso,
   padronizarDataPtBr,
-  gerarDatasNoIntervalo
+  gerarDatasNoIntervalo,
+  obterDataHojeIsoPtBr,
+  formatarDataIsoPtBr
 } from '../utils/factoryCalculations';
 
 interface EfficiencyViewProps {
@@ -72,16 +74,9 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
   onNavigateToHistory,
   onNavigateToGraficoDiario,
 }) => {
-  // Date Range filter (defaults to today)
-  const [startDate, setStartDate] = useState(() => {
-    const today = new Date();
-    return today.toISOString().slice(0, 10);
-  });
-  
-  const [endDate, setEndDate] = useState(() => {
-    const today = new Date();
-    return today.toISOString().slice(0, 10);
-  });
+  // Date Range filter (defaults to today in America/Sao_Paulo timezone)
+  const [startDate, setStartDate] = useState(() => obterDataHojeIsoPtBr());
+  const [endDate, setEndDate] = useState(() => obterDataHojeIsoPtBr());
 
   // Active view tab: "grafico_cards" | "apenas_grafico" | "apenas_cards"
   const [viewMode, setViewMode] = useState<'grafico_cards' | 'apenas_grafico' | 'apenas_cards'>('grafico_cards');
@@ -105,25 +100,22 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
 
   // Quick Date Range Presets
   const handleApplyPreset = (preset: 'hoje' | 'ontem' | 'ultimos7' | 'esteMes' | 'dia28') => {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    const todayIso = `${y}-${m}-${d}`;
+    const todayIso = obterDataHojeIsoPtBr();
+    const [y, m, d] = todayIso.split('-');
 
     if (preset === 'hoje') {
       setStartDate(todayIso);
       setEndDate(todayIso);
     } else if (preset === 'ontem') {
-      const yesterday = new Date(now);
-      yesterday.setDate(now.getDate() - 1);
-      const yIso = yesterday.toISOString().slice(0, 10);
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yIso = formatarDataIsoPtBr(yesterday);
       setStartDate(yIso);
       setEndDate(yIso);
     } else if (preset === 'ultimos7') {
-      const d7 = new Date(now);
-      d7.setDate(now.getDate() - 6);
-      setStartDate(d7.toISOString().slice(0, 10));
+      const d7 = new Date();
+      d7.setDate(d7.getDate() - 6);
+      setStartDate(formatarDataIsoPtBr(d7));
       setEndDate(todayIso);
     } else if (preset === 'esteMes') {
       const firstDay = `${y}-${m}-01`;
@@ -365,7 +357,7 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                 type="button"
                 onClick={() => handleApplyPreset('hoje')}
                 className={`px-2 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
-                  startDate === endDate && startDate === new Date().toISOString().slice(0, 10)
+                  startDate === endDate && startDate === obterDataHojeIsoPtBr()
                     ? 'bg-[#007BFF] text-white'
                     : 'bg-[#222222] text-[#AAAAAA] hover:text-white'
                 }`}

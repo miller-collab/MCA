@@ -43,6 +43,7 @@ import {
   findSavedCollaboratorsInBrowser,
   savePermanentLocalBackup,
 } from './utils/recoveryUtils';
+import { centralSync } from './services/centralSync';
 
 import {
   subscribeToLogs,
@@ -69,78 +70,26 @@ import {
 
 export type TabKey = 'painel' | 'eficiencia' | 'grafico-diario' | 'historico' | 'indicadores' | 'turnos';
 
-// Helper to generate initial logs if empty
-function gerarLogsIniciais(
-  colaboradores: Collaborator[],
-  atividades: ActivityItem[]
-): ProductionLog[] {
-  const hoje = formatarDataPtBr(new Date());
-  return [
-    {
-      id: 'log-seed-1',
-      date: hoje,
-      collaboratorName: 'GERALDO',
-      role: 'PREPARADOR TORNO AUTOMATICO',
-      shift: 'Turno 1',
-      activity: 'SETUP DE MAQUINA',
-      category: 'Setup',
-      startTime: '07:00:00',
-      endTime: '08:30:00',
-      durationMinutes: 90,
-      status: 'Concluída',
-      observation: 'Setup inicial concluído com sucesso',
-    },
-    {
-      id: 'log-seed-2',
-      date: hoje,
-      collaboratorName: 'DIEGO',
-      role: 'INSPETOR TCNC / OPERADOR',
-      shift: 'Turno 1',
-      activity: 'MEDIR PEÇAS',
-      category: 'Qualidade / Inspeção',
-      startTime: '07:15:00',
-      endTime: '08:45:00',
-      durationMinutes: 90,
-      status: 'Concluída',
-      observation: 'Inspeção de rotina concluída',
-    },
-    {
-      id: 'log-seed-3',
-      date: hoje,
-      collaboratorName: 'EVANDRO',
-      role: 'AREA DO CAVACO E OLEO',
-      shift: 'Turno 1',
-      activity: 'LIMPEZA DO CAVACO',
-      category: '5S & Limpeza',
-      startTime: '07:20:00',
-      endTime: '08:20:00',
-      durationMinutes: 60,
-      status: 'Concluída',
-      observation: 'Limpeza 5S executada',
-    },
-    {
-      id: 'log-seed-4',
-      date: hoje,
-      collaboratorName: 'CRISTIAN',
-      role: 'PREPARADOR DE FERRAMENTAS',
-      shift: 'Turno 1',
-      activity: 'AFIAR FERRAMENTAS',
-      category: 'Setup',
-      startTime: '07:00:00',
-      endTime: '07:45:00',
-      durationMinutes: 45,
-      status: 'Concluída',
-      observation: 'Operação Concluída com Sucesso sem Anomalias',
-    },
-  ];
+// Clean initial logs state (never inject invented logs)
+function gerarLogsIniciais(): ProductionLog[] {
+  return [];
 }
 
 export function App() {
   // 1. Core State
   const [collaborators, setCollaborators] = useState<Collaborator[]>(() => {
+    const enforceTurno2SingleOperator = (list: Collaborator[]) => {
+      const turno2 = list.filter((c) => padronizarNomeTurno(c.shift) === 'Turno 2');
+      if (turno2.length > 1 || (turno2.length === 1 && turno2[0].name !== 'CARLOS')) {
+        const others = list.filter((c) => padronizarNomeTurno(c.shift) !== 'Turno 2');
+        return [...others, { id: 'colab-14', name: 'CARLOS', role: 'TORNO CNC', shift: 'Turno 2', active: true }];
+      }
+      return list;
+    };
+
     const recovered = findSavedCollaboratorsInBrowser();
     if (recovered.found && recovered.collaborators.length > 0) {
-      return recovered.collaborators;
+      return enforceTurno2SingleOperator(recovered.collaborators);
     }
     const saved = localStorage.getItem('mca_collaborators_v3');
     if (saved) {
@@ -151,7 +100,7 @@ export function App() {
           parsed.length > 0 &&
           !parsed.some((p: any) => p.name === 'Valter Ribeiro (Líder)' || p.name === 'Carlos Silva' || p.name === 'Marcos Oliveira')
         ) {
-          return parsed;
+          return enforceTurno2SingleOperator(parsed);
         }
       } catch {
         // Use default
@@ -192,20 +141,25 @@ export function App() {
 
   const [logs, setLogs] = useState<ProductionLog[]>(() => {
     const saved = localStorage.getItem('mca_logs_v3');
+    const logMap = new Map<string, ProductionLog>();
     if (saved) {
       try {
         const parsed: ProductionLog[] = JSON.parse(saved);
-        const formatted = parsed.map((l) => ({
-          ...l,
-          shift: padronizarNomeTurno(l.shift),
-        }));
-        const { sanitizedLogs } = desduplicarLogsAtivos(formatted, INITIAL_COLLABORATORS, INITIAL_SHIFTS);
-        return sanitizedLogs;
+        for (const l of parsed) {
+          if (l && l.id && !l.id.startsWith('log-')) {
+            logMap.set(l.id, {
+              ...l,
+              shift: padronizarNomeTurno(l.shift),
+            });
+          }
+        }
       } catch {
-        return gerarLogsIniciais(INITIAL_COLLABORATORS, INITIAL_ACTIVITIES);
+        // Ignore parse error
       }
     }
-    return gerarLogsIniciais(INITIAL_COLLABORATORS, INITIAL_ACTIVITIES);
+    const combined = Array.from(logMap.values());
+    const { sanitizedLogs } = desduplicarLogsAtivos(combined, INITIAL_COLLABORATORS, INITIAL_SHIFTS);
+    return sanitizedLogs;
   });
 
   // Auto-close Shift Notifications for Operators and Leader
@@ -233,171 +187,165 @@ export function App() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [drilldownFilter, setDrilldownFilter] = useState('');
 
-  // 3. Real-Time Cloud Firestore Sync (Subscribes all tablets simultaneously)
+  // 3. Central Cloud Run + Firestore Real-Time Synchronization
   useEffect(() => {
-    // Seed initial dataset if Firestore is newly provisioned
+    let isMounted = true;
+
+    // 3.1 Initial Full Sync directly from Cloud Run Central Database
+    centralSync.fetchFullSync().then((state) => {
+      if (!isMounted || !state) return;
+      if (state.collaborators && state.collaborators.length > 0) {
+        setCollaborators(state.collaborators);
+      }
+      if (state.shifts && state.shifts.length > 0) {
+        setShifts(state.shifts);
+      }
+      if (state.activities && state.activities.length > 0) {
+        setActivities(state.activities);
+      }
+      if (state.logs) {
+        const logMap = new Map<string, ProductionLog>();
+        for (const l of state.logs) {
+          if (l && l.id && !l.id.startsWith('log-')) {
+            logMap.set(l.id, { ...l, shift: padronizarNomeTurno(l.shift) });
+          }
+        }
+        const formatted = Array.from(logMap.values());
+        const { sanitizedLogs } = desduplicarLogsAtivos(
+          formatted,
+          state.collaborators || collaborators,
+          state.shifts || shifts
+        );
+        setLogs(sanitizedLogs);
+      }
+      if (state.factoryConfig) {
+        if (state.factoryConfig.toleranceMinutes) setToleranceMinutes(state.factoryConfig.toleranceMinutes);
+        if (state.factoryConfig.observations && state.factoryConfig.observations.length > 0) {
+          setObservations(state.factoryConfig.observations);
+        }
+        if (state.factoryConfig.customRoleColors) {
+          setCustomRoleColors(state.factoryConfig.customRoleColors);
+        }
+        if (state.factoryConfig.efficiencyThresholdGreen !== undefined) {
+          setEfficiencyThresholdGreen(state.factoryConfig.efficiencyThresholdGreen);
+        }
+        if (state.factoryConfig.efficiencyThresholdYellow !== undefined) {
+          setEfficiencyThresholdYellow(state.factoryConfig.efficiencyThresholdYellow);
+        }
+      }
+    });
+
+    // 3.2 Real-time push subscriptions from Cloud Run SSE
+    const unsubColabsCentral = centralSync.onCollaborators((newColabs) => {
+      if (newColabs && newColabs.length > 0) {
+        setCollaborators(newColabs);
+      }
+    });
+
+    const unsubShiftsCentral = centralSync.onShifts((newShifts) => {
+      if (newShifts && newShifts.length > 0) {
+        setShifts(newShifts);
+      }
+    });
+
+    const unsubActivitiesCentral = centralSync.onActivities((newActs) => {
+      if (newActs && newActs.length > 0) {
+        setActivities(newActs);
+      }
+    });
+
+    const unsubConfigCentral = centralSync.onConfig((cfg) => {
+      if (cfg) {
+        if (cfg.toleranceMinutes) setToleranceMinutes(cfg.toleranceMinutes);
+        if (cfg.observations) setObservations(cfg.observations);
+        if (cfg.customRoleColors) setCustomRoleColors(cfg.customRoleColors);
+        if (cfg.efficiencyThresholdGreen !== undefined) setEfficiencyThresholdGreen(cfg.efficiencyThresholdGreen);
+        if (cfg.efficiencyThresholdYellow !== undefined) setEfficiencyThresholdYellow(cfg.efficiencyThresholdYellow);
+      }
+    });
+
+    const unsubLogsCentral = centralSync.onLogs((newLogs) => {
+      const realLogs = (newLogs || []).filter((l) => l && l.id && !l.id.startsWith('log-'));
+      const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+      const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
+      setLogs(sanitizedLogs);
+    });
+
+    const unsubSingleLogCentral = centralSync.onSingleLogChange(({ action, log, id }) => {
+      if (action === 'save' && log && !log.id.startsWith('log-')) {
+        const formattedLog = { ...log, shift: padronizarNomeTurno(log.shift) };
+        setLogs((prev) => {
+          const idx = prev.findIndex((l) => l.id === formattedLog.id);
+          let updated: ProductionLog[];
+          if (idx >= 0) {
+            updated = [...prev];
+            updated[idx] = formattedLog;
+          } else {
+            updated = [formattedLog, ...prev];
+          }
+          const { sanitizedLogs } = desduplicarLogsAtivos(updated, collaborators, shifts);
+          return sanitizedLogs;
+        });
+      } else if (action === 'delete' && id) {
+        setLogs((prev) => prev.filter((l) => l.id !== id));
+      }
+    });
+
+    // 3.3 Optional Firestore listener with graceful error catch
+    let unsubLogsFirestore = () => {};
+    try {
+      unsubLogsFirestore = subscribeToLogs((cloudLogs) => {
+        const realLogs = (cloudLogs || []).filter((l) => l && l.id && !l.id.startsWith('log-'));
+        if (realLogs.length > 0) {
+          const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+          const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
+          setLogs(sanitizedLogs);
+        }
+      });
+    } catch (e) {
+      console.warn('Firestore subscription fallback notice:', e);
+    }
+
+    // 3.4 Seed initial Firestore data in background if needed
     seedInitialFirestoreDataIfEmpty(
       INITIAL_COLLABORATORS,
       INITIAL_ACTIVITIES,
       INITIAL_SHIFTS,
       INITIAL_OBSERVATIONS
-    );
+    ).catch(() => {});
 
-    // Subscribe to real-time logs from Firestore
-    const unsubLogs = subscribeToLogs((cloudLogs) => {
-      if (cloudLogs) {
-        const formatted = cloudLogs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-        const { sanitizedLogs, logsParaFinalizar, logsParaDeletar } = desduplicarLogsAtivos(formatted, collaborators, shifts);
-        setLogs(sanitizedLogs);
-        // Se houver registros encerrados automaticamente ou duplicatas no banco, salva a finalização segura
-        if (logsParaFinalizar.length > 0) {
-          logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
+    // 3.5 Auto re-sync when tab gains focus or goes back online
+    const handleFocusOrOnline = () => {
+      centralSync.fetchFullSync().then((state) => {
+        if (!state) return;
+        if (state.collaborators) setCollaborators(state.collaborators);
+        if (state.shifts) setShifts(state.shifts);
+        if (state.activities) setActivities(state.activities);
+        if (state.logs) {
+          const realLogs = state.logs.filter((l) => l && l.id && !l.id.startsWith('log-'));
+          const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+          const { sanitizedLogs } = desduplicarLogsAtivos(formatted, state.collaborators || collaborators, state.shifts || shifts);
+          setLogs(sanitizedLogs);
         }
-        // Se houver logs sintéticos a serem deletados do Firestore
-        if (logsParaDeletar.length > 0) {
-          logsParaDeletar.forEach((id) => deleteLogFromFirestore(id));
-        }
-      }
-    });
+      });
+    };
 
-    // Subscribe to collaborators
-    const unsubColabs = subscribeToCollaborators((cloudColabs) => {
-      if (cloudColabs && cloudColabs.length > 0) {
-        const hasLegacyDummy = cloudColabs.some(
-          (c) =>
-            c.name === 'Valter Ribeiro (Líder)' ||
-            c.name === 'Carlos Silva' ||
-            c.name === 'Marcos Oliveira' ||
-            c.name === 'Lucas Mendes'
-        );
-        if (hasLegacyDummy) {
-          saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
-          setCollaborators(INITIAL_COLLABORATORS);
-        } else {
-          setCollaborators((prev) => (JSON.stringify(prev) === JSON.stringify(cloudColabs) ? prev : cloudColabs));
-        }
-      }
-    });
-
-    // Subscribe to activities
-    const unsubActivities = subscribeToActivities((cloudActivities) => {
-      if (cloudActivities && cloudActivities.length > 0) {
-        setActivities((prev) => (JSON.stringify(prev) === JSON.stringify(cloudActivities) ? prev : cloudActivities));
-      }
-    });
-
-    // Subscribe to shifts
-    const unsubShifts = subscribeToShifts((cloudShifts) => {
-      if (cloudShifts && cloudShifts.length > 0) {
-        setShifts((prev) => (JSON.stringify(prev) === JSON.stringify(cloudShifts) ? prev : cloudShifts));
-      }
-    });
-
-    // Subscribe to factory config
-    const unsubConfig = subscribeToFactoryConfig((cloudConfig) => {
-      if (cloudConfig) {
-        if (cloudConfig.toleranceMinutes) setToleranceMinutes(cloudConfig.toleranceMinutes);
-        if (cloudConfig.observations && cloudConfig.observations.length > 0) {
-          setObservations(cloudConfig.observations);
-        }
-        if (cloudConfig.customRoleColors) {
-          setCustomRoleColors(cloudConfig.customRoleColors);
-        }
-        if (cloudConfig.customRoles && cloudConfig.customRoles.length > 0) {
-          setCustomRoles(cloudConfig.customRoles);
-        }
-        if (cloudConfig.deletedRoles) {
-          setDeletedRoles(cloudConfig.deletedRoles);
-        }
-        if (cloudConfig.efficiencyThresholdGreen !== undefined) {
-          setEfficiencyThresholdGreen(cloudConfig.efficiencyThresholdGreen);
-          localStorage.setItem('mca_eff_green_v3', String(cloudConfig.efficiencyThresholdGreen));
-        }
-        if (cloudConfig.efficiencyThresholdYellow !== undefined) {
-          setEfficiencyThresholdYellow(cloudConfig.efficiencyThresholdYellow);
-          localStorage.setItem('mca_eff_yellow_v3', String(cloudConfig.efficiencyThresholdYellow));
-        }
-      }
-    });
-
-    // Subscribe to auto close notifications
-    const unsubNotifs = subscribeToAutoCloseNotifs((cloudNotifs) => {
-      setAutoCloseNotifs(cloudNotifs);
-    });
+    window.addEventListener('focus', handleFocusOrOnline);
+    window.addEventListener('online', handleFocusOrOnline);
 
     return () => {
-      unsubLogs();
-      unsubColabs();
-      unsubActivities();
-      unsubShifts();
-      unsubConfig();
-      unsubNotifs();
-    };
-  }, []);
-
-  // 3.1 Background Polling Sync Loop (Foto 1, 2, 3: Mantém sincronismo contínuo entre Studio e Link externo)
-  useEffect(() => {
-    let isFetching = false;
-    const syncWithCloud = async () => {
-      if (isFetching) return;
-      isFetching = true;
+      isMounted = false;
+      unsubColabsCentral();
+      unsubShiftsCentral();
+      unsubActivitiesCentral();
+      unsubConfigCentral();
+      unsubLogsCentral();
+      unsubSingleLogCentral();
       try {
-        const cloudData = await fetchAllDataFromFirestore();
-        if (cloudData) {
-          if (cloudData.collaborators && cloudData.collaborators.length > 0) {
-            const hasLegacyDummy = cloudData.collaborators.some(
-              (c) =>
-                c.name === 'Valter Ribeiro (Líder)' ||
-                c.name === 'Carlos Silva' ||
-                c.name === 'Marcos Oliveira' ||
-                c.name === 'Lucas Mendes'
-            );
-            if (hasLegacyDummy) {
-              saveCollaboratorsToFirestore(INITIAL_COLLABORATORS);
-              setCollaborators(INITIAL_COLLABORATORS);
-            } else {
-              setCollaborators((prev) => (JSON.stringify(prev) === JSON.stringify(cloudData.collaborators) ? prev : cloudData.collaborators!));
-            }
-          }
-          if (cloudData.activities && cloudData.activities.length > 0) {
-            setActivities((prev) => (JSON.stringify(prev) === JSON.stringify(cloudData.activities) ? prev : cloudData.activities!));
-          }
-          if (cloudData.shifts && cloudData.shifts.length > 0) {
-            setShifts((prev) => (JSON.stringify(prev) === JSON.stringify(cloudData.shifts) ? prev : cloudData.shifts!));
-          }
-          if (cloudData.logs && cloudData.logs.length > 0) {
-            const formatted = cloudData.logs.map(l => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-            const { sanitizedLogs, logsParaFinalizar, logsParaDeletar } = desduplicarLogsAtivos(
-              formatted,
-              cloudData.collaborators || collaborators,
-              cloudData.shifts || shifts
-            );
-            setLogs((prev) => (JSON.stringify(prev) === JSON.stringify(sanitizedLogs) ? prev : sanitizedLogs));
-            if (logsParaFinalizar.length > 0) {
-              logsParaFinalizar.forEach((log) => saveLogToFirestore(log));
-            }
-            if (logsParaDeletar.length > 0) {
-              logsParaDeletar.forEach((id) => deleteLogFromFirestore(id));
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Background sync loop notice:', err);
-      } finally {
-        isFetching = false;
-      }
-    };
-
-    // Run every 4 seconds in background when idle
-    const interval = setInterval(syncWithCloud, 4000);
-    // Also sync immediately when window gains focus or online
-    window.addEventListener('focus', syncWithCloud);
-    window.addEventListener('online', syncWithCloud);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', syncWithCloud);
-      window.removeEventListener('online', syncWithCloud);
+        unsubLogsFirestore();
+      } catch {}
+      window.removeEventListener('focus', handleFocusOrOnline);
+      window.removeEventListener('online', handleFocusOrOnline);
     };
   }, []);
 

@@ -23,7 +23,8 @@ import {
   formatarDataPtBr,
   verificarDataNoPeriodo,
   obterTurnoDoLog,
-  padronizarNomeTurno
+  padronizarNomeTurno,
+  obterDataHojeIsoPtBr
 } from '../utils/factoryCalculations';
 import { FactoryConfigManager } from './FactoryConfigManager';
 
@@ -215,10 +216,7 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   };
 
   // Filters state
-  const [filterDate, setFilterDate] = useState(() => {
-    const today = new Date();
-    return today.toISOString().slice(0, 10);
-  });
+  const [filterDate, setFilterDate] = useState(() => obterDataHojeIsoPtBr());
   const [localToleranceMinutes, setLocalToleranceMinutes] = useState(propToleranceMinutes);
   const toleranceMinutes = onUpdateToleranceMinutes ? propToleranceMinutes : localToleranceMinutes;
   const handleSetToleranceMinutes = (val: number) => {
