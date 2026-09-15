@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Search, Download, Trash2, Edit3, X, Check, Filter, Lock, KeyRound, 
   AlertTriangle, RotateCcw, Calendar, Clock, ShieldCheck, PlusCircle, 
@@ -11,9 +11,11 @@ import {
   verificarDataNoPeriodo, 
   obterTurnoDoLog,
   padronizarNomeTurno,
+  converterDataPtParaIso,
   calcularGapsJornadaColaboradores,
   ShiftGapEntry,
-  timeToSecondsOfDay
+  timeToSecondsOfDay,
+  timeToShiftRelativeSeconds
 } from '../utils/factoryCalculations';
 import { generateAndDownloadReportPDF } from '../utils/pdfReportGenerator';
 
@@ -47,16 +49,48 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   isLeaderUnlocked = false,
   leaderPin = '8619',
 }) => {
-  const [searchTerm, setSearchTerm] = useState(initialFilterTerm);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [selectedCollaborator, setSelectedCollaborator] = useState('TODOS');
+  const [selectedCollaborator, setSelectedCollaborator] = useState(() => {
+    if (initialFilterTerm && initialFilterTerm.trim()) {
+      const match = (collaborators || []).find(
+        (c) => c.name.trim().toLowerCase() === initialFilterTerm.trim().toLowerCase()
+      );
+      if (match) return match.name;
+    }
+    return 'TODOS';
+  });
+  const [searchTerm, setSearchTerm] = useState(() => {
+    if (initialFilterTerm && initialFilterTerm.trim()) {
+      const match = (collaborators || []).find(
+        (c) => c.name.trim().toLowerCase() === initialFilterTerm.trim().toLowerCase()
+      );
+      if (match) return '';
+      return initialFilterTerm;
+    }
+    return '';
+  });
   const [selectedActivity, setSelectedActivity] = useState('TODOS');
   const [selectedShift, setSelectedShift] = useState('TODOS');
   const [filterStatus, setFilterStatus] = useState('TODOS');
   const [filterMeal, setFilterMeal] = useState('TODOS');
   const [showGaps, setShowGaps] = useState(true); // Exibir lacunas sem apontamento por padrão
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+  // Sincroniza quando o filtro for disparado externamente (ex: drilldown da Eficiência)
+  useEffect(() => {
+    if (initialFilterTerm && initialFilterTerm.trim()) {
+      const match = (collaborators || []).find(
+        (c) => c.name.trim().toLowerCase() === initialFilterTerm.trim().toLowerCase()
+      );
+      if (match) {
+        setSelectedCollaborator(match.name);
+        setSearchTerm('');
+      } else {
+        setSearchTerm(initialFilterTerm);
+      }
+    }
+  }, [initialFilterTerm, collaborators]);
 
   // Lista de Colaboradores únicos para o seletor de filtro
   const listaColaboradoresFiltro = useMemo(() => {
@@ -236,10 +270,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           gap.date.toLowerCase().includes(term) ||
           gap.collaboratorName.toLowerCase().includes(term) ||
           gap.activity.toLowerCase().includes(term) ||
+          gap.status.toLowerCase().includes(term) ||
           itemShift.toLowerCase().includes(term) ||
-          (gap.observation && gap.observation.toLowerCase().includes(term)) ||
-          'sem apontamento'.includes(term) ||
-          'ocioso'.includes(term);
+          (gap.observation && gap.observation.toLowerCase().includes(term));
 
         const matchDatePeriod = verificarDataNoPeriodo(gap.date, startDate, endDate);
 
@@ -265,20 +298,28 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus && matchMeal;
       }
     }).sort((a, b) => {
-      // Ordenação: primeiro por data decrescente, depois por colaborador, depois por startTime
-      const dateA = a.type === 'log' ? a.data.date : a.data.date;
-      const dateB = b.type === 'log' ? b.data.date : b.data.date;
-      if (dateA !== dateB) return dateB.localeCompare(dateA);
+      // Ordenação: primeiro por data decrescente (ISO), depois por colaborador, depois por horário do turno
+      const dateStrA = a.type === 'log' ? a.data.date : a.data.date;
+      const dateStrB = b.type === 'log' ? b.data.date : b.data.date;
+      const isoA = converterDataPtParaIso(dateStrA);
+      const isoB = converterDataPtParaIso(dateStrB);
+      if (isoA !== isoB) return isoB.localeCompare(isoA); // Data mais recente primeiro
 
-      const colabA = a.type === 'log' ? a.data.collaboratorName : a.data.collaboratorName;
-      const colabB = b.type === 'log' ? b.data.collaboratorName : b.data.collaboratorName;
-      if (colabA !== colabB) return colabA.localeCompare(colabB);
+      const colabA = (a.type === 'log' ? a.data.collaboratorName : a.data.collaboratorName) || '';
+      const colabB = (b.type === 'log' ? b.data.collaboratorName : b.data.collaboratorName) || '';
+      if (colabA.toLowerCase() !== colabB.toLowerCase()) return colabA.localeCompare(colabB);
+
+      const shiftA = a.type === 'log' ? obterTurnoDoLog(a.data, collaborators) : a.data.shift;
+      const foundShiftA = shifts.find((s) => padronizarNomeTurno(s.name) === padronizarNomeTurno(shiftA)) || shifts[0] || { entrada: '07:00', saida: '17:30' };
+      const entradaA = foundShiftA?.entrada || '07:00';
+      const saidaA = foundShiftA?.saida || '17:30';
+      const isOvernightA = timeToSecondsOfDay(entradaA) > timeToSecondsOfDay(saidaA);
 
       const startA = a.type === 'log' ? a.data.startTime : a.data.startTime;
       const startB = b.type === 'log' ? b.data.startTime : b.data.startTime;
-      return timeToSecondsOfDay(startA) - timeToSecondsOfDay(startB);
+      return timeToShiftRelativeSeconds(startA, entradaA, isOvernightA) - timeToShiftRelativeSeconds(startB, entradaA, isOvernightA);
     });
-  }, [combinedTimeline, searchTerm, startDate, endDate, selectedCollaborator, selectedActivity, selectedShift, filterStatus, filterMeal, collaborators]);
+  }, [combinedTimeline, searchTerm, startDate, endDate, selectedCollaborator, selectedActivity, selectedShift, filterStatus, filterMeal, collaborators, shifts]);
 
   // Cálculos para o Card de Conciliação e Auditoria da Jornada
   const conciliationMetrics = useMemo(() => {

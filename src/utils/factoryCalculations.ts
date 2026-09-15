@@ -498,6 +498,31 @@ export function timeToSecondsOfDay(timeStr: string): number {
 }
 
 /**
+ * Converte horário "HH:mm:ss" ou "HH:mm" para segundos relativos ao início do turno,
+ * tratando perfeitamente turnos noturnos que cruzam a meia-noite (ex: Turno 2 das 17:00 às 01:30).
+ * Ex: Em um turno das 17:00 às 01:30:
+ * - 17:00 -> 61200s
+ * - 19:18 -> 69516s
+ * - 00:30 -> 88200s (1800 + 86400)
+ * - 01:30 -> 91800s (5400 + 86400)
+ */
+export function timeToShiftRelativeSeconds(timeStr: string, shiftEntrada: string = '07:00', isOvernight: boolean = false): number {
+  if (!timeStr) return 0;
+  const tSec = timeToSecondsOfDay(timeStr);
+  const entSec = timeToSecondsOfDay(shiftEntrada);
+
+  if (!isOvernight) {
+    return tSec;
+  }
+
+  // Turno noturno (cruza meia-noite): horários da madrugada (00:00 às 12:00) vêm DEPOIS das 23:59:59
+  if (tSec < entSec && tSec < 12 * 3600) {
+    return tSec + 86400;
+  }
+  return tSec;
+}
+
+/**
  * Garante a regra fundamental industrial de produção:
  * 1. Cada colaborador executa no máximo 1 atividade por vez.
  * 2. As atividades de um mesmo dia formam uma linha do tempo contínua sem nenhuma colisão ou sobreposição temporal.
@@ -576,13 +601,14 @@ export function desduplicarLogsAtivos(
       shiftDias = foundShift.dias;
     }
 
+    const isOvernight = timeToSecondsOfDay(shiftEntrada) > timeToSecondsOfDay(shiftSaida);
     const shiftEnded = isPreviousDay || verificarTurnoEncerrado(shiftSaida, shiftEntrada, shiftDias, agora);
     const mealConfig = obterConfiguracaoRefeicao(colabKey, shifts || [], collaborators || []);
 
-    // Ordena cronologicamente por horário de início (startTime)
+    // Ordena cronologicamente por horário de início respeitando turnos noturnos
     groupLogs.sort((a, b) => {
-      const secA = timeToSecondsOfDay(a.startTime);
-      const secB = timeToSecondsOfDay(b.startTime);
+      const secA = timeToShiftRelativeSeconds(a.startTime, shiftEntrada, isOvernight);
+      const secB = timeToShiftRelativeSeconds(b.startTime, shiftEntrada, isOvernight);
       if (secA !== secB) return secA - secB;
       // Se empatar no mesmo segundo, desempata por timestamp ou ID
       return (a.id || '').localeCompare(b.id || '');
@@ -597,7 +623,7 @@ export function desduplicarLogsAtivos(
       if (
         next &&
         current.activity === next.activity &&
-        Math.abs(timeToSecondsOfDay(next.startTime) - timeToSecondsOfDay(current.startTime)) <= 3 &&
+        Math.abs(timeToShiftRelativeSeconds(next.startTime, shiftEntrada, isOvernight) - timeToShiftRelativeSeconds(current.startTime, shiftEntrada, isOvernight)) <= 3 &&
         (current.durationMinutes === undefined || current.durationMinutes <= 1)
       ) {
         // Registro redundante gerado por clique duplo rápido: descarta do banco
@@ -625,14 +651,15 @@ export function desduplicarLogsAtivos(
         // A atividade atual OBRIGATORIAMENTE encerra no momento de início da próxima atividade!
         const nextLog = deduplicatedTimeline[i + 1];
         const nextStartTime = nextLog.startTime;
-        const currentEndSec = current.endTime ? timeToSecondsOfDay(current.endTime) : 0;
-        const nextStartSec = timeToSecondsOfDay(nextStartTime);
+        const currentEndSec = current.endTime ? timeToShiftRelativeSeconds(current.endTime, shiftEntrada, isOvernight) : 0;
+        const nextStartSec = timeToShiftRelativeSeconds(nextStartTime, shiftEntrada, isOvernight);
+        const shiftSaidaSec = timeToShiftRelativeSeconds(shiftSaida, shiftEntrada, isOvernight);
 
         if (
           current.status !== 'Concluída' ||
           !current.endTime ||
           currentEndSec > nextStartSec ||
-          (current.autoClosedAtShiftEnd && nextStartSec < timeToSecondsOfDay(shiftSaida))
+          (current.autoClosedAtShiftEnd && nextStartSec < shiftSaidaSec)
         ) {
           // Ajusta o fim para coincidir exatamente com o início da próxima
           updatedLog.endTime = nextStartTime;
@@ -650,10 +677,10 @@ export function desduplicarLogsAtivos(
         let mealMins = 0;
         let mealDeducted = Boolean(updatedLog.mealBreakDeducted);
 
-        const startSec = timeToSecondsOfDay(updatedLog.startTime);
-        const endSec = timeToSecondsOfDay(endCalculo);
-        const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
-        const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+        const startSec = timeToShiftRelativeSeconds(updatedLog.startTime, shiftEntrada, isOvernight);
+        const endSec = timeToShiftRelativeSeconds(endCalculo, shiftEntrada, isOvernight);
+        const mealStartSec = timeToShiftRelativeSeconds(mealConfig.saidaAlmoco, shiftEntrada, isOvernight);
+        const mealEndSec = timeToShiftRelativeSeconds(mealConfig.retornoAlmoco, shiftEntrada, isOvernight);
 
         const cruzouAlmoco =
           (startSec <= mealStartSec + 300 && endSec >= mealEndSec - 300) ||
@@ -690,8 +717,8 @@ export function desduplicarLogsAtivos(
         // Último log do dia para este colaborador:
         if (shiftEnded) {
           // O turno ou o dia já encerrou: finaliza com segurança no horário de saída do turno
-          const currentEndSec = current.endTime ? timeToSecondsOfDay(current.endTime) : 0;
-          const shiftSaidaSec = timeToSecondsOfDay(shiftSaida);
+          const currentEndSec = current.endTime ? timeToShiftRelativeSeconds(current.endTime, shiftEntrada, isOvernight) : 0;
+          const shiftSaidaSec = timeToShiftRelativeSeconds(shiftSaida, shiftEntrada, isOvernight);
 
           if (
             current.status !== 'Concluída' ||
@@ -711,10 +738,10 @@ export function desduplicarLogsAtivos(
           let mealMins = 0;
           let mealDeducted = Boolean(updatedLog.mealBreakDeducted);
 
-          const startSec = timeToSecondsOfDay(updatedLog.startTime);
-          const endSec = timeToSecondsOfDay(endCalculo);
-          const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
-          const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+          const startSec = timeToShiftRelativeSeconds(updatedLog.startTime, shiftEntrada, isOvernight);
+          const endSec = timeToShiftRelativeSeconds(endCalculo, shiftEntrada, isOvernight);
+          const mealStartSec = timeToShiftRelativeSeconds(mealConfig.saidaAlmoco, shiftEntrada, isOvernight);
+          const mealEndSec = timeToShiftRelativeSeconds(mealConfig.retornoAlmoco, shiftEntrada, isOvernight);
 
           const cruzouAlmoco =
             (startSec <= mealStartSec + 300 && endSec >= mealEndSec - 300) ||
@@ -919,21 +946,23 @@ export function calcularGapsJornadaColaboradores(
 
     const shiftEntrada = foundShift.entrada || '07:00';
     const shiftSaida = foundShift.saida || '17:30';
+    const isOvernight = timeToSecondsOfDay(shiftEntrada) > timeToSecondsOfDay(shiftSaida);
+
     const mealConfig = obterConfiguracaoRefeicao(colabName, shifts, collaborators);
-    const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
-    const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
+    const mealStartSec = timeToShiftRelativeSeconds(mealConfig.saidaAlmoco, shiftEntrada, isOvernight);
+    const mealEndSec = timeToShiftRelativeSeconds(mealConfig.retornoAlmoco, shiftEntrada, isOvernight);
 
     // Identifica se alguma atividade já absorveu ou deduziu a refeição
     let hasMealBeenProcessed = groupLogs.some(
       (l) => l.isMealPause || (l.mealBreakDeducted && l.status === 'Concluída')
     );
 
-    // Ordena cronologicamente
+    // Ordena cronologicamente respeitando a virada de meia-noite
     const sorted = [...groupLogs].sort(
-      (a, b) => timeToSecondsOfDay(a.startTime) - timeToSecondsOfDay(b.startTime)
+      (a, b) => timeToShiftRelativeSeconds(a.startTime, shiftEntrada, isOvernight) - timeToShiftRelativeSeconds(b.startTime, shiftEntrada, isOvernight)
     );
 
-    // Helper interno para fatiar períodos ociosos considerando o horário do almoço
+    // Helper interno para fatiar períodos ociosos considerando o horário do almoço/janta
     const registrarGapOuRefeicao = (
       tipo: 'start' | 'mid' | 'end',
       startStr: string,
@@ -941,8 +970,8 @@ export function calcularGapsJornadaColaboradores(
       contextObs: string,
       nextActName?: string
     ) => {
-      const sSec = timeToSecondsOfDay(startStr);
-      const eSec = timeToSecondsOfDay(endStr);
+      const sSec = timeToShiftRelativeSeconds(startStr, shiftEntrada, isOvernight);
+      const eSec = timeToShiftRelativeSeconds(endStr, shiftEntrada, isOvernight);
       if (eSec - sSec < 60) return; // Menos de 1 minuto
 
       const cruzaAlmoco =
@@ -953,7 +982,7 @@ export function calcularGapsJornadaColaboradores(
       if (cruzaAlmoco) {
         // 1. Período antes do almoço (se houver)
         if (sSec < mealStartSec && mealStartSec - sSec >= 60) {
-          const preMins = calcularDiferencaMinutos(startStr, mealConfig.saidaAlmoco);
+          const preMins = Math.round((mealStartSec - sSec) / 60);
           if (preMins >= 1) {
             gaps.push({
               id: `gap-${tipo}-premeal-${colabName}-${dateStr}-${startStr}`,
@@ -975,7 +1004,9 @@ export function calcularGapsJornadaColaboradores(
         // 2. Intervalo de Refeição (Almoço / Janta)
         const mStartStr = sSec >= mealStartSec ? startStr : mealConfig.saidaAlmoco;
         const mEndStr = eSec <= mealEndSec ? endStr : mealConfig.retornoAlmoco;
-        const mealDurationMins = calcularDiferencaMinutos(mStartStr, mEndStr);
+        const mStartSec = timeToShiftRelativeSeconds(mStartStr, shiftEntrada, isOvernight);
+        const mEndSec = timeToShiftRelativeSeconds(mEndStr, shiftEntrada, isOvernight);
+        const mealDurationMins = Math.round((mEndSec - mStartSec) / 60);
 
         if (mealDurationMins >= 1) {
           gaps.push({
@@ -999,7 +1030,7 @@ export function calcularGapsJornadaColaboradores(
 
         // 3. Período após o almoço (se houver)
         if (eSec > mealEndSec && eSec - mealEndSec >= 60) {
-          const postMins = calcularDiferencaMinutos(mealConfig.retornoAlmoco, endStr);
+          const postMins = Math.round((eSec - mealEndSec) / 60);
           if (postMins >= 1) {
             gaps.push({
               id: `gap-${tipo}-postmeal-${colabName}-${dateStr}-${mealConfig.retornoAlmoco}`,
@@ -1019,7 +1050,7 @@ export function calcularGapsJornadaColaboradores(
         }
       } else {
         // Gap simples sem cruzamento de almoço
-        const gapMins = calcularDiferencaMinutos(startStr, endStr);
+        const gapMins = Math.round((eSec - sSec) / 60);
         if (gapMins >= 1) {
           let actLabel = '⚠️ SEM APONTAMENTO (Intervalo)';
           if (tipo === 'start') actLabel = '⚠️ SEM APONTAMENTO (Início de Turno)';
@@ -1045,8 +1076,8 @@ export function calcularGapsJornadaColaboradores(
 
     // 1. GAP no início do turno (Entre a entrada do turno e a primeira atividade)
     const firstLog = sorted[0];
-    const firstStartSec = timeToSecondsOfDay(firstLog.startTime);
-    const shiftEntradaSec = timeToSecondsOfDay(shiftEntrada);
+    const firstStartSec = timeToShiftRelativeSeconds(firstLog.startTime, shiftEntrada, isOvernight);
+    const shiftEntradaSec = timeToShiftRelativeSeconds(shiftEntrada, shiftEntrada, isOvernight);
 
     if (firstStartSec - shiftEntradaSec >= 60) {
       registrarGapOuRefeicao(
@@ -1066,8 +1097,8 @@ export function calcularGapsJornadaColaboradores(
       const currentEnd = current.endTime;
       if (!currentEnd) continue;
 
-      const currentEndSec = timeToSecondsOfDay(currentEnd);
-      const nextStartSec = timeToSecondsOfDay(next.startTime);
+      const currentEndSec = timeToShiftRelativeSeconds(currentEnd, shiftEntrada, isOvernight);
+      const nextStartSec = timeToShiftRelativeSeconds(next.startTime, shiftEntrada, isOvernight);
 
       if (nextStartSec - currentEndSec >= 60) {
         registrarGapOuRefeicao(
@@ -1083,15 +1114,15 @@ export function calcularGapsJornadaColaboradores(
     // 3. GAP no fim do turno (Entre o término da última atividade e o fim do turno)
     const lastLog = sorted[sorted.length - 1];
     if (lastLog.status === 'Concluída' && lastLog.endTime) {
-      const lastEndSec = timeToSecondsOfDay(lastLog.endTime);
-      const shiftSaidaSec = timeToSecondsOfDay(shiftSaida);
+      const lastEndSec = timeToShiftRelativeSeconds(lastLog.endTime, shiftEntrada, isOvernight);
+      const shiftSaidaSec = timeToShiftRelativeSeconds(shiftSaida, shiftEntrada, isOvernight);
 
       let limiteFim = shiftSaida;
       let limiteFimSec = shiftSaidaSec;
 
       if (isToday) {
         const agoraHoraMin = formatarHoraPtBr(agora);
-        const agoraSec = timeToSecondsOfDay(agoraHoraMin);
+        const agoraSec = timeToShiftRelativeSeconds(agoraHoraMin, shiftEntrada, isOvernight);
         if (agoraSec < shiftSaidaSec) {
           limiteFim = agoraHoraMin;
           limiteFimSec = agoraSec;

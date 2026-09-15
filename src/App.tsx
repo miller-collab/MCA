@@ -79,18 +79,9 @@ function gerarLogsIniciais(): ProductionLog[] {
 export function App() {
   // 1. Core State
   const [collaborators, setCollaborators] = useState<Collaborator[]>(() => {
-    const enforceTurno2SingleOperator = (list: Collaborator[]) => {
-      const turno2 = list.filter((c) => padronizarNomeTurno(c.shift) === 'Turno 2');
-      if (turno2.length > 1 || (turno2.length === 1 && turno2[0].name !== 'CARLOS')) {
-        const others = list.filter((c) => padronizarNomeTurno(c.shift) !== 'Turno 2');
-        return [...others, { id: 'colab-14', name: 'CARLOS', role: 'TORNO CNC', shift: 'Turno 2', active: true }];
-      }
-      return list;
-    };
-
     const recovered = findSavedCollaboratorsInBrowser();
     if (recovered.found && recovered.collaborators.length > 0) {
-      return enforceTurno2SingleOperator(recovered.collaborators);
+      return recovered.collaborators;
     }
     const saved = localStorage.getItem('mca_collaborators_v3');
     if (saved) {
@@ -101,7 +92,7 @@ export function App() {
           parsed.length > 0 &&
           !parsed.some((p: any) => p.name === 'Valter Ribeiro (Líder)' || p.name === 'Carlos Silva' || p.name === 'Marcos Oliveira')
         ) {
-          return enforceTurno2SingleOperator(parsed);
+          return parsed;
         }
       } catch {
         // Use default
