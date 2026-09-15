@@ -446,6 +446,19 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
               className="hidden"
             />
 
+            {/* Botão de Salvar / Baixar Backup */}
+            {onExportBackup && (
+              <button
+                onClick={onExportBackup}
+                className="px-2.5 py-1.5 bg-[#161616] hover:bg-[#1E293B] text-[#94A3B8] hover:text-[#00E676] border border-[#2D2D2D] hover:border-[#00E676]/40 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                title="Salvar / Fazer Download de arquivo de backup JSON com todos os registros de produção"
+              >
+                <Download className="w-3.5 h-3.5 text-[#00E676]" />
+                <span className="hidden sm:inline">Salvar Backup (JSON)</span>
+                <span className="sm:hidden">Salvar</span>
+              </button>
+            )}
+
             {/* Botão de Restaurar Backup JSON */}
             {onRestoreProductionLogs && (
               <button

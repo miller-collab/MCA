@@ -42,6 +42,7 @@ import {
 import {
   findSavedCollaboratorsInBrowser,
   savePermanentLocalBackup,
+  downloadCompleteFactoryBackup,
 } from './utils/recoveryUtils';
 import { centralSync } from './services/centralSync';
 
@@ -146,7 +147,7 @@ export function App() {
       try {
         const parsed: ProductionLog[] = JSON.parse(saved);
         for (const l of parsed) {
-          if (l && l.id && !l.id.startsWith('log-')) {
+          if (l && l.id) {
             logMap.set(l.id, {
               ...l,
               shift: padronizarNomeTurno(l.shift),
@@ -206,7 +207,7 @@ export function App() {
       if (state.logs) {
         const logMap = new Map<string, ProductionLog>();
         for (const l of state.logs) {
-          if (l && l.id && !l.id.startsWith('log-')) {
+          if (l && l.id) {
             logMap.set(l.id, { ...l, shift: padronizarNomeTurno(l.shift) });
           }
         }
@@ -265,14 +266,14 @@ export function App() {
     });
 
     const unsubLogsCentral = centralSync.onLogs((newLogs) => {
-      const realLogs = (newLogs || []).filter((l) => l && l.id && !l.id.startsWith('log-'));
+      const realLogs = (newLogs || []).filter((l) => l && l.id);
       const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
       const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
       setLogs(sanitizedLogs);
     });
 
     const unsubSingleLogCentral = centralSync.onSingleLogChange(({ action, log, id }) => {
-      if (action === 'save' && log && !log.id.startsWith('log-')) {
+      if (action === 'save' && log && log.id) {
         const formattedLog = { ...log, shift: padronizarNomeTurno(log.shift) };
         setLogs((prev) => {
           const idx = prev.findIndex((l) => l.id === formattedLog.id);
@@ -291,19 +292,54 @@ export function App() {
       }
     });
 
-    // 3.3 Optional Firestore listener with graceful error catch
+    // 3.3 Full Firestore real-time listeners for all collections with offline persistence
     let unsubLogsFirestore = () => {};
+    let unsubColabsFirestore = () => {};
+    let unsubShiftsFirestore = () => {};
+    let unsubActsFirestore = () => {};
+    let unsubConfigFirestore = () => {};
+
     try {
       unsubLogsFirestore = subscribeToLogs((cloudLogs) => {
-        const realLogs = (cloudLogs || []).filter((l) => l && l.id && !l.id.startsWith('log-'));
+        const realLogs = (cloudLogs || []).filter((l) => l && l.id);
         if (realLogs.length > 0) {
           const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-          const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
-          setLogs(sanitizedLogs);
+          setLogs((prev) => {
+            const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
+            return sanitizedLogs;
+          });
+        }
+      });
+
+      unsubColabsFirestore = subscribeToCollaborators((cloudColabs) => {
+        if (cloudColabs && cloudColabs.length > 0) {
+          setCollaborators(cloudColabs);
+        }
+      });
+
+      unsubShiftsFirestore = subscribeToShifts((cloudShifts) => {
+        if (cloudShifts && cloudShifts.length > 0) {
+          setShifts(cloudShifts);
+        }
+      });
+
+      unsubActsFirestore = subscribeToActivities((cloudActs) => {
+        if (cloudActs && cloudActs.length > 0) {
+          setActivities(cloudActs);
+        }
+      });
+
+      unsubConfigFirestore = subscribeToFactoryConfig((cloudConfig) => {
+        if (cloudConfig) {
+          if (cloudConfig.toleranceMinutes) setToleranceMinutes(cloudConfig.toleranceMinutes);
+          if (cloudConfig.observations && cloudConfig.observations.length > 0) setObservations(cloudConfig.observations);
+          if (cloudConfig.customRoleColors) setCustomRoleColors(cloudConfig.customRoleColors);
+          if (cloudConfig.efficiencyThresholdGreen !== undefined) setEfficiencyThresholdGreen(cloudConfig.efficiencyThresholdGreen);
+          if (cloudConfig.efficiencyThresholdYellow !== undefined) setEfficiencyThresholdYellow(cloudConfig.efficiencyThresholdYellow);
         }
       });
     } catch (e) {
-      console.warn('Firestore subscription fallback notice:', e);
+      console.warn('Firestore subscription notice:', e);
     }
 
     // 3.4 Seed initial Firestore data in background if needed
@@ -314,20 +350,62 @@ export function App() {
       INITIAL_OBSERVATIONS
     ).catch(() => {});
 
-    // 3.5 Auto re-sync when tab gains focus or goes back online
-    const handleFocusOrOnline = () => {
+    // 3.5 30-Second Automatic Sync Loop (keeps all tablets on identical image and results)
+    const performPeriodicSync = () => {
+      // 1. Sync from Firestore
+      fetchAllDataFromFirestore()
+        .then((cloudData) => {
+          if (!cloudData) return;
+          if (cloudData.collaborators && cloudData.collaborators.length > 0) {
+            setCollaborators(cloudData.collaborators);
+          }
+          if (cloudData.shifts && cloudData.shifts.length > 0) {
+            setShifts(cloudData.shifts);
+          }
+          if (cloudData.activities && cloudData.activities.length > 0) {
+            setActivities(cloudData.activities);
+          }
+          if (cloudData.logs && cloudData.logs.length > 0) {
+            const realLogs = cloudData.logs.filter((l) => l && l.id);
+            const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+            setLogs((prev) => {
+              const { sanitizedLogs } = desduplicarLogsAtivos(
+                formatted,
+                cloudData.collaborators || collaborators,
+                cloudData.shifts || shifts
+              );
+              return sanitizedLogs;
+            });
+          }
+        })
+        .catch(() => {});
+
+      // 2. Sync from Central server
       centralSync.fetchFullSync().then((state) => {
         if (!state) return;
-        if (state.collaborators) setCollaborators(state.collaborators);
-        if (state.shifts) setShifts(state.shifts);
-        if (state.activities) setActivities(state.activities);
-        if (state.logs) {
-          const realLogs = state.logs.filter((l) => l && l.id && !l.id.startsWith('log-'));
+        if (state.collaborators && state.collaborators.length > 0) setCollaborators(state.collaborators);
+        if (state.shifts && state.shifts.length > 0) setShifts(state.shifts);
+        if (state.activities && state.activities.length > 0) setActivities(state.activities);
+        if (state.logs && state.logs.length > 0) {
+          const realLogs = state.logs.filter((l) => l && l.id);
           const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-          const { sanitizedLogs } = desduplicarLogsAtivos(formatted, state.collaborators || collaborators, state.shifts || shifts);
-          setLogs(sanitizedLogs);
+          setLogs((prev) => {
+            const { sanitizedLogs } = desduplicarLogsAtivos(
+              formatted,
+              state.collaborators || collaborators,
+              state.shifts || shifts
+            );
+            return sanitizedLogs;
+          });
         }
-      });
+      }).catch(() => {});
+    };
+
+    const syncInterval = setInterval(performPeriodicSync, 30000);
+
+    // 3.6 Auto re-sync when tab gains focus or goes back online
+    const handleFocusOrOnline = () => {
+      performPeriodicSync();
     };
 
     window.addEventListener('focus', handleFocusOrOnline);
@@ -335,6 +413,7 @@ export function App() {
 
     return () => {
       isMounted = false;
+      clearInterval(syncInterval);
       unsubColabsCentral();
       unsubShiftsCentral();
       unsubActivitiesCentral();
@@ -343,6 +422,10 @@ export function App() {
       unsubSingleLogCentral();
       try {
         unsubLogsFirestore();
+        unsubColabsFirestore();
+        unsubShiftsFirestore();
+        unsubActsFirestore();
+        unsubConfigFirestore();
       } catch {}
       window.removeEventListener('focus', handleFocusOrOnline);
       window.removeEventListener('online', handleFocusOrOnline);
@@ -1156,6 +1239,88 @@ export function App() {
     exportProductionLogsBackupFile(logs, autoCloseNotifs);
   }, [logs, autoCloseNotifs]);
 
+  const handleExportFullBackup = useCallback(() => {
+    downloadCompleteFactoryBackup(
+      collaborators,
+      activities,
+      shifts,
+      logs,
+      {
+        toleranceMinutes,
+        observations,
+        customRoleColors,
+        efficiencyThresholdGreen,
+        efficiencyThresholdYellow,
+      },
+      autoCloseNotifs
+    );
+  }, [
+    collaborators,
+    activities,
+    shifts,
+    logs,
+    toleranceMinutes,
+    observations,
+    customRoleColors,
+    efficiencyThresholdGreen,
+    efficiencyThresholdYellow,
+    autoCloseNotifs,
+  ]);
+
+  const handleRestoreFullBackup = useCallback(
+    async (payload: any): Promise<boolean> => {
+      try {
+        if (!payload || typeof payload !== 'object') return false;
+
+        // 1. Envia para o servidor Cloud Run central para persistir e distribuir SSE para todos os tablets
+        const serverOk = await centralSync.restoreFullBackup(payload);
+
+        // 2. Atualiza estados locais do React
+        if (Array.isArray(payload.collaborators) && payload.collaborators.length > 0) {
+          setCollaborators(payload.collaborators);
+          saveCollaboratorsToFirestore(payload.collaborators).catch(() => {});
+        }
+        if (Array.isArray(payload.shifts) && payload.shifts.length > 0) {
+          setShifts(payload.shifts);
+          saveShiftsToFirestore(payload.shifts).catch(() => {});
+        }
+        if (Array.isArray(payload.activities) && payload.activities.length > 0) {
+          setActivities(payload.activities);
+          saveActivitiesToFirestore(payload.activities).catch(() => {});
+        }
+        if (Array.isArray(payload.logs)) {
+          setLogs(payload.logs);
+          restoreProductionLogsToFirestore(payload.logs, payload.autocloseNotifs || []).catch(() => {});
+        }
+        if (Array.isArray(payload.autocloseNotifs)) {
+          setAutoCloseNotifs(payload.autocloseNotifs);
+        }
+        if (payload.factoryConfig) {
+          const cfg = payload.factoryConfig;
+          if (cfg.toleranceMinutes) setToleranceMinutes(cfg.toleranceMinutes);
+          if (cfg.observations) setObservations(cfg.observations);
+          if (cfg.customRoleColors) setCustomRoleColors(cfg.customRoleColors);
+          if (cfg.efficiencyThresholdGreen !== undefined) setEfficiencyThresholdGreen(cfg.efficiencyThresholdGreen);
+          if (cfg.efficiencyThresholdYellow !== undefined) setEfficiencyThresholdYellow(cfg.efficiencyThresholdYellow);
+          saveFactoryConfigToFirestore(cfg).catch(() => {});
+        }
+
+        savePermanentLocalBackup(
+          payload.collaborators || collaborators,
+          payload.activities || activities,
+          payload.shifts || shifts,
+          payload.logs || logs
+        );
+
+        return true;
+      } catch (err) {
+        console.error('Erro ao restaurar backup completo:', err);
+        return false;
+      }
+    },
+    [collaborators, activities, shifts, logs]
+  );
+
   const activeCount = new Set(
     logs.filter((l) => l.status === 'Em Execução').map((l) => l.collaboratorName.trim().toLowerCase())
   ).size;
@@ -1171,6 +1336,8 @@ export function App() {
         activeCount={activeCount}
         onOpenNewActivity={() => setActiveTab('painel')}
         onQuickShiftAccess={() => setActiveTab('turnos')}
+        onExportFullBackup={handleExportFullBackup}
+        onRestoreFullBackup={handleRestoreFullBackup}
       />
 
       {/* Main Tabs Navigation */}

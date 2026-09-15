@@ -242,6 +242,20 @@ class CentralSyncService {
     }
   }
 
+  async restoreFullBackup(fullBackupPayload: any): Promise<boolean> {
+    try {
+      const res = await fetch('/api/restore-full-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(fullBackupPayload),
+      });
+      return res.ok;
+    } catch (err) {
+      console.warn('Failed to restore full backup on Cloud Run:', err);
+      return false;
+    }
+  }
+
   async saveAutoCloseNotif(notif: any): Promise<void> {
     try {
       await fetch('/api/autoclose-notif', {

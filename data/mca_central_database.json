@@ -796,7 +796,19 @@
     ],
     "customRoleColors": {}
   },
-  "logs": [],
+  "logs": [
+    {
+      "id": "test-real-log-1",
+      "date": "14/09/2026",
+      "collaboratorName": "GERALDO",
+      "role": "PREPARADOR TORNO AUTOMATICO",
+      "shift": "Turno 1",
+      "activity": "LIMPEZA DO CAVACO",
+      "category": "5S & Limpeza",
+      "startTime": "08:00:00",
+      "status": "Em Execução"
+    }
+  ],
   "autocloseNotifs": [],
-  "lastUpdated": "2026-09-15T01:00:22.967Z"
+  "lastUpdated": "2026-09-15T09:15:00.000Z"
 }

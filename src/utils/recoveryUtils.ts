@@ -109,13 +109,13 @@ export function savePermanentLocalBackup(
       localStorage.setItem('mca_shifts_permanent_backup', JSON.stringify(shifts));
     }
     if (logs !== undefined) {
-      const cleanLogs = logs.filter((l) => l && l.id && !l.id.startsWith('log-'));
+      const cleanLogs = logs.filter((l) => l && l.id);
       localStorage.setItem('mca_logs_v3', JSON.stringify(cleanLogs));
       localStorage.setItem('mca_logs_backup_permanent', JSON.stringify(cleanLogs));
     }
 
     // Full bundle backup
-    const cleanLogs = (logs || []).filter((l) => l && l.id && !l.id.startsWith('log-'));
+    const cleanLogs = (logs || []).filter((l) => l && l.id);
     const fullBackup = {
       version: '3.0',
       timestamp: new Date().toISOString(),
@@ -137,7 +137,9 @@ export function downloadCompleteFactoryBackup(
   collaborators: Collaborator[],
   activities: ActivityItem[],
   shifts: ShiftConfig[],
-  logs: ProductionLog[]
+  logs: ProductionLog[],
+  factoryConfig?: any,
+  autocloseNotifs?: any[]
 ) {
   const payload = {
     app: 'MCA - Controle de Atividades e MES Industrial',
@@ -145,13 +147,20 @@ export function downloadCompleteFactoryBackup(
     collaborators,
     activities,
     shifts,
+    factoryConfig: factoryConfig || {
+      toleranceMinutes: 60,
+      efficiencyThresholdGreen: 85,
+      efficiencyThresholdYellow: 70,
+    },
     logs,
+    autocloseNotifs: autocloseNotifs || [],
   };
 
   const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(payload, null, 2));
   const downloadAnchor = document.createElement('a');
   downloadAnchor.setAttribute('href', dataStr);
-  downloadAnchor.setAttribute('download', `mca_backup_completo_${new Date().toISOString().slice(0, 10)}.json`);
+  const dateStr = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  downloadAnchor.setAttribute('download', `mca_backup_completo_${dateStr}.json`);
   document.body.appendChild(downloadAnchor);
   downloadAnchor.click();
   downloadAnchor.remove();

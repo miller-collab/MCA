@@ -81,6 +81,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   >('painel');
   const [isQuickManageOpen, setIsQuickManageOpen] = useState(false);
   const [restoreFeedback, setRestoreFeedback] = useState<string | null>(null);
+  const [busyColabAction, setBusyColabAction] = useState<{ colab: Collaborator; log: ProductionLog } | null>(null);
   
   // Selection state
   const [selectedColab, setSelectedColab] = useState<Collaborator | null>(null);
@@ -200,39 +201,47 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return isTurnoAtivoNoMomento(colabShiftFilter, shifts, new Date());
   }, [colabShiftFilter, shifts, secondsTick]);
 
-  // Filtered available collaborators by search, active shift hours and shift tabs
+  // Filtered available collaborators by search, active shift hours and shift tabs (includes active task status)
   const filteredAvailableColabs = useMemo(() => {
-    return allFreeCollaborators.filter(c => {
-      const matchSearch = 
-        c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
-        c.role.toLowerCase().includes(colabSearch.toLowerCase());
-      if (!matchSearch) return false;
+    return collaborators
+      .filter((c) => c.active)
+      .map((c) => {
+        const activeLog = allActiveLogs.find(
+          (l) => l.collaboratorName.trim().toLowerCase() === c.name.trim().toLowerCase()
+        );
+        return {
+          ...c,
+          activeLog,
+        };
+      })
+      .filter((c) => {
+        const matchSearch =
+          c.name.toLowerCase().includes(colabSearch.toLowerCase()) ||
+          c.role.toLowerCase().includes(colabSearch.toLowerCase());
+        if (!matchSearch) return false;
 
-      const colabShiftNorm = padronizarNomeTurno(c.shift);
-      const isColabInActiveShift = currentActiveShiftNames.includes(colabShiftNorm);
+        const colabShiftNorm = padronizarNomeTurno(c.shift);
+        const isColabInActiveShift = currentActiveShiftNames.includes(colabShiftNorm);
 
-      if (colabShiftFilter === 'TURNO_ATUAL') {
-        // No turno atual, APENAS exibe colaboradores cujo turno está ativo no momento
-        return isColabInActiveShift;
-      }
+        if (colabShiftFilter === 'TURNO_ATUAL') {
+          return isColabInActiveShift;
+        }
 
-      if (colabShiftFilter !== 'TODOS') {
-        const matchesShift = colabShiftNorm === padronizarNomeTurno(colabShiftFilter);
-        if (!matchesShift) return false;
-        // Se o turno não está ativo agora e não habilitou exceção, não exibe
-        if (!isSelectedTabShiftActive && !allowOffShiftStart) {
-          return false;
+        if (colabShiftFilter !== 'TODOS') {
+          const matchesShift = colabShiftNorm === padronizarNomeTurno(colabShiftFilter);
+          if (!matchesShift) return false;
+          if (!isSelectedTabShiftActive && !allowOffShiftStart) {
+            return false;
+          }
+          return true;
+        }
+
+        if (!allowOffShiftStart) {
+          return isColabInActiveShift;
         }
         return true;
-      }
-
-      // Se colabShiftFilter === 'TODOS'
-      if (!allowOffShiftStart) {
-        return isColabInActiveShift;
-      }
-      return true;
-    });
-  }, [allFreeCollaborators, colabSearch, colabShiftFilter, currentActiveShiftNames, isSelectedTabShiftActive, allowOffShiftStart]);
+      });
+  }, [collaborators, allActiveLogs, colabSearch, colabShiftFilter, currentActiveShiftNames, isSelectedTabShiftActive, allowOffShiftStart]);
 
   // Unread operator notifications (strictly deduplicated by logId to prevent duplicate cards)
   const unreadOperatorNotifs = useMemo(() => {
@@ -362,6 +371,26 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       startDescription.trim()
     );
     setCurrentScreen('painel');
+  };
+
+  const handleInitiateChangeoverDirectly = (log: ProductionLog) => {
+    const initTime = formatarHoraPtBr(new Date());
+    setLogToFinish(log);
+    setFinishObs(log.observation || '');
+    setFinishNotes(log.notes || log.initialDescription || '');
+    setPartsProduced('');
+    setScrapCount('');
+    setChangeoverInitiatedTime(initTime);
+    const colab = collaborators.find(
+      c => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+    );
+    if (colab) {
+      setSelectedColab(colab);
+      setChangeoverActivity(null);
+      setChangeoverDescription('');
+      setChangeoverDescError(false);
+      setCurrentScreen('changeover');
+    }
   };
 
   const handleCardClick = (log: ProductionLog) => {
@@ -730,7 +759,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                   ? 'Nenhum colaborador encontrado com este filtro.'
                   : !isSelectedTabShiftActive && selectedTabShiftConfig
                   ? `O ${colabShiftFilter} (${selectedTabShiftConfig.entrada} - ${selectedTabShiftConfig.saida}) ainda não iniciou. Colaboradores estarão disponíveis a partir das ${selectedTabShiftConfig.entrada}.`
-                  : `Todos os colaboradores do ${colabShiftFilter === 'TURNO_ATUAL' ? currentActiveShiftName : colabShiftFilter} já estão com atividades em andamento.`}
+                  : `Nenhum colaborador disponível neste filtro.`}
               </p>
               {!isSelectedTabShiftActive && selectedTabShiftConfig && !allowOffShiftStart && (
                 <div>
@@ -758,28 +787,56 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 const isShiftInactive = assignedShift && (!assignedShift.dias || assignedShift.dias.length === 0);
                 const isOutOfCurrentShift = !currentActiveShiftNames.includes(padronizarNomeTurno(colab.shift));
                 const hasRecentAutoClose = autoCloseNotifs.some(n => n.collaboratorName === colab.name && !n.readByOperator);
+                const isBusy = !!colab.activeLog;
 
                 return (
                   <button
                     key={colab.id}
-                    onClick={() => handleSelectColab(colab)}
-                    className={`p-3.5 sm:p-4 bg-[#1C1C1C] hover:bg-[#282828] active:bg-[#333333] text-white rounded-xl text-left transition-all border cursor-pointer flex flex-col justify-between relative shadow-md hover:scale-[1.01] active:scale-[0.98] min-h-[100px] ${
-                      hasRecentAutoClose ? 'border-[#FF9800] bg-[#2A2000]' : isOutOfCurrentShift ? 'border-[#FF8C00]/40 bg-[#1F1A12]' : 'border-[#333333]'
+                    onClick={() => {
+                      if (colab.activeLog) {
+                        setBusyColabAction({ colab, log: colab.activeLog });
+                      } else {
+                        handleSelectColab(colab);
+                      }
+                    }}
+                    className={`p-3.5 sm:p-4 bg-[#1C1C1C] hover:bg-[#282828] active:bg-[#333333] text-white rounded-xl text-left transition-all border cursor-pointer flex flex-col justify-between relative shadow-md hover:scale-[1.01] active:scale-[0.98] min-h-[110px] ${
+                      isBusy
+                        ? 'border-[#00E676]/60 bg-[#16221A]'
+                        : hasRecentAutoClose
+                        ? 'border-[#FF9800] bg-[#2A2000]'
+                        : isOutOfCurrentShift
+                        ? 'border-[#FF8C00]/40 bg-[#1F1A12]'
+                        : 'border-[#333333]'
                     }`}
                     style={{ borderTop: `5px solid ${corFuncao}` }}
                   >
-                    {hasRecentAutoClose && (
+                    {isBusy ? (
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 bg-[#00E676] text-black text-[9px] font-black rounded flex items-center gap-1 shadow-xs">
+                        <span className="w-1.5 h-1.5 rounded-full bg-black animate-pulse" />
+                        Em Atividade
+                      </span>
+                    ) : hasRecentAutoClose ? (
                       <span className="absolute top-2 right-2 px-1.5 py-0.5 bg-[#FF9800] text-black text-[9px] font-black rounded" title="Possui aviso de encerramento automático">
                         Aviso
                       </span>
+                    ) : (
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 bg-[#2A2A2A] text-[#888888] text-[9px] font-bold rounded">
+                        Livre
+                      </span>
                     )}
                     <div>
-                      <div className="font-black text-sm sm:text-base text-white truncate w-full" title={colab.name}>
+                      <div className="font-black text-sm sm:text-base text-white truncate w-full pr-16" title={colab.name}>
                         {colab.name}
                       </div>
-                      <div className="text-xs text-[#AAAAAA] truncate mt-1 font-medium" title={colab.role}>
+                      <div className="text-xs text-[#AAAAAA] truncate mt-0.5 font-medium" title={colab.role}>
                         {colab.role}
                       </div>
+                      {isBusy && colab.activeLog && (
+                        <div className="text-[11px] text-[#00E676] truncate font-bold mt-1.5 flex items-center gap-1 bg-black/40 px-2 py-0.5 rounded">
+                          <Play className="w-3 h-3 text-[#00E676] shrink-0" />
+                          <span className="truncate">{colab.activeLog.activity}</span>
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center justify-between text-[11px] font-mono mt-2 w-full gap-1 pt-1 border-t border-[#262626]">
                       <span className="text-[#007BFF] font-bold truncate">
@@ -798,6 +855,93 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* Modal de Ação quando Operador Já Possui Atividade Ativa */}
+          {busyColabAction && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+              <div className="bg-[#181818] border border-[#333333] rounded-2xl w-full max-w-md p-5 shadow-2xl space-y-4">
+                <div className="flex items-center justify-between border-b border-[#2A2A2A] pb-3">
+                  <div>
+                    <h3 className="text-base font-black text-white flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#00E676] animate-pulse" />
+                      {busyColabAction.colab.name} Já Está em Atividade
+                    </h3>
+                    <p className="text-xs text-[#888888] mt-0.5">
+                      {busyColabAction.colab.role} • {padronizarNomeTurno(busyColabAction.colab.shift)}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setBusyColabAction(null)}
+                    className="p-1 rounded-lg text-[#888888] hover:text-white hover:bg-[#252525] transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="p-3 bg-[#111111] border border-[#2D2D2D] rounded-xl space-y-1">
+                  <div className="text-[11px] text-[#888888] uppercase tracking-wider font-bold">
+                    Operação em Execução Agora:
+                  </div>
+                  <div className="text-sm font-black text-[#00E676] flex items-center gap-1.5">
+                    <Play className="w-4 h-4 text-[#00E676] shrink-0" />
+                    <span>{busyColabAction.log.activity}</span>
+                  </div>
+                  <div className="text-xs text-[#CCCCCC] font-mono">
+                    Iniciado às: <strong>{busyColabAction.log.startTime}</strong>
+                  </div>
+                </div>
+
+                <p className="text-xs text-[#AAAAAA] leading-relaxed">
+                  O que você deseja fazer para <strong>{busyColabAction.colab.name}</strong>?
+                </p>
+
+                <div className="space-y-2 pt-1">
+                  {/* Opção 1: Trocar Atividade (Changeover) */}
+                  <button
+                    onClick={() => {
+                      const log = busyColabAction.log;
+                      setBusyColabAction(null);
+                      handleInitiateChangeoverDirectly(log);
+                    }}
+                    className="w-full py-3 px-4 bg-[#007BFF] hover:bg-[#0069D9] active:bg-[#0056B3] text-white font-black text-sm rounded-xl transition flex items-center justify-between cursor-pointer shadow-md"
+                  >
+                    <div className="flex items-center gap-2">
+                      <RotateCcw className="w-4 h-4" />
+                      <span>Trocar Atividade (Changeover Rápido)</span>
+                    </div>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  {/* Opção 2: Finalizar Atividade Atual */}
+                  <button
+                    onClick={() => {
+                      const log = busyColabAction.log;
+                      setBusyColabAction(null);
+                      handleCardClick(log);
+                    }}
+                    className="w-full py-3 px-4 bg-[#222222] hover:bg-[#2D2D2D] active:bg-[#333333] text-[#00E676] border border-[#00E676]/40 font-bold text-sm rounded-xl transition flex items-center justify-between cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-[#00E676]" />
+                      <span>Finalizar Atividade Atual</span>
+                    </div>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+
+                  {/* Opção 3: Ver Cartão no Painel */}
+                  <button
+                    onClick={() => {
+                      setBusyColabAction(null);
+                      setCurrentScreen('painel');
+                    }}
+                    className="w-full py-2.5 px-4 bg-[#1E1E1E] hover:bg-[#282828] text-[#CCCCCC] text-xs font-bold rounded-xl transition cursor-pointer"
+                  >
+                    Ver Cartão no Painel Principal
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

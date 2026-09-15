@@ -187,9 +187,9 @@ function loadOrInitDatabase(): CentralDatabase {
           });
         }
 
-        // Clean out any synthetic/mock logs starting with 'log-' that were auto-generated
+        // Keep all genuine production logs (filter out undefined or null entries)
         if (Array.isArray(parsed.logs)) {
-          parsed.logs = parsed.logs.filter((l: any) => l && l.id && !l.id.startsWith('log-'));
+          parsed.logs = parsed.logs.filter((l: any) => l && l.id);
         } else {
           parsed.logs = [];
         }
@@ -518,6 +518,58 @@ async function startServer() {
       }
       return res.json({ success: true });
     } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 11. Restore complete factory database (collaborators, shifts, activities, config, logs)
+  app.post('/api/restore-full-backup', (req, res) => {
+    try {
+      const data = req.body;
+      if (!data || typeof data !== 'object') {
+        return res.status(400).json({ error: 'Payload de backup inválido' });
+      }
+
+      createBackupSnapshot(centralDb); // Salva snapshot antes de restaurar
+
+      if (Array.isArray(data.collaborators) && data.collaborators.length > 0) {
+        centralDb.collaborators = data.collaborators;
+        broadcastToClients('collaborators_updated', centralDb.collaborators);
+      }
+      if (Array.isArray(data.shifts) && data.shifts.length > 0) {
+        centralDb.shifts = data.shifts;
+        broadcastToClients('shifts_updated', centralDb.shifts);
+      }
+      if (Array.isArray(data.activities) && data.activities.length > 0) {
+        centralDb.activities = data.activities;
+        broadcastToClients('activities_updated', centralDb.activities);
+      }
+      if (data.factoryConfig && typeof data.factoryConfig === 'object') {
+        centralDb.factoryConfig = { ...centralDb.factoryConfig, ...data.factoryConfig };
+        broadcastToClients('config_updated', centralDb.factoryConfig);
+      }
+      if (Array.isArray(data.logs)) {
+        centralDb.logs = data.logs;
+        broadcastToClients('logs_restored', centralDb.logs);
+      }
+      if (Array.isArray(data.autocloseNotifs)) {
+        centralDb.autocloseNotifs = data.autocloseNotifs;
+      }
+
+      saveDatabaseToDisk(centralDb);
+      appendAuditLog('RESTORE_FULL_BACKUP', {
+        logsCount: centralDb.logs.length,
+        colabsCount: centralDb.collaborators.length,
+        shiftsCount: centralDb.shifts.length,
+      });
+
+      return res.json({
+        success: true,
+        message: 'Backup completo restaurado com sucesso no servidor e sincronizado com todos os tablets!',
+        data: centralDb,
+      });
+    } catch (err: any) {
+      console.error('Error in /api/restore-full-backup:', err);
       return res.status(500).json({ error: err.message });
     }
   });
