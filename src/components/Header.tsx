@@ -31,6 +31,9 @@ interface HeaderProps {
   onQuickShiftAccess: () => void;
   onExportFullBackup?: () => void;
   onRestoreFullBackup?: (payload: any) => Promise<boolean>;
+  lastJsonSyncTime?: string;
+  onForceSync?: () => void;
+  isSyncing?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -42,6 +45,9 @@ export const Header: React.FC<HeaderProps> = ({
   onQuickShiftAccess,
   onExportFullBackup,
   onRestoreFullBackup,
+  lastJsonSyncTime,
+  onForceSync,
+  isSyncing = false,
 }) => {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -130,17 +136,32 @@ export const Header: React.FC<HeaderProps> = ({
               <Activity className="w-4 h-4 text-white" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="font-black text-sm sm:text-base tracking-wider text-white">
                   MCA <span className="font-normal text-[#888888]">| CONTROLE DE ATIVIDADES</span>
                 </h1>
-                <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 bg-[#00E676]/20 border border-[#00E676]/30 rounded text-[10px] font-bold text-[#00E676]">
+                <span className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#00E676]/20 border border-[#00E676]/30 rounded text-[9px] font-bold text-[#00E676]">
                   <span className="w-1.5 h-1.5 bg-[#00E676] rounded-full animate-pulse"></span>
                   NUVEM ATIVA
                 </span>
+                {/* Discrete JSON Synchronization Indicator requested in Photo 1 */}
+                <button
+                  type="button"
+                  onClick={onForceSync}
+                  disabled={isSyncing}
+                  className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-[#1A2333] hover:bg-[#203047] border border-[#007BFF]/40 rounded text-[10px] font-mono text-[#93C5FD] transition cursor-pointer active:scale-95 shadow-sm"
+                  title="Horário do snapshot JSON mestre sincronizado no Firebase e tablets (Loop a cada 30s). Clique para forçar sincronização imediata."
+                >
+                  <Database className={`w-3 h-3 text-[#007BFF] ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span className="font-bold text-[#CCCCCC]">JSON:</span>
+                  <span className="font-semibold text-[#00E676] tracking-wider font-mono">
+                    {lastJsonSyncTime || formatarHoraPtBr(currentTime)}
+                  </span>
+                  <span className="w-1.5 h-1.5 bg-[#00E676] rounded-full animate-pulse"></span>
+                </button>
               </div>
-              <p className="text-[11px] text-[#888888] font-normal hidden sm:block">
-                Sistema MES Industrial • Sincronização Multi-Tablet em Tempo Real
+              <p className="text-[10.5px] text-[#888888] font-normal hidden md:block">
+                Sistema MES Industrial • Sincronização Multi-Tablet em Tempo Real (Firebase & Servidor)
               </p>
             </div>
           </div>

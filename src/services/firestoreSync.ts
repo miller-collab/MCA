@@ -736,9 +736,138 @@ export function exportProductionLogsBackupFile(
   return { fileName, totalLogs: logs.length };
 }
 
-/**
- * Seed initial dataset to Firestore or upgrade legacy mock records with the real 14 operators
- */
+export async function saveMasterJsonSnapshotToFirestore(snapshot: {
+  collaborators: Collaborator[];
+  shifts: ShiftConfig[];
+  activities: ActivityItem[];
+  logs: ProductionLog[];
+  factoryConfig?: Partial<FactoryConfigState>;
+  autocloseNotifs?: AutoCloseNotification[];
+  lastUpdated?: string;
+  formattedSyncTime?: string;
+}): Promise<boolean> {
+  const now = new Date();
+  const formattedTime = snapshot.formattedSyncTime || formatarHoraPtBr(now);
+  const isoTime = snapshot.lastUpdated || now.toISOString();
+
+  const fullPayload = {
+    app: 'MCA - Controle de Atividades e MES Industrial',
+    lastUpdated: isoTime,
+    formattedSyncTime: formattedTime,
+    timestampMs: now.getTime(),
+    collaborators: snapshot.collaborators || [],
+    shifts: snapshot.shifts || [],
+    activities: snapshot.activities || [],
+    logs: (snapshot.logs || []).filter((l) => l && l.id),
+    factoryConfig: snapshot.factoryConfig || {
+      toleranceMinutes: 60,
+      efficiencyThresholdGreen: 85,
+      efficiencyThresholdYellow: 70,
+    },
+    autocloseNotifs: snapshot.autocloseNotifs || [],
+  };
+
+  // 1. Sync with Cloud Run server
+  centralSync.restoreFullBackup(fullPayload).catch(() => {});
+
+  // 2. Persist directly into Firestore master JSON document
+  try {
+    const masterDocRef = doc(db, 'factory_master_state', 'current_json_snapshot');
+    const sanitized = sanitizeForFirestore(fullPayload);
+    await setDoc(masterDocRef, sanitized, { merge: true });
+
+    // Also write a secondary backup document for audit trail
+    const secondaryDocRef = doc(db, 'system_snapshots', 'master_json');
+    await setDoc(secondaryDocRef, sanitized, { merge: true });
+    return true;
+  } catch (err) {
+    console.warn('Firestore master JSON snapshot save warning:', err);
+    return false;
+  }
+}
+
+export function subscribeToMasterJsonSnapshot(
+  onUpdate: (snapshot: {
+    collaborators?: Collaborator[];
+    shifts?: ShiftConfig[];
+    activities?: ActivityItem[];
+    logs?: ProductionLog[];
+    factoryConfig?: FactoryConfigState;
+    autocloseNotifs?: AutoCloseNotification[];
+    lastUpdated?: string;
+    formattedSyncTime?: string;
+    timestampMs?: number;
+  }) => void
+) {
+  try {
+    const masterDocRef = doc(db, 'factory_master_state', 'current_json_snapshot');
+    return onSnapshot(masterDocRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data && typeof data === 'object') {
+          onUpdate({
+            collaborators: Array.isArray(data.collaborators) ? data.collaborators : undefined,
+            shifts: Array.isArray(data.shifts) ? data.shifts : undefined,
+            activities: Array.isArray(data.activities) ? data.activities : undefined,
+            logs: Array.isArray(data.logs) ? data.logs.filter((l: any) => l && l.id) : undefined,
+            factoryConfig: data.factoryConfig,
+            autocloseNotifs: Array.isArray(data.autocloseNotifs) ? data.autocloseNotifs : undefined,
+            lastUpdated: data.lastUpdated,
+            formattedSyncTime: data.formattedSyncTime,
+            timestampMs: data.timestampMs,
+          });
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('Failed to subscribe to master JSON snapshot:', err);
+    return () => {};
+  }
+}
+
+export async function fetchMasterJsonSnapshotFromFirestore(): Promise<{
+  collaborators?: Collaborator[];
+  shifts?: ShiftConfig[];
+  activities?: ActivityItem[];
+  logs?: ProductionLog[];
+  factoryConfig?: FactoryConfigState;
+  autocloseNotifs?: AutoCloseNotification[];
+  lastUpdated?: string;
+  formattedSyncTime?: string;
+  timestampMs?: number;
+} | null> {
+  try {
+    const masterDocRef = doc(db, 'factory_master_state', 'current_json_snapshot');
+    const snap = await getDocs(collection(db, 'factory_master_state'));
+    if (!snap.empty) {
+      const docData = snap.docs.find(d => d.id === 'current_json_snapshot')?.data() || snap.docs[0].data();
+      if (docData) {
+        return {
+          collaborators: Array.isArray(docData.collaborators) ? docData.collaborators : undefined,
+          shifts: Array.isArray(docData.shifts) ? docData.shifts : undefined,
+          activities: Array.isArray(docData.activities) ? docData.activities : undefined,
+          logs: Array.isArray(docData.logs) ? docData.logs.filter((l: any) => l && l.id) : undefined,
+          factoryConfig: docData.factoryConfig,
+          autocloseNotifs: Array.isArray(docData.autocloseNotifs) ? docData.autocloseNotifs : undefined,
+          lastUpdated: docData.lastUpdated,
+          formattedSyncTime: docData.formattedSyncTime,
+          timestampMs: docData.timestampMs,
+        };
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn('Failed to fetch master JSON snapshot from Firestore:', err);
+    return null;
+  }
+}
+
+function formatarHoraPtBr(date: Date): string {
+  const h = String(date.getHours()).padStart(2, '0');
+  const m = String(date.getMinutes()).padStart(2, '0');
+  const s = String(date.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
 export async function seedInitialFirestoreDataIfEmpty(
   initialCollaborators: Collaborator[],
   initialActivities: ActivityItem[],

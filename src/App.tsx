@@ -67,6 +67,9 @@ import {
   resetProductionLogsInFirestore,
   restoreProductionLogsToFirestore,
   exportProductionLogsBackupFile,
+  saveMasterJsonSnapshotToFirestore,
+  subscribeToMasterJsonSnapshot,
+  fetchMasterJsonSnapshotFromFirestore,
 } from './services/firestoreSync';
 
 export type TabKey = 'painel' | 'eficiencia' | 'grafico-diario' | 'historico' | 'indicadores' | 'turnos';
@@ -178,12 +181,103 @@ export function App() {
   });
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [drilldownFilter, setDrilldownFilter] = useState('');
+  const [lastJsonSyncTime, setLastJsonSyncTime] = useState<string>(() => formatarHoraPtBr(new Date()));
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // Helper to persist master JSON snapshot to Firestore & Server on every change
+  const triggerMasterJsonSave = useCallback(
+    (
+      currentColabs: Collaborator[],
+      currentShifts: ShiftConfig[],
+      currentActs: ActivityItem[],
+      currentLogs: ProductionLog[],
+      currentNotifs: AutoCloseNotification[],
+      cfg?: any
+    ) => {
+      const now = new Date();
+      const timeStr = formatarHoraPtBr(now);
+      setLastJsonSyncTime(timeStr);
+      saveMasterJsonSnapshotToFirestore({
+        collaborators: currentColabs,
+        shifts: currentShifts,
+        activities: currentActs,
+        logs: currentLogs,
+        autocloseNotifs: currentNotifs,
+        factoryConfig: cfg || {
+          toleranceMinutes,
+          observations,
+          customRoleColors,
+          efficiencyThresholdGreen,
+          efficiencyThresholdYellow,
+        },
+        formattedSyncTime: timeStr,
+        lastUpdated: now.toISOString(),
+      }).catch(() => {});
+    },
+    [toleranceMinutes, observations, customRoleColors, efficiencyThresholdGreen, efficiencyThresholdYellow]
+  );
 
   // 3. Central Cloud Run + Firestore Real-Time Synchronization
   useEffect(() => {
     let isMounted = true;
 
-    // 3.1 Initial Full Sync directly from Cloud Run Central Database
+    // Master JSON apply helper
+    const applyMasterSnapshotData = (data: {
+      collaborators?: Collaborator[];
+      shifts?: ShiftConfig[];
+      activities?: ActivityItem[];
+      logs?: ProductionLog[];
+      factoryConfig?: any;
+      autocloseNotifs?: AutoCloseNotification[];
+      formattedSyncTime?: string;
+    }) => {
+      if (!isMounted || !data) return;
+      if (data.collaborators && data.collaborators.length > 0) {
+        setCollaborators(data.collaborators);
+      }
+      if (data.shifts && data.shifts.length > 0) {
+        setShifts(data.shifts);
+      }
+      if (data.activities && data.activities.length > 0) {
+        setActivities(data.activities);
+      }
+      if (data.logs && Array.isArray(data.logs)) {
+        const cleanLogs = data.logs.filter((l) => l && l.id);
+        const formatted = cleanLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+        setLogs((prev) => {
+          const { sanitizedLogs } = desduplicarLogsAtivos(
+            formatted,
+            data.collaborators || collaborators,
+            data.shifts || shifts
+          );
+          return sanitizedLogs;
+        });
+      }
+      if (data.autocloseNotifs && Array.isArray(data.autocloseNotifs)) {
+        setAutoCloseNotifs(data.autocloseNotifs);
+      }
+      if (data.factoryConfig) {
+        const cfg = data.factoryConfig;
+        if (cfg.toleranceMinutes) setToleranceMinutes(cfg.toleranceMinutes);
+        if (cfg.observations && cfg.observations.length > 0) setObservations(cfg.observations);
+        if (cfg.customRoleColors) setCustomRoleColors(cfg.customRoleColors);
+        if (cfg.efficiencyThresholdGreen !== undefined) setEfficiencyThresholdGreen(cfg.efficiencyThresholdGreen);
+        if (cfg.efficiencyThresholdYellow !== undefined) setEfficiencyThresholdYellow(cfg.efficiencyThresholdYellow);
+      }
+      if (data.formattedSyncTime) {
+        setLastJsonSyncTime(data.formattedSyncTime);
+      } else {
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
+      }
+    };
+
+    // 3.1 Initial Full Sync directly from Firestore Master JSON & Cloud Run Central Database
+    fetchMasterJsonSnapshotFromFirestore().then((masterSnap) => {
+      if (masterSnap) {
+        applyMasterSnapshotData(masterSnap);
+      }
+    }).catch(() => {});
+
     centralSync.fetchFullSync().then((state) => {
       if (!isMounted || !state) return;
       if (state.collaborators && state.collaborators.length > 0) {
@@ -225,24 +319,28 @@ export function App() {
           setEfficiencyThresholdYellow(state.factoryConfig.efficiencyThresholdYellow);
         }
       }
+      setLastJsonSyncTime(formatarHoraPtBr(new Date()));
     });
 
     // 3.2 Real-time push subscriptions from Cloud Run SSE
     const unsubColabsCentral = centralSync.onCollaborators((newColabs) => {
       if (newColabs && newColabs.length > 0) {
         setCollaborators(newColabs);
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       }
     });
 
     const unsubShiftsCentral = centralSync.onShifts((newShifts) => {
       if (newShifts && newShifts.length > 0) {
         setShifts(newShifts);
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       }
     });
 
     const unsubActivitiesCentral = centralSync.onActivities((newActs) => {
       if (newActs && newActs.length > 0) {
         setActivities(newActs);
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       }
     });
 
@@ -253,6 +351,7 @@ export function App() {
         if (cfg.customRoleColors) setCustomRoleColors(cfg.customRoleColors);
         if (cfg.efficiencyThresholdGreen !== undefined) setEfficiencyThresholdGreen(cfg.efficiencyThresholdGreen);
         if (cfg.efficiencyThresholdYellow !== undefined) setEfficiencyThresholdYellow(cfg.efficiencyThresholdYellow);
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       }
     });
 
@@ -261,6 +360,7 @@ export function App() {
       const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
       const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
       setLogs(sanitizedLogs);
+      setLastJsonSyncTime(formatarHoraPtBr(new Date()));
     });
 
     const unsubSingleLogCentral = centralSync.onSingleLogChange(({ action, log, id }) => {
@@ -278,12 +378,15 @@ export function App() {
           const { sanitizedLogs } = desduplicarLogsAtivos(updated, collaborators, shifts);
           return sanitizedLogs;
         });
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       } else if (action === 'delete' && id) {
         setLogs((prev) => prev.filter((l) => l.id !== id));
+        setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       }
     });
 
-    // 3.3 Full Firestore real-time listeners for all collections with offline persistence
+    // 3.3 Real-time Firestore master JSON subscription and individual listeners
+    let unsubMasterJsonFirestore = () => {};
     let unsubLogsFirestore = () => {};
     let unsubColabsFirestore = () => {};
     let unsubShiftsFirestore = () => {};
@@ -291,6 +394,10 @@ export function App() {
     let unsubConfigFirestore = () => {};
 
     try {
+      unsubMasterJsonFirestore = subscribeToMasterJsonSnapshot((masterSnap) => {
+        applyMasterSnapshotData(masterSnap);
+      });
+
       unsubLogsFirestore = subscribeToLogs((cloudLogs) => {
         const realLogs = (cloudLogs || []).filter((l) => l && l.id);
         if (realLogs.length > 0) {
@@ -341,55 +448,29 @@ export function App() {
       INITIAL_OBSERVATIONS
     ).catch(() => {});
 
-    // 3.5 30-Second Automatic Sync Loop (keeps all tablets on identical image and results)
-    const performPeriodicSync = () => {
-      // 1. Sync from Firestore
-      fetchAllDataFromFirestore()
-        .then((cloudData) => {
-          if (!cloudData) return;
-          if (cloudData.collaborators && cloudData.collaborators.length > 0) {
-            setCollaborators(cloudData.collaborators);
+    // 3.5 30-Second Automatic Master JSON Sync Loop (ensures all tablets & PCs load the exact master JSON)
+    const performPeriodicSync = async () => {
+      try {
+        // 1. Fetch master snapshot from Firestore
+        const masterSnap = await fetchMasterJsonSnapshotFromFirestore();
+        if (masterSnap) {
+          applyMasterSnapshotData(masterSnap);
+        } else {
+          // Fallback to fetchAllDataFromFirestore
+          const cloudData = await fetchAllDataFromFirestore();
+          if (cloudData) {
+            applyMasterSnapshotData(cloudData);
           }
-          if (cloudData.shifts && cloudData.shifts.length > 0) {
-            setShifts(cloudData.shifts);
-          }
-          if (cloudData.activities && cloudData.activities.length > 0) {
-            setActivities(cloudData.activities);
-          }
-          if (cloudData.logs && cloudData.logs.length > 0) {
-            const realLogs = cloudData.logs.filter((l) => l && l.id);
-            const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-            setLogs((prev) => {
-              const { sanitizedLogs } = desduplicarLogsAtivos(
-                formatted,
-                cloudData.collaborators || collaborators,
-                cloudData.shifts || shifts
-              );
-              return sanitizedLogs;
-            });
-          }
-        })
-        .catch(() => {});
-
-      // 2. Sync from Central server
-      centralSync.fetchFullSync().then((state) => {
-        if (!state) return;
-        if (state.collaborators && state.collaborators.length > 0) setCollaborators(state.collaborators);
-        if (state.shifts && state.shifts.length > 0) setShifts(state.shifts);
-        if (state.activities && state.activities.length > 0) setActivities(state.activities);
-        if (state.logs && state.logs.length > 0) {
-          const realLogs = state.logs.filter((l) => l && l.id);
-          const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-          setLogs((prev) => {
-            const { sanitizedLogs } = desduplicarLogsAtivos(
-              formatted,
-              state.collaborators || collaborators,
-              state.shifts || shifts
-            );
-            return sanitizedLogs;
-          });
         }
-      }).catch(() => {});
+
+        // 2. Sync from Central Cloud Run server
+        const centralState = await centralSync.fetchFullSync();
+        if (centralState) {
+          applyMasterSnapshotData(centralState);
+        }
+      } catch (err) {
+        console.warn('Periodic master JSON sync loop warning:', err);
+      }
     };
 
     const syncInterval = setInterval(performPeriodicSync, 30000);
@@ -412,6 +493,7 @@ export function App() {
       unsubLogsCentral();
       unsubSingleLogCentral();
       try {
+        unsubMasterJsonFirestore();
         unsubLogsFirestore();
         unsubColabsFirestore();
         unsubShiftsFirestore();
@@ -1303,6 +1385,10 @@ export function App() {
           payload.logs || logs
         );
 
+        const now = new Date();
+        const timeStr = formatarHoraPtBr(now);
+        setLastJsonSyncTime(timeStr);
+
         return true;
       } catch (err) {
         console.error('Erro ao restaurar backup completo:', err);
@@ -1311,6 +1397,66 @@ export function App() {
     },
     [collaborators, activities, shifts, logs]
   );
+
+  const handleForceSync = useCallback(async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const now = new Date();
+      const timeStr = formatarHoraPtBr(now);
+      await saveMasterJsonSnapshotToFirestore({
+        collaborators,
+        shifts,
+        activities,
+        logs,
+        autocloseNotifs: autoCloseNotifs,
+        factoryConfig: {
+          toleranceMinutes,
+          observations,
+          customRoleColors,
+          efficiencyThresholdGreen,
+          efficiencyThresholdYellow,
+        },
+        formattedSyncTime: timeStr,
+        lastUpdated: now.toISOString(),
+      });
+
+      const masterSnap = await fetchMasterJsonSnapshotFromFirestore();
+      if (masterSnap) {
+        if (masterSnap.collaborators && masterSnap.collaborators.length > 0) setCollaborators(masterSnap.collaborators);
+        if (masterSnap.shifts && masterSnap.shifts.length > 0) setShifts(masterSnap.shifts);
+        if (masterSnap.activities && masterSnap.activities.length > 0) setActivities(masterSnap.activities);
+        if (masterSnap.logs && Array.isArray(masterSnap.logs)) {
+          const cleanLogs = masterSnap.logs.filter((l) => l && l.id);
+          const formatted = cleanLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
+          setLogs(
+            desduplicarLogsAtivos(
+              formatted,
+              masterSnap.collaborators || collaborators,
+              masterSnap.shifts || shifts
+            ).sanitizedLogs
+          );
+        }
+      }
+      setLastJsonSyncTime(timeStr);
+    } catch (err) {
+      console.warn('Force sync warning:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [
+    isSyncing,
+    collaborators,
+    shifts,
+    activities,
+    logs,
+    autoCloseNotifs,
+    toleranceMinutes,
+    observations,
+    customRoleColors,
+    efficiencyThresholdGreen,
+    efficiencyThresholdYellow,
+  ]);
 
   const activeCount = new Set(
     logs.filter((l) => l.status === 'Em Execução').map((l) => l.collaboratorName.trim().toLowerCase())
@@ -1329,6 +1475,9 @@ export function App() {
         onQuickShiftAccess={() => setActiveTab('turnos')}
         onExportFullBackup={handleExportFullBackup}
         onRestoreFullBackup={handleRestoreFullBackup}
+        lastJsonSyncTime={lastJsonSyncTime}
+        onForceSync={handleForceSync}
+        isSyncing={isSyncing}
       />
 
       {/* Main Tabs Navigation */}
