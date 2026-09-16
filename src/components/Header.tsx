@@ -17,10 +17,15 @@ import {
   Share2,
   Copy,
   ExternalLink,
-  Tablet
+  Tablet,
+  Check,
+  Server,
+  Layers,
+  HardDrive
 } from 'lucide-react';
 import { ShiftConfig } from '../types';
 import { formatarDataPtBr, formatarHoraPtBr, obterTurnosAtivosNoMomento } from '../utils/factoryCalculations';
+import { flushOfflineQueue } from '../services/nativeDatabaseSync';
 
 interface HeaderProps {
   shifts: ShiftConfig[];
@@ -57,6 +62,24 @@ export const Header: React.FC<HeaderProps> = ({
   const [backupStatus, setBackupStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Status de conexão e rede
+  const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      flushOfflineQueue().catch(() => {});
+    };
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -140,17 +163,29 @@ export const Header: React.FC<HeaderProps> = ({
                 <h1 className="font-black text-sm sm:text-base tracking-wider text-white">
                   MCA <span className="font-normal text-[#888888]">| CONTROLE DE ATIVIDADES</span>
                 </h1>
-                <span className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 bg-[#00E676]/20 border border-[#00E676]/30 rounded text-[9px] font-bold text-[#00E676]">
-                  <span className="w-1.5 h-1.5 bg-[#00E676] rounded-full animate-pulse"></span>
-                  NUVEM ATIVA
-                </span>
+                <div
+                  className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 border rounded text-[9.5px] font-bold transition shadow-xs ${
+                    isOnline
+                      ? 'bg-[#00E676]/15 border-[#00E676]/30 text-[#00E676]'
+                      : 'bg-[#FF8C00]/20 border-[#FF8C00]/40 text-[#FFB74D]'
+                  }`}
+                  title={
+                    isOnline
+                      ? 'Banco de Dados Nativo Central Ativo • Sincronização Contínua em Tempo Real'
+                      : 'Modo Offline Ativo • Os dados continuam sendo gravados no tablet e serão enviados assim que a internet reconectar'
+                  }
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-[#00E676] animate-pulse' : 'bg-[#FF8C00]'}`}></span>
+                  <HardDrive className="w-3 h-3" />
+                  <span>{isOnline ? 'BANCO ATIVO (NATIVO)' : 'SALVANDO LOCAL (OFFLINE)'}</span>
+                </div>
                 {/* Discrete JSON Synchronization Indicator requested in Photo 1 */}
                 <button
                   type="button"
                   onClick={onForceSync}
                   disabled={isSyncing}
                   className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-[#1A2333] hover:bg-[#203047] border border-[#007BFF]/40 rounded text-[10px] font-mono text-[#93C5FD] transition cursor-pointer active:scale-95 shadow-sm"
-                  title="Horário do snapshot JSON mestre sincronizado no Firebase e tablets (Loop a cada 30s). Clique para forçar sincronização imediata."
+                  title="Horário do snapshot JSON mestre sincronizado no servidor e tablets (Loop a cada 30s). Clique para forçar sincronização imediata."
                 >
                   <Database className={`w-3 h-3 text-[#007BFF] ${isSyncing ? 'animate-spin' : ''}`} />
                   <span className="font-bold text-[#CCCCCC]">JSON:</span>
@@ -161,7 +196,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
               </div>
               <p className="text-[10.5px] text-[#888888] font-normal hidden md:block">
-                Sistema MES Industrial • Sincronização Multi-Tablet em Tempo Real (Firebase & Servidor)
+                Sistema MES Industrial • Banco Nativo Integrado com Cache Offline para Redes Instáveis
               </p>
             </div>
           </div>

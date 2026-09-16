@@ -175,18 +175,6 @@ function loadOrInitDatabase(): CentralDatabase {
       const raw = fs.readFileSync(DB_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && Array.isArray(parsed.collaborators) && parsed.collaborators.length > 0) {
-        // Ensure Turno 2 has ONLY CARLOS as specifically required
-        const turno2Members = parsed.collaborators.filter((c: any) => c.shift === 'Turno 2');
-        const hasExtraInTurno2 = turno2Members.some((c: any) => c.name !== 'CARLOS');
-        if (hasExtraInTurno2) {
-          parsed.collaborators = parsed.collaborators.map((c: any) => {
-            if (c.shift === 'Turno 2' && c.name !== 'CARLOS') {
-              return { ...c, shift: 'Turno 1' };
-            }
-            return c;
-          });
-        }
-
         // Keep all genuine production logs (filter out undefined or null entries)
         if (Array.isArray(parsed.logs)) {
           parsed.logs = parsed.logs.filter((l: any) => l && l.id);
@@ -276,6 +264,7 @@ async function startServer() {
   app.get('/api/health', (req, res) => {
     res.json({
       status: 'ok',
+      engine: 'mca-native-json-server',
       time: new Date().toISOString(),
       connectedClients: sseClients.length,
       totalLogs: centralDb.logs.length,

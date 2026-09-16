@@ -87,6 +87,11 @@ export interface AutoCloseNotification {
   timestamp: number;
   readByOperator?: boolean;
   readByLeader?: boolean;
+  shift?: string;
+  autoClosedAt?: string;
+  timestampMs?: number;
+  dismissed?: boolean;
+  read?: boolean;
 }
 
 export interface EfficiencyThresholds {

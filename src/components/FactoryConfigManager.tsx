@@ -992,7 +992,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   {collaborators.length} Colaboradores Ativos no Sistema
                 </span>
                 <span className="text-[11px] text-[#888888]">
-                  (Sincronização Nuvem Firestore Ativa)
+                  (Sincronização Nuvem Supabase Ativa)
                 </span>
               </div>
               <button
