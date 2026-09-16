@@ -1552,6 +1552,9 @@ export function App() {
             onResetProductionLogs={handleResetProductionLogs}
             onRestoreProductionLogs={handleRestoreProductionLogs}
             onExportBackup={handleExportBackup}
+            onExportFullBackup={handleExportFullBackup}
+            onRestoreFullBackup={handleRestoreFullBackup}
+            onForceSync={handleForceSync}
             onUpdateCollaborators={handleSaveCollaborators}
             onUpdateActivities={handleUpdateActivities}
             onUpdateShifts={handleUpdateShifts}

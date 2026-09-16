@@ -21,7 +21,10 @@ import {
   Check,
   Server,
   Layers,
-  HardDrive
+  HardDrive,
+  Calendar,
+  RotateCcw,
+  RefreshCw
 } from 'lucide-react';
 import { ShiftConfig } from '../types';
 import { formatarDataPtBr, formatarHoraPtBr, obterTurnosAtivosNoMomento } from '../utils/factoryCalculations';
@@ -62,6 +65,90 @@ export const Header: React.FC<HeaderProps> = ({
   const [backupStatus, setBackupStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Backups Diários Históricos (Dias Passados)
+  const [dailyBackups, setDailyBackups] = useState<Array<{
+    filename: string;
+    backupDate: string;
+    generatedAt: string;
+    logsCount: number;
+    collaboratorsCount: number;
+  }>>([]);
+  const [loadingDailyBackups, setLoadingDailyBackups] = useState(false);
+  const [restoringDailyFilename, setRestoringDailyFilename] = useState<string | null>(null);
+
+  const fetchDailyBackups = async () => {
+    try {
+      setLoadingDailyBackups(true);
+      const res = await fetch('/api/daily-backups');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.backups)) {
+          setDailyBackups(json.backups);
+        }
+      }
+    } catch {
+      // Ignore fetch error
+    } finally {
+      setLoadingDailyBackups(false);
+    }
+  };
+
+  const handleRestoreDailyBackup = async (filename: string, dateLabel: string) => {
+    if (!window.confirm(`Deseja realmente restaurar os dados do dia ${dateLabel}? O estado atual será substituído por este backup.`)) {
+      return;
+    }
+    try {
+      setRestoringDailyFilename(filename);
+      const res = await fetch('/api/daily-backups/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBackupStatus({
+          type: 'success',
+          message: `Sucesso! Backup do dia ${dateLabel} restaurado e sincronizado com todos os tablets.`,
+        });
+        if (onForceSync) onForceSync();
+      } else {
+        throw new Error(data.error || 'Erro ao restaurar backup diário');
+      }
+    } catch (err: any) {
+      setBackupStatus({
+        type: 'error',
+        message: `Falha ao restaurar: ${err.message}`,
+      });
+    } finally {
+      setRestoringDailyFilename(null);
+    }
+  };
+
+  const handleCreateInstantDailyBackup = async () => {
+    try {
+      const res = await fetch('/api/daily-backups/create', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBackupStatus({
+          type: 'success',
+          message: 'Ponto de restauração do dia criado e salvo com sucesso no servidor central!',
+        });
+        fetchDailyBackups();
+      }
+    } catch (err: any) {
+      setBackupStatus({
+        type: 'error',
+        message: `Erro ao criar ponto: ${err.message}`,
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (showBackupModal) {
+      fetchDailyBackups();
+    }
+  }, [showBackupModal]);
 
   // Status de conexão e rede
   const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
@@ -353,8 +440,76 @@ export const Header: React.FC<HeaderProps> = ({
                 className="py-3 px-4 bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] border border-[#38BDF8]/40 hover:border-[#38BDF8] font-black text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-50"
               >
                 <Upload className="w-4 h-4" />
-                <span>{isRestoring ? 'RESTAURANDO...' : 'CARREGAR / RESTAURAR'}</span>
+                <span>{isRestoring ? 'RESTAURANDO...' : 'CARREGAR ARQUIVO JSON'}</span>
               </button>
+            </div>
+
+            {/* SEÇÃO: BACKUPS DIÁRIOS AUTOMÁTICOS / DIAS PASSADOS */}
+            <div className="pt-3 border-t border-[#262626] space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-white">
+                  <Calendar className="w-3.5 h-3.5 text-[#38BDF8]" />
+                  <span>Pontos de Restauração Diários (Dias Passados)</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCreateInstantDailyBackup}
+                    className="text-[10px] bg-[#222222] hover:bg-[#333333] text-[#38BDF8] px-2 py-1 rounded-lg border border-[#38BDF8]/30 flex items-center gap-1 cursor-pointer transition font-bold"
+                    title="Salvar ponto de restauração deste exato momento no servidor"
+                  >
+                    <Check className="w-3 h-3" />
+                    <span>Salvar Ponto Hoje</span>
+                  </button>
+                  <button
+                    onClick={fetchDailyBackups}
+                    className="p-1 text-[#888888] hover:text-white transition cursor-pointer"
+                    title="Atualizar lista de dias"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loadingDailyBackups ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                {loadingDailyBackups ? (
+                  <div className="p-3 text-center text-xs text-[#888888]">
+                    Carregando backups do servidor...
+                  </div>
+                ) : dailyBackups.length === 0 ? (
+                  <div className="p-3 bg-[#111111] rounded-xl border border-[#222222] text-center text-[11px] text-[#777777]">
+                    Nenhum ponto diário anterior encontrado. Clique em "Salvar Ponto Hoje" para criar o primeiro histórico.
+                  </div>
+                ) : (
+                  dailyBackups.map((b) => (
+                    <div
+                      key={b.filename}
+                      className="p-2.5 bg-[#141414] hover:bg-[#1A1A1A] border border-[#282828] rounded-xl flex items-center justify-between gap-2 transition"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white font-mono">{b.backupDate}</span>
+                          <span className="text-[10px] text-[#00E676] bg-[#00E676]/10 px-1.5 py-0.5 rounded font-mono">
+                            {b.logsCount} registros
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-[#888888] truncate mt-0.5">
+                          {b.collaboratorsCount} colaboradores salvos • {new Date(b.generatedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+
+                      <button
+                        disabled={restoringDailyFilename === b.filename}
+                        onClick={() => handleRestoreDailyBackup(b.filename, b.backupDate)}
+                        className="shrink-0 px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#0284C7] text-white rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer transition disabled:opacity-50"
+                        title="Restaurar a fábrica para como estava neste dia"
+                      >
+                        <RotateCcw className={`w-3 h-3 ${restoringDailyFilename === b.filename ? 'animate-spin' : ''}`} />
+                        <span>{restoringDailyFilename === b.filename ? 'Restaurando...' : 'Restaurar Dia'}</span>
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
             {backupStatus && (

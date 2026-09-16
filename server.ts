@@ -125,6 +125,7 @@ function getTodayPtBr(): string {
 
 const DEFAULT_INITIAL_LOGS: any[] = [];
 const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
+const DAILY_BACKUPS_DIR = path.join(DATA_DIR, 'daily_backups');
 const AUDIT_LOG_FILE = path.join(DATA_DIR, 'audit_production_events.log');
 
 let centralDb: CentralDatabase;
@@ -147,6 +148,42 @@ function createBackupSnapshot(db: CentralDatabase) {
     }
   } catch (e) {
     console.error('Snapshot backup error:', e);
+  }
+}
+
+// Daily automatic snapshot generator
+function performDailyBackup(db: CentralDatabase): string {
+  try {
+    if (!fs.existsSync(DAILY_BACKUPS_DIR)) {
+      fs.mkdirSync(DAILY_BACKUPS_DIR, { recursive: true });
+    }
+    const today = getTodayPtBr(); // "DD/MM/YYYY"
+    const safeDate = today.replace(/\//g, '-');
+    const dailyFile = path.join(DAILY_BACKUPS_DIR, `backup_diario_${safeDate}.json`);
+    
+    // Save daily backup payload
+    const payload = {
+      backupDate: today,
+      generatedAt: new Date().toISOString(),
+      logsCount: db.logs.length,
+      collaboratorsCount: db.collaborators.length,
+      database: db,
+    };
+    fs.writeFileSync(dailyFile, JSON.stringify(payload, null, 2), 'utf-8');
+    return dailyFile;
+  } catch (err) {
+    console.error('Error performing daily backup:', err);
+    return '';
+  }
+}
+
+// Schedule daily backup check (every hour or upon startup)
+let lastDailyBackupDate = '';
+function checkAndRunDailyBackup(db: CentralDatabase) {
+  const today = getTodayPtBr();
+  if (lastDailyBackupDate !== today) {
+    performDailyBackup(db);
+    lastDailyBackupDate = today;
   }
 }
 
@@ -253,6 +290,14 @@ function broadcastToClients(eventType: string, data: any) {
 }
 
 centralDb = loadOrInitDatabase();
+
+// Initial daily backup snapshot on boot & scheduled periodic check
+checkAndRunDailyBackup(centralDb);
+setInterval(() => {
+  if (centralDb) {
+    checkAndRunDailyBackup(centralDb);
+  }
+}, 1000 * 60 * 30); // Checks every 30 minutes
 
 async function startServer() {
   const app = express();
@@ -559,6 +604,119 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error('Error in /api/restore-full-backup:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 12. List available daily backups on the server
+  app.get('/api/daily-backups', (req, res) => {
+    try {
+      if (!fs.existsSync(DAILY_BACKUPS_DIR)) {
+        fs.mkdirSync(DAILY_BACKUPS_DIR, { recursive: true });
+      }
+      const files = fs.readdirSync(DAILY_BACKUPS_DIR)
+        .filter(f => f.startsWith('backup_diario_') && f.endsWith('.json'))
+        .sort()
+        .reverse();
+
+      const backups = files.map(file => {
+        const filePath = path.join(DAILY_BACKUPS_DIR, file);
+        const stats = fs.statSync(filePath);
+        try {
+          const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+          return {
+            filename: file,
+            backupDate: content.backupDate || file.replace('backup_diario_', '').replace('.json', '').replace(/-/g, '/'),
+            generatedAt: content.generatedAt || stats.mtime.toISOString(),
+            logsCount: content.logsCount || (content.database?.logs?.length || 0),
+            collaboratorsCount: content.collaboratorsCount || (content.database?.collaborators?.length || 0),
+            sizeBytes: stats.size,
+          };
+        } catch {
+          return {
+            filename: file,
+            backupDate: file.replace('backup_diario_', '').replace('.json', '').replace(/-/g, '/'),
+            generatedAt: stats.mtime.toISOString(),
+            logsCount: 0,
+            collaboratorsCount: 0,
+            sizeBytes: stats.size,
+          };
+        }
+      });
+
+      return res.json({ success: true, backups });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 13. Trigger a manual or scheduled daily backup snapshot
+  app.post('/api/daily-backups/create', (req, res) => {
+    try {
+      const createdFile = performDailyBackup(centralDb);
+      return res.json({
+        success: true,
+        message: 'Backup diário gerado e guardado com sucesso no servidor!',
+        file: path.basename(createdFile),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 14. Restore a specific past daily backup by filename
+  app.post('/api/daily-backups/restore', (req, res) => {
+    try {
+      const { filename } = req.body;
+      if (!filename || typeof filename !== 'string') {
+        return res.status(400).json({ error: 'Nome do arquivo de backup obrigatório' });
+      }
+      const safeFilename = path.basename(filename);
+      const filePath = path.join(DAILY_BACKUPS_DIR, safeFilename);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'Arquivo de backup diário não encontrado no servidor' });
+      }
+
+      createBackupSnapshot(centralDb); // Guarda snapshot de segurança antes de restaurar
+
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      const restoredDb = parsed.database || parsed;
+
+      if (Array.isArray(restoredDb.collaborators)) {
+        centralDb.collaborators = restoredDb.collaborators;
+        broadcastToClients('collaborators_updated', centralDb.collaborators);
+      }
+      if (Array.isArray(restoredDb.shifts)) {
+        centralDb.shifts = restoredDb.shifts;
+        broadcastToClients('shifts_updated', centralDb.shifts);
+      }
+      if (Array.isArray(restoredDb.activities)) {
+        centralDb.activities = restoredDb.activities;
+        broadcastToClients('activities_updated', centralDb.activities);
+      }
+      if (restoredDb.factoryConfig && typeof restoredDb.factoryConfig === 'object') {
+        centralDb.factoryConfig = { ...centralDb.factoryConfig, ...restoredDb.factoryConfig };
+        broadcastToClients('config_updated', centralDb.factoryConfig);
+      }
+      if (Array.isArray(restoredDb.logs)) {
+        centralDb.logs = restoredDb.logs;
+        broadcastToClients('logs_restored', centralDb.logs);
+      }
+      if (Array.isArray(restoredDb.autocloseNotifs)) {
+        centralDb.autocloseNotifs = restoredDb.autocloseNotifs;
+      }
+
+      saveDatabaseToDisk(centralDb);
+      appendAuditLog('RESTORE_DAILY_BACKUP', { filename: safeFilename, logsCount: centralDb.logs.length });
+
+      return res.json({
+        success: true,
+        message: `Backup do dia ${parsed.backupDate || safeFilename} restaurado com sucesso! Sincronizado com todos os tablets.`,
+        data: centralDb,
+      });
+    } catch (err: any) {
+      console.error('Error in /api/daily-backups/restore:', err);
       return res.status(500).json({ error: err.message });
     }
   });

@@ -1132,20 +1132,43 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               </h2>
 
               {/* Box de Informações da Atividade */}
-              <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2">
-                <div className="text-xs sm:text-sm space-y-1.5">
-                  <p className="text-[#BBB]">
+              <div className="p-3.5 bg-[#181818] border border-[#2D2D2D] rounded-xl mt-2 flex items-center justify-between gap-3">
+                <div className="text-xs sm:text-sm space-y-1.5 flex-1 min-w-0">
+                  <p className="text-[#BBB] truncate">
                     Colaborador: <b className="text-white text-base">{logToFinish.collaboratorName}</b>
                   </p>
-                  <p className="text-[#BBB]">
+                  <p className="text-[#BBB] truncate">
                     Operação: <b className="text-[#007BFF]">{logToFinish.activity}</b>
                   </p>
-                  <p className="text-[#BBB]">
+                  <p className="text-[#BBB] truncate">
                     Hora Início: <b className="text-white font-mono">{logToFinish.startTime}</b> • Tempo Total:{' '}
                     <b className="text-[#00E676] font-mono text-base">
                       {formatarTempoSegundos(getElapsedSeconds(logToFinish.startTime))}
                     </b>
                   </p>
+                </div>
+
+                {/* Badge visual de identificação do colaborador / cargo */}
+                <div className="hidden sm:flex flex-col items-center justify-center p-3 rounded-xl border border-[#333333] bg-[#141414] min-w-[130px] max-w-[170px] text-center shrink-0">
+                  <div
+                    className="w-9 h-9 rounded-full flex items-center justify-center font-black text-sm text-black shadow-md mb-1.5"
+                    style={{ backgroundColor: getRoleColor(colab?.role || logToFinish.role || '') }}
+                  >
+                    {(logToFinish.collaboratorName || 'C').slice(0, 2).toUpperCase()}
+                  </div>
+                  <span
+                    className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded tracking-wide truncate max-w-full"
+                    style={{
+                      backgroundColor: `${getRoleColor(colab?.role || logToFinish.role || '')}22`,
+                      color: getRoleColor(colab?.role || logToFinish.role || ''),
+                    }}
+                    title={colab?.role || logToFinish.role || 'Operador'}
+                  >
+                    {colab?.role || logToFinish.role || 'Operador'}
+                  </span>
+                  <span className="text-[10px] text-[#888888] font-mono mt-0.5">
+                    {colab?.shift || logToFinish.shift || 'Turno 1'}
+                  </span>
                 </div>
               </div>
             </div>

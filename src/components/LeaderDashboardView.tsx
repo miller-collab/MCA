@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { 
   BarChart3, RefreshCw, Sparkles, TrendingUp, AlertTriangle, 
   CheckCircle2, Clock, Lock, KeyRound, ArrowDown, UserCheck, 
   HelpCircle, ChevronRight, Zap, Settings, Activity, BellRing,
   Check, Trash2, ExternalLink, ShieldAlert, Search, Calendar,
-  RotateCcw, Filter, Upload, Download, Database
+  RotateCcw, Filter, Upload, Download, Database, Tablet, Share2, Copy, X, AlertCircle
 } from 'lucide-react';
 import { 
   ProductionLog, 
@@ -54,6 +54,9 @@ interface LeaderDashboardViewProps {
   onResetProductionLogs?: () => Promise<void> | void;
   onRestoreProductionLogs?: (logs: ProductionLog[], notifs?: AutoCloseNotification[]) => Promise<void> | void;
   onExportBackup?: () => void;
+  onExportFullBackup?: () => void;
+  onRestoreFullBackup?: (payload: any) => Promise<boolean>;
+  onForceSync?: () => void;
   onUpdateCollaborators: (colabs: Collaborator[]) => void;
   onUpdateActivities: (activities: ActivityItem[]) => void;
   onUpdateShifts: (shifts: ShiftConfig[]) => void;
@@ -89,6 +92,9 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   onResetProductionLogs,
   onRestoreProductionLogs,
   onExportBackup,
+  onExportFullBackup,
+  onRestoreFullBackup,
+  onForceSync,
   onUpdateCollaborators,
   onUpdateActivities,
   onUpdateShifts,
@@ -108,6 +114,103 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
   const [isResetting, setIsResetting] = useState(false);
   const [resetFeedback, setResetFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Estados de Backups Diários e Link para Tablets & PC
+  const [showDailyBackupsModal, setShowDailyBackupsModal] = useState(false);
+  const [dailyBackups, setDailyBackups] = useState<Array<{
+    filename: string;
+    backupDate: string;
+    generatedAt: string;
+    logsCount: number;
+    collaboratorsCount: number;
+    sizeBytes?: number;
+  }>>([]);
+  const [loadingDailyBackups, setLoadingDailyBackups] = useState(false);
+  const [restoringDailyFilename, setRestoringDailyFilename] = useState<string | null>(null);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [copiedLeaderLink, setCopiedLeaderLink] = useState(false);
+
+  // Computação da URL oficial para tablets e PCs
+  const tabletShareUrl = typeof window !== 'undefined'
+    ? (window.location.origin.includes('ais-dev-')
+        ? window.location.origin.replace('ais-dev-', 'ais-pre-')
+        : window.location.origin)
+    : 'https://ais-pre-gwrra2voihf2jayigewyrm-795025193395.us-east1.run.app';
+
+  const fetchDailyBackups = async () => {
+    try {
+      setLoadingDailyBackups(true);
+      const res = await fetch('/api/daily-backups');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.backups)) {
+          setDailyBackups(json.backups);
+        }
+      }
+    } catch {
+      // Ignore network error
+    } finally {
+      setLoadingDailyBackups(false);
+    }
+  };
+
+  const handleRestoreDailyBackup = async (filename: string, dateLabel: string) => {
+    if (!window.confirm(`Deseja realmente restaurar os dados do dia ${dateLabel}? O estado atual da fábrica será substituído por este backup.`)) {
+      return;
+    }
+    try {
+      setRestoringDailyFilename(filename);
+      const res = await fetch('/api/daily-backups/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setResetFeedback({
+          type: 'success',
+          message: `Sucesso! Backup do dia ${dateLabel} restaurado e sincronizado com todos os tablets da fábrica.`,
+        });
+        if (onForceSync) onForceSync();
+        setShowDailyBackupsModal(false);
+      } else {
+        throw new Error(data.error || 'Erro ao restaurar backup diário');
+      }
+    } catch (err: any) {
+      setResetFeedback({
+        type: 'error',
+        message: `Falha ao restaurar dia ${dateLabel}: ${err.message}`,
+      });
+    } finally {
+      setRestoringDailyFilename(null);
+    }
+  };
+
+  const handleCreateInstantDailyBackup = async () => {
+    try {
+      setCreatingBackup(true);
+      const res = await fetch('/api/daily-backups/create', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setResetFeedback({
+          type: 'success',
+          message: 'Ponto de restauração diário criado e salvo com sucesso no servidor!',
+        });
+        fetchDailyBackups();
+      }
+    } catch (err: any) {
+      setResetFeedback({
+        type: 'error',
+        message: `Erro ao criar ponto de restauração: ${err.message}`,
+      });
+    } finally {
+      setCreatingBackup(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDailyBackups();
+  }, []);
 
   // Efficiency thresholds state in Leader view
   const [editGreen, setEditGreen] = useState<number>(propGreen);
@@ -435,8 +538,8 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
             </button>
           </div>
 
-          {/* Grupo de Ferramentas de Gerenciamento da Produção (Reset e Backup) */}
-          <div className="flex items-center gap-1.5 border-l border-[#333333] pl-2.5">
+          {/* Grupo de Ferramentas: Backups Diários, Download e Conexão de Tablets */}
+          <div className="flex items-center gap-1.5 border-l border-[#333333] pl-2.5 flex-wrap">
             {/* Input File Oculto para Restaurar Backup JSON */}
             <input
               type="file"
@@ -446,38 +549,65 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
               className="hidden"
             />
 
-            {/* Botão de Salvar / Baixar Backup */}
-            {onExportBackup && (
-              <button
-                onClick={onExportBackup}
-                className="px-2.5 py-1.5 bg-[#161616] hover:bg-[#1E293B] text-[#94A3B8] hover:text-[#00E676] border border-[#2D2D2D] hover:border-[#00E676]/40 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition cursor-pointer"
-                title="Salvar / Fazer Download de arquivo de backup JSON com todos os registros de produção"
-              >
-                <Download className="w-3.5 h-3.5 text-[#00E676]" />
-                <span className="hidden sm:inline">Salvar Backup (JSON)</span>
-                <span className="sm:hidden">Salvar</span>
-              </button>
-            )}
+            {/* 1. Botão: Backups Diários & Restaurar Dias Passados */}
+            <button
+              onClick={() => {
+                setShowDailyBackupsModal(true);
+                fetchDailyBackups();
+              }}
+              className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#0284C7] text-[#38BDF8] hover:text-white border border-[#38BDF8]/40 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+              title="Gerenciar e restaurar dias passados da fábrica salvos automaticamente no servidor"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Backups Diários (Restaurar Dias)</span>
+              {dailyBackups.length > 0 && (
+                <span className="bg-[#0284C7] text-white text-[9.5px] px-1.5 py-0.2 rounded-full font-mono">
+                  {dailyBackups.length}
+                </span>
+              )}
+            </button>
 
-            {/* Botão de Restaurar Backup JSON */}
-            {onRestoreProductionLogs && (
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="px-2.5 py-1.5 bg-[#161616] hover:bg-[#1E293B] text-[#94A3B8] hover:text-[#38BDF8] border border-[#2D2D2D] hover:border-[#38BDF8]/40 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition cursor-pointer"
-                title="Carregar / Restaurar registros de produção a partir de arquivo de backup JSON salvo anteriormente"
-              >
-                <Upload className="w-3.5 h-3.5 text-[#38BDF8]" />
-                <span className="hidden sm:inline">Restaurar Registros (JSON)</span>
-                <span className="sm:hidden">Restaurar</span>
-              </button>
-            )}
+            {/* 2. Botão: Salvar Tudo (Download JSON) */}
+            <button
+              onClick={() => {
+                if (onExportFullBackup) {
+                  onExportFullBackup();
+                } else if (onExportBackup) {
+                  onExportBackup();
+                }
+              }}
+              className="px-2.5 py-1.5 bg-[#161616] hover:bg-[#1E293B] text-[#94A3B8] hover:text-[#00E676] border border-[#2D2D2D] hover:border-[#00E676]/40 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Baixar arquivo de segurança JSON completo com registros, colaboradores e configurações no seu computador"
+            >
+              <Download className="w-3.5 h-3.5 text-[#00E676]" />
+              <span className="hidden sm:inline">Salvar Tudo (Download JSON)</span>
+              <span className="sm:hidden">Salvar Tudo</span>
+            </button>
 
-            {/* Botão de Resetar Registros de Produção com Backup Automático */}
+            {/* 3. Botão: Link Tablets & PC */}
+            <button
+              onClick={() => {
+                const el = document.getElementById('tablet-connection-card');
+                if (el) {
+                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+                navigator.clipboard.writeText(tabletShareUrl);
+                setCopiedLeaderLink(true);
+                setTimeout(() => setCopiedLeaderLink(false), 3000);
+              }}
+              className="px-2.5 py-1.5 bg-[#121E28] hover:bg-[#1A2E3B] text-[#38BDF8] border border-[#38BDF8]/30 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Copiar e visualizar o Link Oficial para Tablets e Computadores"
+            >
+              <Share2 className="w-3.5 h-3.5 text-[#38BDF8]" />
+              <span>{copiedLeaderLink ? 'Link Copiado!' : 'Link Tablets & PC'}</span>
+            </button>
+
+            {/* 4. Botão: Resetar Registros (Limpar Testes) */}
             {onResetProductionLogs && (
               <button
                 onClick={() => setShowResetModal(true)}
                 className="px-2.5 py-1.5 bg-[#2A0808] hover:bg-[#3D0C0C] text-[#FF8A80] hover:text-[#FF5252] border border-[#FF5252]/40 hover:border-[#FF5252] rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm shadow-[#FF5252]/10"
-                title="Resetar registros de produção (testes) mantendo colaboradores, turnos e configurações intactos. O backup será salvo automaticamente."
+                title="Resetar registros de produção de teste mantendo colaboradores, turnos e configurações intactos. O backup será salvo automaticamente."
               >
                 <Trash2 className="w-3.5 h-3.5 text-[#FF5252]" />
                 <span>Resetar Registros (Limpar Testes)</span>
@@ -609,6 +739,131 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
         </div>
       )}
 
+      {/* MODAL DE GERENCIAMENTO DE BACKUPS DIÁRIOS & RESTAURAÇÃO HISTÓRICA */}
+      {showDailyBackupsModal && (
+        <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-[#181818] border border-[#38BDF8]/50 rounded-2xl max-w-xl w-full p-5 sm:p-6 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between border-b border-[#2A2A2A] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-xl bg-[#38BDF8]/20 text-[#38BDF8] shrink-0 border border-[#38BDF8]/30">
+                  <Calendar className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <span>Backups Diários & Restauração Histórica</span>
+                  </h3>
+                  <p className="text-xs text-[#AAAAAA] mt-0.5">
+                    Histórico gravado no servidor central. Restaure qualquer dia anterior com 1 clique.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDailyBackupsModal(false)}
+                className="p-1 rounded-md text-[#888888] hover:text-white hover:bg-[#252525] transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Ações Rápidas do Modal */}
+            <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-[#111111] rounded-xl border border-[#252525]">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCreateInstantDailyBackup}
+                  disabled={creatingBackup}
+                  className="px-3 py-1.5 bg-[#00E676]/15 hover:bg-[#00E676]/30 text-[#00E676] border border-[#00E676]/40 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{creatingBackup ? 'Salvando...' : 'Salvar Ponto Hoje'}</span>
+                </button>
+                <button
+                  onClick={fetchDailyBackups}
+                  disabled={loadingDailyBackups}
+                  className="px-2.5 py-1.5 bg-[#222222] hover:bg-[#333333] text-[#CCCCCC] hover:text-white border border-[#3A3A3A] rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer"
+                  title="Recarregar lista de backups do servidor"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingDailyBackups ? 'animate-spin' : ''}`} />
+                  <span>Atualizar</span>
+                </button>
+              </div>
+
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] border border-[#38BDF8]/40 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                title="Carregar arquivo de backup manual JSON do seu computador"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Carregar Arquivo JSON</span>
+              </button>
+            </div>
+
+            {/* Lista dos Dias Salvos no Servidor */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-[#888888]">
+                <span>Pontos Diários Gravados no Servidor</span>
+                <span className="text-[#38BDF8] font-mono">{dailyBackups.length} dia(s) disponível(is)</span>
+              </div>
+
+              <div className="max-h-64 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
+                {loadingDailyBackups ? (
+                  <div className="p-6 text-center text-xs text-[#888888]">
+                    Carregando histórico do servidor...
+                  </div>
+                ) : dailyBackups.length === 0 ? (
+                  <div className="p-6 bg-[#111111] rounded-xl border border-[#222222] text-center text-xs text-[#777777] space-y-1">
+                    <p className="font-bold text-[#AAAAAA]">Nenhum ponto diário anterior encontrado.</p>
+                    <p>Clique no botão verde acima "Salvar Ponto Hoje" para registrar o primeiro dia de produção.</p>
+                  </div>
+                ) : (
+                  dailyBackups.map((b) => (
+                    <div
+                      key={b.filename}
+                      className="p-3 bg-[#131313] hover:bg-[#1A1A1A] border border-[#282828] hover:border-[#38BDF8]/40 rounded-xl flex items-center justify-between gap-3 transition"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-black text-white font-mono">{b.backupDate}</span>
+                          <span className="text-[10px] text-[#00E676] bg-[#00E676]/10 border border-[#00E676]/30 px-2 py-0.5 rounded font-mono font-bold">
+                            {b.logsCount} registros
+                          </span>
+                          <span className="text-[10px] text-[#38BDF8] bg-[#38BDF8]/10 border border-[#38BDF8]/30 px-2 py-0.5 rounded font-mono">
+                            {b.collaboratorsCount} colaboradores
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-[#888888] truncate mt-1">
+                          Arquivo: <span className="font-mono text-[#666666]">{b.filename}</span> • Gravado às{' '}
+                          {new Date(b.generatedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+
+                      <button
+                        disabled={restoringDailyFilename === b.filename}
+                        onClick={() => handleRestoreDailyBackup(b.filename, b.backupDate)}
+                        className="shrink-0 px-3 py-2 bg-[#0284C7] hover:bg-[#0369A1] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition disabled:opacity-50 shadow-md"
+                        title="Restaurar toda a fábrica para como estava neste dia"
+                      >
+                        <RotateCcw className={`w-3.5 h-3.5 ${restoringDailyFilename === b.filename ? 'animate-spin' : ''}`} />
+                        <span>{restoringDailyFilename === b.filename ? 'Restaurando...' : 'Restaurar Dia'}</span>
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-[#262626] flex items-center justify-between text-xs text-[#777777]">
+              <span>Ao restaurar um dia, os dados são transmitidos automaticamente a todos os tablets.</span>
+              <button
+                onClick={() => setShowDailyBackupsModal(false)}
+                className="font-bold text-white hover:underline cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* RENDERIZAÇÃO: SEÇÃO 1 - CONFIGURAÇÃO DA FÁBRICA */}
       {leaderSection === 'configuracao' && (
         <FactoryConfigManager
@@ -635,6 +890,98 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
       {/* RENDERIZAÇÃO: SEÇÃO 2 - INDICADORES OPERACIONAIS */}
       {leaderSection === 'indicadores' && (
         <div className="space-y-6">
+          {/* CARTÃO EM DESTAQUE: LINK OFICIAL DE ACESSO PARA TABLETS E COMPUTADORES (FOTO 1) */}
+          <div
+            id="tablet-connection-card"
+            className="p-4 sm:p-5 rounded-2xl bg-[#0F172A] border-2 border-[#38BDF8]/50 shadow-2xl space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#334155]/60 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-[#38BDF8]/20 text-[#38BDF8] border border-[#38BDF8]/40">
+                  <Tablet className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-sm sm:text-base font-black text-white tracking-wide">
+                      LINK DE ACESSO PARA OS TABLETS E COMPUTADORES DA FÁBRICA
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full bg-[#00E676]/20 border border-[#00E676]/40 text-[#00E676] text-[10px] font-bold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E676] animate-pulse"></span>
+                      Sincronização Ativa em Tempo Real
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#94A3B8] mt-0.5">
+                    Abra este endereço no Google Chrome de qualquer tablet nos postos e no computador dos líderes. Não necessita de login ou senha!
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setShowDailyBackupsModal(true);
+                    fetchDailyBackups();
+                  }}
+                  className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] border border-[#38BDF8]/40 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shadow"
+                >
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>Pontos Diários ({dailyBackups.length})</span>
+                </button>
+                <button
+                  onClick={handleCreateInstantDailyBackup}
+                  disabled={creatingBackup}
+                  className="px-3 py-1.5 bg-[#00E676]/20 hover:bg-[#00E676]/30 text-[#00E676] border border-[#00E676]/40 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition disabled:opacity-50"
+                  title="Salvar ponto de restauração diário agora no servidor"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{creatingBackup ? 'Salvando...' : 'Salvar Ponto Hoje'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Input com o Link Oficial Copiável */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+              <div className="flex-1 bg-[#090D16] border border-[#334155] rounded-xl px-3.5 py-2.5 flex items-center gap-2 min-w-0">
+                <span className="text-xs text-[#64748B] font-mono select-none">LINK:</span>
+                <input
+                  type="text"
+                  readOnly
+                  value={tabletShareUrl}
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                  className="w-full bg-transparent text-[#38BDF8] font-mono text-xs sm:text-sm font-bold tracking-wide focus:outline-none select-all truncate"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(tabletShareUrl);
+                    setCopiedLeaderLink(true);
+                    setTimeout(() => setCopiedLeaderLink(false), 3000);
+                  }}
+                  className={`px-4 py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-md ${
+                    copiedLeaderLink
+                      ? 'bg-[#00E676] text-black ring-2 ring-[#00E676]/50'
+                      : 'bg-[#0284C7] hover:bg-[#0369A1] text-white'
+                  }`}
+                >
+                  {copiedLeaderLink ? <CheckCircle2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedLeaderLink ? 'LINK COPIADO!' : 'COPIAR LINK'}</span>
+                </button>
+
+                <a
+                  href={tabletShareUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3.5 py-2.5 bg-[#1E293B] hover:bg-[#334155] text-[#CBD5E1] hover:text-white border border-[#475569] rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition"
+                  title="Abrir o link do sistema em uma nova aba do navegador"
+                >
+                  <ExternalLink className="w-4 h-4 text-[#38BDF8]" />
+                  <span className="hidden sm:inline">Abrir em Nova Aba</span>
+                </a>
+              </div>
+            </div>
+          </div>
           {/* PAINEL DE AUDITORIA DE ENCERRAMENTO AUTOMÁTICO DE TURNO PARA O LÍDER */}
           {autoCloseNotifs.length > 0 && (
             <div className="bg-[#1C1400] border border-[#FF9800] rounded-xl p-4 sm:p-5 shadow-xl space-y-3">
