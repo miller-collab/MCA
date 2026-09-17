@@ -806,11 +806,9 @@
       "activity": "LIMPEZA DO CAVACO",
       "category": "5S & Limpeza",
       "startTime": "08:00:00",
-      "endTime": "17:30:00",
-      "durationMinutes": 480,
-      "status": "Concluída"
+      "status": "Em Execução"
     }
   ],
   "autocloseNotifs": [],
-  "lastUpdated": "2026-09-17T13:07:31.040Z"
+  "lastUpdated": "2026-09-17T13:04:21.148Z"
 }

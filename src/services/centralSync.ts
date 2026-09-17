@@ -256,6 +256,20 @@ class CentralSyncService {
     }
   }
 
+  async saveMasterSnapshot(payload: any): Promise<boolean> {
+    try {
+      const res = await fetch('/api/master-snapshot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return res.ok;
+    } catch (err) {
+      console.warn('Failed to save master snapshot to server:', err);
+      return false;
+    }
+  }
+
   async saveAutoCloseNotif(notif: any): Promise<void> {
     try {
       await fetch('/api/autoclose-notif', {

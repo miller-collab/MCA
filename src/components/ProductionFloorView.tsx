@@ -116,14 +116,12 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter active logs (Em Execução e Pausada) - Garante ESTRITAMENTE 1 cartão ativo por colaborador e apenas do dia atual
+  // Filter active logs (Em Execução e Pausada) - Garante ESTRITAMENTE 1 cartão ativo por colaborador
   const allActiveLogs = useMemo(() => {
-    const hoje = formatarDataPtBr(new Date());
     const activeMap = new Map<string, ProductionLog>();
     const rawActive = logs.filter(
       (l) =>
         (l.status === 'Em Execução' || l.status === 'Pausada') &&
-        (!l.date || l.date === hoje) &&
         !l.id.startsWith('log-resume-') &&
         !l.resumedFromPreviousLogId
     );

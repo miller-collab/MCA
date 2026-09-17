@@ -37,6 +37,8 @@ import {
   colaboradorJaUsouRefeicaoHoje,
   calcularDuracaoComDeducaoRefeicao,
   timeToSecondsOfDay,
+  timeToMinutesOfDay,
+  obterStatusTurno,
 } from './utils/factoryCalculations';
 
 import {
@@ -262,9 +264,22 @@ export function App() {
       if (data.logs && Array.isArray(data.logs)) {
         const cleanLogs = data.logs.filter((l) => l && l.id);
         const formatted = cleanLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
-        setLogs(() => {
+        setLogs((prev) => {
+          // Merge incoming logs with currently active local logs to ensure newly started tasks NEVER vanish
+          const logMap = new Map<string, ProductionLog>();
+          for (const l of formatted) {
+            if (l && l.id) logMap.set(l.id, l);
+          }
+          for (const pl of prev) {
+            if (pl && pl.id && (pl.status === 'Em Execução' || pl.status === 'Pausada')) {
+              if (!logMap.has(pl.id)) {
+                logMap.set(pl.id, pl);
+              }
+            }
+          }
+          const merged = Array.from(logMap.values());
           const { sanitizedLogs } = desduplicarLogsAtivos(
-            formatted,
+            merged,
             data.collaborators || collaborators,
             data.shifts || shifts
           );
@@ -287,9 +302,6 @@ export function App() {
       } else {
         setLastJsonSyncTime(formatarHoraPtBr(new Date()));
       }
-
-      // Sync into local server in background as mirror
-      centralSync.restoreFullBackup(data).catch(() => {});
 
       setTimeout(() => {
         isApplyingRemoteMasterRef.current = false;
@@ -356,7 +368,20 @@ export function App() {
         if (realLogs.length > 0 && !isApplyingRemoteMasterRef.current) {
           const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
           setLogs((prev) => {
-            const { sanitizedLogs } = desduplicarLogsAtivos(formatted, collaborators, shifts);
+            const logMap = new Map<string, ProductionLog>();
+            for (const l of formatted) {
+              if (l && l.id) logMap.set(l.id, l);
+            }
+            // Preserve locally running active tasks so they never flicker or disappear
+            for (const pl of prev) {
+              if (pl && pl.id && (pl.status === 'Em Execução' || pl.status === 'Pausada')) {
+                if (!logMap.has(pl.id)) {
+                  logMap.set(pl.id, pl);
+                }
+              }
+            }
+            const merged = Array.from(logMap.values());
+            const { sanitizedLogs } = desduplicarLogsAtivos(merged, collaborators, shifts);
             return sanitizedLogs;
           });
         }
@@ -640,9 +665,26 @@ export function App() {
               color: '#007BFF',
             };
 
-            // Verifica se a atividade é de dia anterior OU se o turno do colaborador já encerrou hoje
+            // Verifica se a atividade é de dia anterior OU se o turno do colaborador encerrou enquanto a atividade estava em andamento
+            const isOvernight = timeToMinutesOfDay(shift.entrada) > timeToMinutesOfDay(shift.saida);
+            const statusAtualTurno = obterStatusTurno(shift.saida, shift.entrada, shift.dias, now);
             const isLogFromPreviousDay = Boolean(log.date && log.date !== todayDateStr);
-            const turnoEncerrou = isLogFromPreviousDay || verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias, now);
+
+            // Turno noturno que iniciou ontem e ainda está em andamento na madrugada NÃO deve ser encerrado
+            const isNightShiftRunning = isOvernight && isLogFromPreviousDay && statusAtualTurno === 'EM_ANDAMENTO';
+
+            // Para atividades de hoje: só encerra se o início ocorreu dentro do turno e o horário de saída já passou
+            const startMins = timeToMinutesOfDay(log.startTime);
+            const saidaMins = timeToMinutesOfDay(shift.saida);
+            const entradaMins = timeToMinutesOfDay(shift.entrada);
+            const iniciouNoTurno = !isOvernight
+              ? (startMins >= entradaMins && startMins <= saidaMins)
+              : (startMins >= entradaMins || startMins <= saidaMins);
+
+            const turnoEncerrouHoje = !isNightShiftRunning && iniciouNoTurno && statusAtualTurno === 'ENCERRADO';
+            const logEsquecidoDiaAnterior = isLogFromPreviousDay && !isNightShiftRunning && statusAtualTurno !== 'EM_ANDAMENTO';
+
+            const turnoEncerrou = turnoEncerrouHoje || logEsquecidoDiaAnterior;
 
             if (turnoEncerrou) {
               changed = true;

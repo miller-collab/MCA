@@ -338,6 +338,17 @@ async function startServer() {
     });
   });
 
+  // Heartbeat ping every 15s to keep SSE connections alive and prevent connection drops / reconnections
+  setInterval(() => {
+    for (let i = sseClients.length - 1; i >= 0; i--) {
+      try {
+        sseClients[i].write(': ping\n\n');
+      } catch {
+        sseClients.splice(i, 1);
+      }
+    }
+  }, 15000);
+
   // ============================================================================
   // CENTRAL DATABASE SYNC REST ENDPOINTS
   // ============================================================================
@@ -604,6 +615,48 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error('Error in /api/restore-full-backup:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 11.1 Save master snapshot (Updates central database smoothly without triggering restore broadcast loops)
+  app.post('/api/master-snapshot', (req, res) => {
+    try {
+      const data = req.body;
+      if (!data || typeof data !== 'object') {
+        return res.status(400).json({ error: 'Payload de snapshot inválido' });
+      }
+
+      if (Array.isArray(data.collaborators) && data.collaborators.length > 0) {
+        centralDb.collaborators = data.collaborators;
+      }
+      if (Array.isArray(data.shifts) && data.shifts.length > 0) {
+        centralDb.shifts = data.shifts;
+      }
+      if (Array.isArray(data.activities) && data.activities.length > 0) {
+        centralDb.activities = data.activities;
+      }
+      if (data.factoryConfig && typeof data.factoryConfig === 'object') {
+        centralDb.factoryConfig = { ...centralDb.factoryConfig, ...data.factoryConfig };
+      }
+      if (Array.isArray(data.logs)) {
+        // Merge without losing logs
+        const logMap = new Map<string, any>();
+        for (const l of centralDb.logs) {
+          if (l && l.id) logMap.set(l.id, l);
+        }
+        for (const l of data.logs) {
+          if (l && l.id) logMap.set(l.id, l);
+        }
+        centralDb.logs = Array.from(logMap.values());
+      }
+      if (Array.isArray(data.autocloseNotifs)) {
+        centralDb.autocloseNotifs = data.autocloseNotifs;
+      }
+
+      saveDatabaseToDisk(centralDb);
+      return res.json({ success: true, message: 'Snapshot salvo com sucesso' });
+    } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
   });

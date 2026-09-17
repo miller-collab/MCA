@@ -715,23 +715,21 @@ export function desduplicarLogsAtivos(
         }
       } else {
         // Último log do dia para este colaborador:
-        if (shiftEnded) {
-          // O turno ou o dia já encerrou: finaliza com segurança no horário de saída do turno
-          const currentEndSec = current.endTime ? timeToShiftRelativeSeconds(current.endTime, shiftEntrada, isOvernight) : 0;
-          const shiftSaidaSec = timeToShiftRelativeSeconds(shiftSaida, shiftEntrada, isOvernight);
+        // Se for do dia atual e estiver Em Execução ou Pausada, DEVE PERMANECER ATIVO na tela do operador!
+        if (isPreviousDay && (current.status === 'Em Execução' || current.status === 'Pausada')) {
+          // Atividade de dia anterior que ficou esquecida aberta: encerra com segurança no horário de saída do turno
+          updatedLog.status = 'Concluída';
+          updatedLog.endTime = current.endTime || shiftSaida;
+          updatedLog.autoClosed = true;
+          updatedLog.autoClosedAtShiftEnd = true;
+          needsUpdate = true;
+        } else if (current.status === 'Concluída' && !current.endTime) {
+          updatedLog.endTime = shiftSaida;
+          needsUpdate = true;
+        }
 
-          if (
-            current.status !== 'Concluída' ||
-            !current.endTime ||
-            currentEndSec > shiftSaidaSec
-          ) {
-            updatedLog.status = 'Concluída';
-            updatedLog.endTime = current.endTime && currentEndSec <= shiftSaidaSec ? current.endTime : shiftSaida;
-            updatedLog.autoClosed = true;
-            updatedLog.autoClosedAtShiftEnd = true;
-            needsUpdate = true;
-          }
-
+        // Se o log está Concluído, calcula duração líquida e refeição
+        if (updatedLog.status === 'Concluída') {
           const endCalculo = updatedLog.endTime || shiftSaida;
           const durBruta = calcularDiferencaMinutos(updatedLog.startTime, endCalculo);
 
@@ -774,7 +772,7 @@ export function desduplicarLogsAtivos(
             needsUpdate = true;
           }
 
-          if (needsUpdate && !updatedLog.observation?.includes('Encerrado Automaticamente')) {
+          if (needsUpdate && isPreviousDay && !updatedLog.observation?.includes('Encerrado Automaticamente')) {
             updatedLog.observation = updatedLog.observation
               ? `${updatedLog.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`
               : `⚠️ Encerrado Automaticamente: Fim de Turno (${shiftSaida})`;

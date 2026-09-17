@@ -105,21 +105,37 @@ export function subscribeToLogs(
   onUpdate: (logs: ProductionLog[]) => void,
   _onError?: (err: Error) => void
 ) {
-  // Listen to single log changes and full list updates
+  let cachedLogs: ProductionLog[] = [];
+
+  // Listen to full list updates (e.g. initial or manual restore)
   const unsubList = centralSync.onLogs((logs) => {
-    if (Array.isArray(logs)) onUpdate(logs);
+    if (Array.isArray(logs)) {
+      cachedLogs = logs;
+      onUpdate(cachedLogs);
+    }
   });
 
+  // Listen to single log changes pushed in real time via SSE
   const unsubSingle = centralSync.onSingleLogChange((change) => {
     if (change.action === 'save' && change.log) {
-      // Direct optimistic update can happen in components or master listener
+      const idx = cachedLogs.findIndex((l) => l.id === change.log!.id);
+      if (idx >= 0) {
+        cachedLogs[idx] = change.log;
+      } else {
+        cachedLogs = [change.log, ...cachedLogs];
+      }
+      onUpdate([...cachedLogs]);
+    } else if (change.action === 'delete' && change.id) {
+      cachedLogs = cachedLogs.filter((l) => l.id !== change.id);
+      onUpdate([...cachedLogs]);
     }
   });
 
   // Initial load
   centralSync.fetchFullSync().then((state) => {
     if (state && Array.isArray(state.logs)) {
-      onUpdate(state.logs);
+      cachedLogs = state.logs;
+      onUpdate(cachedLogs);
     }
   }).catch(() => {});
 
@@ -331,9 +347,9 @@ export async function saveMasterJsonSnapshotToDatabase(snapshot: {
     localStorage.setItem(LOCAL_MASTER_KEY, JSON.stringify(snapshot));
   } catch {}
 
-  // Push to central server
+  // Push to central server smoothly without triggering full-restore broadcast storms
   try {
-    await centralSync.restoreFullBackup(snapshot);
+    await centralSync.saveMasterSnapshot(snapshot);
   } catch (err) {
     console.warn('Master JSON save buffered locally (server unreachable):', err);
   }
