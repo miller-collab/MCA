@@ -116,15 +116,27 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Filter active logs (Em Execução e Pausada) - Garante ESTRITAMENTE 1 cartão ativo por colaborador
+  // Filter active logs (Em Execução e Pausada) - Garante ESTRITAMENTE 1 cartão ativo por colaborador mais recente
   const allActiveLogs = useMemo(() => {
     const activeMap = new Map<string, ProductionLog>();
-    const rawActive = logs.filter(
-      (l) =>
-        (l.status === 'Em Execução' || l.status === 'Pausada') &&
-        !l.id.startsWith('log-resume-') &&
-        !l.resumedFromPreviousLogId
-    );
+    const hojeStr = formatarDataPtBr(new Date());
+
+    const rawActive = [...logs]
+      .filter(
+        (l) =>
+          (l.status === 'Em Execução' || l.status === 'Pausada') &&
+          !l.id.startsWith('log-resume-') &&
+          !l.resumedFromPreviousLogId
+      )
+      .sort((a, b) => {
+        // Prioritize today's date
+        const isTodayA = a.date === hojeStr ? 1 : 0;
+        const isTodayB = b.date === hojeStr ? 1 : 0;
+        if (isTodayA !== isTodayB) return isTodayB - isTodayA;
+        // Then sort by start time descending (newest task first)
+        return (b.startTime || '').localeCompare(a.startTime || '');
+      });
+
     for (const log of rawActive) {
       const key = log.collaboratorName.trim().toLowerCase();
       if (!activeMap.has(key)) {

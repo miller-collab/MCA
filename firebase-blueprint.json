@@ -1,94 +1,158 @@
 {
   "$schema": "https://raw.githubusercontent.com/firebase/firebase-tools/master/schema/firestore-blueprint.json",
   "entities": {
-    "collaborators": {
-      "type": "collection",
+    "collaborator": {
+      "title": "Collaborator",
       "description": "Collaborators and operators of the manufacturing floor",
-      "fields": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "role": { "type": "string" },
-        "shift": { "type": "string" },
-        "active": { "type": "boolean" },
-        "avatarColor": { "type": "string" }
-      }
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "name": { "type": "string", "description": "Collaborator full name" },
+        "role": { "type": "string", "description": "Assigned manufacturing role" },
+        "shift": { "type": "string", "description": "Assigned work shift" },
+        "active": { "type": "boolean", "description": "Whether collaborator is active" },
+        "avatarColor": { "type": "string", "description": "Avatar badge color" },
+        "mealStart": { "type": "string", "description": "Custom meal start time" },
+        "mealEnd": { "type": "string", "description": "Custom meal return time" },
+        "mealDurationMinutes": { "type": "number", "description": "Custom meal duration in minutes" }
+      },
+      "required": ["id", "name", "role", "active"]
     },
-    "activities": {
-      "type": "collection",
+    "activity": {
+      "title": "Activity",
       "description": "Available activities, operations, and routines per role",
-      "fields": {
-        "id": { "type": "string" },
-        "role": { "type": "string" },
-        "name": { "type": "string" },
-        "priority": { "type": "number" },
-        "category": { "type": "string" },
-        "standardMinutes": { "type": "number" }
-      }
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Activity identifier" },
+        "role": { "type": "string", "description": "Target role" },
+        "name": { "type": "string", "description": "Activity title" },
+        "priority": { "type": "number", "description": "Order priority" },
+        "category": { "type": "string", "description": "Activity category" },
+        "standardMinutes": { "type": "number", "description": "Standard expected time in minutes" }
+      },
+      "required": ["id", "name", "category"]
     },
-    "shifts": {
-      "type": "collection",
+    "shift": {
+      "title": "Shift",
       "description": "Factory shift definitions and schedules",
-      "fields": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "code": { "type": "string" },
-        "entrada": { "type": "string" },
-        "saidaAlmoco": { "type": "string" },
-        "retornoAlmoco": { "type": "string" },
-        "saida": { "type": "string" },
-        "dias": { "type": "array" },
-        "color": { "type": "string" }
-      }
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Shift identifier" },
+        "name": { "type": "string", "description": "Shift title" },
+        "code": { "type": "string", "description": "Shift short code" },
+        "entrada": { "type": "string", "description": "Start time HH:mm" },
+        "saidaAlmoco": { "type": "string", "description": "Lunch departure HH:mm" },
+        "retornoAlmoco": { "type": "string", "description": "Lunch return HH:mm" },
+        "saida": { "type": "string", "description": "Shift end time HH:mm" },
+        "dias": { "type": "array", "description": "Work days list" },
+        "color": { "type": "string", "description": "Color accent" }
+      },
+      "required": ["id", "name", "entrada", "saida"]
     },
-    "logs": {
-      "type": "collection",
-      "description": "Real-time production and operation logs pointed by tablets and operators",
-      "fields": {
-        "id": { "type": "string" },
-        "date": { "type": "string" },
-        "collaboratorName": { "type": "string" },
-        "role": { "type": "string" },
-        "shift": { "type": "string" },
-        "activity": { "type": "string" },
-        "category": { "type": "string" },
-        "startTime": { "type": "string" },
-        "endTime": { "type": "string" },
-        "durationMinutes": { "type": "number" },
-        "status": { "type": "string" },
-        "observation": { "type": "string" },
-        "notes": { "type": "string" },
-        "partsProduced": { "type": "number" },
-        "scrapCount": { "type": "number" },
-        "autoClosed": { "type": "boolean" },
-        "autoClosedAtShiftEnd": { "type": "boolean" },
-        "updatedAt": { "type": "string" }
-      }
+    "productionLog": {
+      "title": "ProductionLog",
+      "description": "Real-time production and operation logs shared across all tablets",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique log identifier" },
+        "date": { "type": "string", "description": "Date formatted DD/MM/YYYY" },
+        "collaboratorName": { "type": "string", "description": "Operator name" },
+        "role": { "type": "string", "description": "Operator role" },
+        "shift": { "type": "string", "description": "Work shift" },
+        "activity": { "type": "string", "description": "Activity name" },
+        "category": { "type": "string", "description": "Activity category" },
+        "startTime": { "type": "string", "description": "Start time HH:mm:ss" },
+        "endTime": { "type": "string", "description": "End time HH:mm:ss" },
+        "durationMinutes": { "type": "number", "description": "Duration in minutes" },
+        "status": { "type": "string", "description": "Task status: Em Execução, Pausada, Concluída" },
+        "observation": { "type": "string", "description": "Final observation" },
+        "notes": { "type": "string", "description": "Initial task notes" },
+        "initialDescription": { "type": "string", "description": "Detailed description of what is being executed" },
+        "machineId": { "type": "string", "description": "Target machine ID" },
+        "partsProduced": { "type": "number", "description": "Parts produced count" },
+        "scrapCount": { "type": "number", "description": "Scrap parts count" },
+        "isMealPause": { "type": "boolean", "description": "Whether currently on meal pause" },
+        "mealBreakDeducted": { "type": "boolean", "description": "Whether meal break was deducted" },
+        "mealBreakMinutes": { "type": "number", "description": "Deducted meal break minutes" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last update" }
+      },
+      "required": ["id", "collaboratorName", "activity", "startTime", "status"]
     },
-    "autoclose_notifs": {
-      "type": "collection",
-      "description": "Notifications of automatic shift closures",
-      "fields": {
-        "id": { "type": "string" },
-        "logId": { "type": "string" },
-        "collaboratorName": { "type": "string" },
-        "role": { "type": "string" },
-        "activity": { "type": "string" },
-        "shiftName": { "type": "string" },
-        "shiftEnd": { "type": "string" },
-        "date": { "type": "string" },
-        "timestamp": { "type": "number" },
-        "readByOperator": { "type": "boolean" },
-        "readByLeader": { "type": "boolean" }
-      }
+    "autoCloseNotif": {
+      "title": "AutoCloseNotif",
+      "description": "Shift automatic closure notifications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Notification identifier" },
+        "logId": { "type": "string", "description": "Associated log ID" },
+        "collaboratorName": { "type": "string", "description": "Operator name" },
+        "role": { "type": "string", "description": "Operator role" },
+        "activity": { "type": "string", "description": "Activity name" },
+        "shiftName": { "type": "string", "description": "Shift name" },
+        "shiftEnd": { "type": "string", "description": "Shift end time" },
+        "date": { "type": "string", "description": "Date" },
+        "timestamp": { "type": "number", "description": "Timestamp" },
+        "readByOperator": { "type": "boolean", "description": "Operator read status" },
+        "readByLeader": { "type": "boolean", "description": "Leader read status" }
+      },
+      "required": ["id", "collaboratorName", "activity"]
     },
-    "factory_config": {
-      "type": "collection",
+    "factoryConfig": {
+      "title": "FactoryConfig",
       "description": "General factory configuration and parameters",
-      "fields": {
-        "toleranceMinutes": { "type": "number" },
-        "observations": { "type": "array" },
-        "customRoleColors": { "type": "map" }
+      "type": "object",
+      "properties": {
+        "toleranceMinutes": { "type": "number", "description": "Tolerance minutes for early arrival" },
+        "efficiencyThresholdGreen": { "type": "number", "description": "Green efficiency percentage threshold" },
+        "efficiencyThresholdYellow": { "type": "number", "description": "Yellow efficiency percentage threshold" },
+        "observations": { "type": "array", "description": "Predefined observations" },
+        "customRoleColors": { "type": "object", "description": "Custom color mapping per role" }
       }
+    },
+    "masterSnapshot": {
+      "title": "MasterSnapshot",
+      "description": "Global synchronized state of all active operations and logs across all devices",
+      "type": "object",
+      "properties": {
+        "collaborators": { "type": "array", "description": "Current collaborators list" },
+        "shifts": { "type": "array", "description": "Current shifts list" },
+        "activities": { "type": "array", "description": "Current activities list" },
+        "logs": { "type": "array", "description": "Current logs list" },
+        "autocloseNotifs": { "type": "array", "description": "Notifications list" },
+        "factoryConfig": { "type": "object", "description": "Factory configuration" },
+        "formattedSyncTime": { "type": "string", "description": "Formatted synchronization time" },
+        "lastUpdated": { "type": "string", "description": "ISO timestamp of last update" }
+      }
+    }
+  },
+  "firestore": {
+    "/collaborators/{collaboratorId}": {
+      "schema": "collaborator",
+      "description": "Manufacturing floor collaborators"
+    },
+    "/activities/{activityId}": {
+      "schema": "activity",
+      "description": "Factory activities"
+    },
+    "/shifts/{shiftId}": {
+      "schema": "shift",
+      "description": "Shift definitions"
+    },
+    "/logs/{logId}": {
+      "schema": "productionLog",
+      "description": "Real-time production and operation logs"
+    },
+    "/autoclose_notifs/{notifId}": {
+      "schema": "autoCloseNotif",
+      "description": "Auto-close shift notifications"
+    },
+    "/factory_config/{configId}": {
+      "schema": "factoryConfig",
+      "description": "Factory configuration parameters"
+    },
+    "/master_snapshot/{snapshotId}": {
+      "schema": "masterSnapshot",
+      "description": "Universal master state for instant real-time synchronization across all tablets"
     }
   }
 }

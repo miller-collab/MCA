@@ -926,13 +926,15 @@ export function App() {
           }
           return l;
         });
-        return [newLog, ...updated];
+        const nextLogs = [newLog, ...updated];
+        triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+        return nextLogs;
       });
 
       saveLogToFirestore(newLog);
       if (soundEnabled) playFactoryChime('start');
     },
-    [collaborators, soundEnabled]
+    [collaborators, shifts, activities, autoCloseNotifs, soundEnabled, triggerMasterJsonSave]
   );
 
   const handlePauseMeal = useCallback(
@@ -941,8 +943,8 @@ export function App() {
       const timeStr = formatarHoraPtBr(now);
       const dateStr = formatarDataPtBr(now);
 
-      setLogs((prev) =>
-        prev.map((log) => {
+      setLogs((prev) => {
+        const nextLogs = prev.map((log) => {
           if (log.id === logId) {
             const colab = collaborators.find(
               (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
@@ -977,18 +979,20 @@ export function App() {
             return pausedLog;
           }
           return log;
-        })
-      );
+        });
+        triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+        return nextLogs;
+      });
       if (soundEnabled) playFactoryChime('finish');
     },
-    [collaborators, shifts, soundEnabled]
+    [collaborators, shifts, activities, autoCloseNotifs, soundEnabled, triggerMasterJsonSave]
   );
 
   const handleResumeActivity = useCallback(
     (logId: string) => {
       const now = new Date();
-      setLogs((prev) =>
-        prev.map((log) => {
+      setLogs((prev) => {
+        const nextLogs = prev.map((log) => {
           if (log.id === logId) {
             const resumedLog: ProductionLog = {
               ...log,
@@ -1001,11 +1005,13 @@ export function App() {
             return resumedLog;
           }
           return log;
-        })
-      );
+        });
+        triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+        return nextLogs;
+      });
       if (soundEnabled) playFactoryChime('start');
     },
-    [soundEnabled]
+    [collaborators, shifts, activities, autoCloseNotifs, soundEnabled, triggerMasterJsonSave]
   );
 
   const handleFinishActivity = useCallback(
@@ -1020,8 +1026,8 @@ export function App() {
       const now = new Date();
       const endTimeStr = customEndTime || formatarHoraPtBr(now);
 
-      setLogs((prev) =>
-        prev.map((log) => {
+      setLogs((prev) => {
+        const nextLogs = prev.map((log) => {
           if (log.id === logId) {
             const colab = collaborators.find(
               (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
@@ -1054,11 +1060,13 @@ export function App() {
             return finishedLog;
           }
           return log;
-        })
-      );
+        });
+        triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+        return nextLogs;
+      });
       if (soundEnabled) playFactoryChime('finish');
     },
-    [collaborators, shifts, soundEnabled]
+    [collaborators, shifts, activities, autoCloseNotifs, soundEnabled, triggerMasterJsonSave]
   );
 
   const handleQuickChangeover = useCallback(
@@ -1114,6 +1122,7 @@ export function App() {
           return log;
         });
 
+        let finalLogs = updated;
         if (targetColab) {
           const colab = collaborators.find((c) => c.name.trim().toLowerCase() === targetColab.trim().toLowerCase());
           const nextLog: ProductionLog = {
@@ -1131,26 +1140,35 @@ export function App() {
             notes: newInitialDescription?.trim() || undefined,
           };
           saveLogToFirestore(nextLog);
-          return [nextLog, ...updated];
+          finalLogs = [nextLog, ...updated];
         }
 
-        return updated;
+        triggerMasterJsonSave(collaborators, shifts, activities, finalLogs, autoCloseNotifs);
+        return finalLogs;
       });
 
       if (soundEnabled) playFactoryChime('start');
     },
-    [collaborators, shifts, soundEnabled]
+    [collaborators, shifts, activities, autoCloseNotifs, soundEnabled, triggerMasterJsonSave]
   );
 
   const handleDeleteLog = useCallback((id: string) => {
-    setLogs((prev) => prev.filter((l) => l.id !== id));
+    setLogs((prev) => {
+      const nextLogs = prev.filter((l) => l.id !== id);
+      triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+      return nextLogs;
+    });
     deleteLogFromFirestore(id);
-  }, []);
+  }, [collaborators, shifts, activities, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleUpdateLog = useCallback((updatedLog: ProductionLog) => {
-    setLogs((prev) => prev.map((l) => (l.id === updatedLog.id ? updatedLog : l)));
+    setLogs((prev) => {
+      const nextLogs = prev.map((l) => (l.id === updatedLog.id ? updatedLog : l));
+      triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+      return nextLogs;
+    });
     saveLogToFirestore(updatedLog);
-  }, []);
+  }, [collaborators, shifts, activities, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleUnlockLeader = useCallback(
     (pin: string) => {

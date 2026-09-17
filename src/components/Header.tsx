@@ -251,31 +251,31 @@ export const Header: React.FC<HeaderProps> = ({
                   MCA <span className="font-normal text-[#888888]">| CONTROLE DE ATIVIDADES</span>
                 </h1>
                 <div
-                  className={`hidden sm:inline-flex items-center gap-1.5 px-2 py-0.5 border rounded text-[9.5px] font-bold transition shadow-xs ${
+                  className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 border rounded-full text-[10px] font-bold transition shadow-xs ${
                     isOnline
                       ? 'bg-[#00E676]/15 border-[#00E676]/30 text-[#00E676]'
                       : 'bg-[#FF8C00]/20 border-[#FF8C00]/40 text-[#FFB74D]'
                   }`}
                   title={
                     isOnline
-                      ? 'Banco de Dados Nativo Central Ativo • Sincronização Contínua em Tempo Real'
+                      ? 'Sincronização Ativa em Tempo Real • Todos os tablets conectados compartilham a mesma tela instantaneamente'
                       : 'Modo Offline Ativo • Os dados continuam sendo gravados no tablet e serão enviados assim que a internet reconectar'
                   }
                 >
-                  <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-[#00E676] animate-pulse' : 'bg-[#FF8C00]'}`}></span>
-                  <HardDrive className="w-3 h-3" />
-                  <span>{isOnline ? 'BANCO ATIVO (NATIVO)' : 'SALVANDO LOCAL (OFFLINE)'}</span>
+                  <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-[#00E676] animate-pulse' : 'bg-[#FF8C00]'}`}></span>
+                  <Activity className="w-3 h-3" />
+                  <span>{isOnline ? 'TELA COMPARTILHADA (TEMPO REAL)' : 'MODO OFFLINE LOCAL'}</span>
                 </div>
-                {/* Discrete JSON Synchronization Indicator requested in Photo 1 */}
+                {/* Instant Real-Time Sync Indicator between Tablets */}
                 <button
                   type="button"
                   onClick={onForceSync}
                   disabled={isSyncing}
                   className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-[#1A2333] hover:bg-[#203047] border border-[#007BFF]/40 rounded text-[10px] font-mono text-[#93C5FD] transition cursor-pointer active:scale-95 shadow-sm"
-                  title="Horário do snapshot JSON mestre sincronizado no servidor e tablets (Loop a cada 30s). Clique para forçar sincronização imediata."
+                  title="Sincronização em Tempo Real ativa entre todos os tablets. Clique para forçar sincronização imediata."
                 >
                   <Database className={`w-3 h-3 text-[#007BFF] ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span className="font-bold text-[#CCCCCC]">JSON:</span>
+                  <span className="font-bold text-[#CCCCCC]">SINCRONIA:</span>
                   <span className="font-semibold text-[#00E676] tracking-wider font-mono">
                     {lastJsonSyncTime || formatarHoraPtBr(currentTime)}
                   </span>
@@ -283,7 +283,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </button>
               </div>
               <p className="text-[10.5px] text-[#888888] font-normal hidden md:block">
-                Sistema MES Industrial • Banco Nativo Integrado com Cache Offline para Redes Instáveis
+                Sistema MES Industrial • Mesma Tela e Atividades Sincronizadas em Tempo Real em Todos os Tablets
               </p>
             </div>
           </div>

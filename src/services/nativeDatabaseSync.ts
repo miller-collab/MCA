@@ -1,3 +1,16 @@
+import { 
+  collection, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  getDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  limit,
+  getDocs
+} from 'firebase/firestore';
+import { db } from './firebaseClient';
 import { centralSync } from './centralSync';
 import { 
   Collaborator, 
@@ -17,13 +30,13 @@ export interface FactoryConfigState {
   efficiencyThresholdYellow?: number;
 }
 
-// Queue for offline changes (when Wi-Fi or connection drops)
-const OFFLINE_QUEUE_KEY = 'mca_offline_queue_v1';
-const LOCAL_MASTER_KEY = 'mca_local_master_snapshot_v1';
+const OFFLINE_QUEUE_KEY = 'mca_offline_queue_v2';
+const LOCAL_MASTER_KEY = 'mca_local_master_snapshot_v2';
+const LOCAL_LOGS_KEY = 'mca_logs_v3';
 
 interface OfflineQueueItem {
   id: string;
-  type: 'log' | 'delete_log' | 'colab' | 'shift' | 'activity' | 'config' | 'notif';
+  type: 'log' | 'delete_log' | 'colab' | 'shift' | 'activity' | 'config' | 'notif' | 'master_snap';
   payload: any;
   timestamp: number;
 }
@@ -53,10 +66,9 @@ function addToOfflineQueue(item: Omit<OfflineQueueItem, 'id' | 'timestamp'>) {
   saveOfflineQueue(queue);
 }
 
-// Flush offline queue to server as soon as connection is healthy
 let isFlushing = false;
 export async function flushOfflineQueue(): Promise<void> {
-  if (isFlushing || typeof navigator !== 'undefined' && !navigator.onLine) return;
+  if (isFlushing || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
   const queue = getOfflineQueue();
   if (queue.length === 0) return;
 
@@ -66,19 +78,30 @@ export async function flushOfflineQueue(): Promise<void> {
   for (const item of queue) {
     try {
       if (item.type === 'log') {
-        await centralSync.saveLog(item.payload);
+        const log = item.payload;
+        await setDoc(doc(db, 'logs', log.id), log, { merge: true });
+        await centralSync.saveLog(log);
       } else if (item.type === 'delete_log') {
+        await deleteDoc(doc(db, 'logs', item.payload));
         await centralSync.deleteLog(item.payload);
       } else if (item.type === 'colab') {
+        await setDoc(doc(db, 'master_snapshot', 'collaborators'), { list: item.payload }, { merge: true });
         await centralSync.saveCollaborators(item.payload);
       } else if (item.type === 'shift') {
+        await setDoc(doc(db, 'master_snapshot', 'shifts'), { list: item.payload }, { merge: true });
         await centralSync.saveShifts(item.payload);
       } else if (item.type === 'activity') {
+        await setDoc(doc(db, 'master_snapshot', 'activities'), { list: item.payload }, { merge: true });
         await centralSync.saveActivities(item.payload);
       } else if (item.type === 'config') {
+        await setDoc(doc(db, 'master_snapshot', 'config'), item.payload, { merge: true });
         await centralSync.saveFactoryConfig(item.payload);
       } else if (item.type === 'notif') {
+        await setDoc(doc(db, 'autoclose_notifs', item.payload.id), item.payload, { merge: true });
         await centralSync.saveAutoCloseNotif(item.payload);
+      } else if (item.type === 'master_snap') {
+        await setDoc(doc(db, 'master_snapshot', 'current'), item.payload, { merge: true });
+        await centralSync.saveMasterSnapshot(item.payload);
       }
     } catch {
       remaining.push(item);
@@ -89,68 +112,174 @@ export async function flushOfflineQueue(): Promise<void> {
   isFlushing = false;
 }
 
-// Monitor browser online events to flush instantly
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
     flushOfflineQueue().catch(() => {});
   });
-  // Periodic background check every 15s to flush if connected
   setInterval(() => {
     flushOfflineQueue().catch(() => {});
   }, 15000);
 }
 
-// 1. Subscribe to Production Logs
+// ============================================================================
+// REAL-TIME FIRESTORE + NATIVE UNIVERSAL SUBSCRIPTIONS
+// ============================================================================
+
+/**
+ * 1. Subscribe to Production Logs
+ * Real-time onSnapshot directly from Firestore + SSE secondary channel
+ */
 export function subscribeToLogs(
   onUpdate: (logs: ProductionLog[]) => void,
-  _onError?: (err: Error) => void
+  onError?: (err: Error) => void
 ) {
-  let cachedLogs: ProductionLog[] = [];
+  let cachedLogsMap = new Map<string, ProductionLog>();
 
-  // Listen to full list updates (e.g. initial or manual restore)
-  const unsubList = centralSync.onLogs((logs) => {
-    if (Array.isArray(logs)) {
-      cachedLogs = logs;
-      onUpdate(cachedLogs);
-    }
-  });
-
-  // Listen to single log changes pushed in real time via SSE
-  const unsubSingle = centralSync.onSingleLogChange((change) => {
-    if (change.action === 'save' && change.log) {
-      const idx = cachedLogs.findIndex((l) => l.id === change.log!.id);
-      if (idx >= 0) {
-        cachedLogs[idx] = change.log;
-      } else {
-        cachedLogs = [change.log, ...cachedLogs];
+  // Pre-fill with local cache
+  try {
+    const raw = localStorage.getItem(LOCAL_LOGS_KEY);
+    if (raw) {
+      const parsed: ProductionLog[] = JSON.parse(raw);
+      for (const l of parsed) {
+        if (l && l.id) cachedLogsMap.set(l.id, l);
       }
-      onUpdate([...cachedLogs]);
+      if (cachedLogsMap.size > 0) {
+        onUpdate(Array.from(cachedLogsMap.values()));
+      }
+    }
+  } catch {}
+
+  // A. Primary: Firestore Real-Time Collection Listener
+  let unsubFirestore = () => {};
+  try {
+    const logsCol = collection(db, 'logs');
+    unsubFirestore = onSnapshot(
+      logsCol,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          snapshot.docChanges().forEach((change) => {
+            const data = change.doc.data() as ProductionLog;
+            if (change.type === 'removed') {
+              cachedLogsMap.delete(change.doc.id);
+            } else if (data && data.id) {
+              cachedLogsMap.set(data.id, data);
+            }
+          });
+          const all = Array.from(cachedLogsMap.values());
+          try {
+            localStorage.setItem(LOCAL_LOGS_KEY, JSON.stringify(all));
+          } catch {}
+          onUpdate(all);
+        }
+      },
+      (err) => {
+        console.warn('Firestore logs subscription notice:', err.message);
+        if (onError) onError(err);
+      }
+    );
+  } catch (err: any) {
+    console.warn('Failed to init Firestore logs snapshot:', err.message);
+  }
+
+  // B. Secondary: Central Cloud Run SSE Stream
+  const unsubCentralSingle = centralSync.onSingleLogChange((change) => {
+    if (change.action === 'save' && change.log) {
+      cachedLogsMap.set(change.log.id, change.log);
+      const all = Array.from(cachedLogsMap.values());
+      try {
+        localStorage.setItem(LOCAL_LOGS_KEY, JSON.stringify(all));
+      } catch {}
+      onUpdate(all);
     } else if (change.action === 'delete' && change.id) {
-      cachedLogs = cachedLogs.filter((l) => l.id !== change.id);
-      onUpdate([...cachedLogs]);
+      cachedLogsMap.delete(change.id);
+      const all = Array.from(cachedLogsMap.values());
+      try {
+        localStorage.setItem(LOCAL_LOGS_KEY, JSON.stringify(all));
+      } catch {}
+      onUpdate(all);
     }
   });
 
-  // Initial load
+  const unsubCentralLogs = centralSync.onLogs((logs) => {
+    if (Array.isArray(logs) && logs.length > 0) {
+      for (const l of logs) {
+        if (l && l.id) cachedLogsMap.set(l.id, l);
+      }
+      const all = Array.from(cachedLogsMap.values());
+      onUpdate(all);
+    }
+  });
+
+  // Initial fetch from server
   centralSync.fetchFullSync().then((state) => {
-    if (state && Array.isArray(state.logs)) {
-      cachedLogs = state.logs;
-      onUpdate(cachedLogs);
+    if (state && Array.isArray(state.logs) && state.logs.length > 0) {
+      for (const l of state.logs) {
+        if (l && l.id) cachedLogsMap.set(l.id, l);
+      }
+      onUpdate(Array.from(cachedLogsMap.values()));
     }
   }).catch(() => {});
 
   return () => {
-    unsubList();
-    unsubSingle();
+    try {
+      unsubFirestore();
+    } catch {}
+    unsubCentralSingle();
+    unsubCentralLogs();
   };
 }
 
-// 2. Subscribe to Collaborators
+/**
+ * 2. Subscribe to Master JSON Snapshot (Instant Universal Sync across all devices)
+ */
+export function subscribeToMasterJsonSnapshot(onUpdate: (snapshot: any) => void) {
+  let unsubFirestore = () => {};
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    unsubFirestore = onSnapshot(
+      snapRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data && (data.logs || data.collaborators)) {
+            try {
+              localStorage.setItem(LOCAL_MASTER_KEY, JSON.stringify(data));
+            } catch {}
+            onUpdate(data);
+          }
+        }
+      },
+      (err) => {
+        console.warn('Firestore master_snapshot subscription notice:', err.message);
+      }
+    );
+  } catch (err: any) {
+    console.warn('Failed to init master_snapshot onSnapshot:', err.message);
+  }
+
+  // Secondary SSE logs restored listener
+  const unsubCentral = centralSync.onLogs((logs) => {
+    centralSync.fetchFullSync().then((state) => {
+      if (state) onUpdate(state);
+    }).catch(() => {});
+  });
+
+  return () => {
+    try {
+      unsubFirestore();
+    } catch {}
+    unsubCentral();
+  };
+}
+
+/**
+ * 3. Subscribe to Collaborators
+ */
 export function subscribeToCollaborators(
   onUpdate: (colabs: Collaborator[]) => void,
   _onError?: (err: Error) => void
 ) {
-  const unsub = centralSync.onCollaborators((colabs) => {
+  const unsubCentral = centralSync.onCollaborators((colabs) => {
     if (Array.isArray(colabs) && colabs.length > 0) onUpdate(colabs);
   });
 
@@ -160,10 +289,12 @@ export function subscribeToCollaborators(
     }
   }).catch(() => {});
 
-  return unsub;
+  return unsubCentral;
 }
 
-// 3. Subscribe to Activities
+/**
+ * 4. Subscribe to Activities
+ */
 export function subscribeToActivities(
   onUpdate: (acts: ActivityItem[]) => void,
   _onError?: (err: Error) => void
@@ -181,7 +312,9 @@ export function subscribeToActivities(
   return unsub;
 }
 
-// 4. Subscribe to Shifts
+/**
+ * 5. Subscribe to Shifts
+ */
 export function subscribeToShifts(
   onUpdate: (shifts: ShiftConfig[]) => void,
   _onError?: (err: Error) => void
@@ -199,7 +332,9 @@ export function subscribeToShifts(
   return unsub;
 }
 
-// 5. Subscribe to Factory Config
+/**
+ * 6. Subscribe to Factory Config
+ */
 export function subscribeToFactoryConfig(
   onUpdate: (config: any) => void,
   _onError?: (err: Error) => void
@@ -217,121 +352,189 @@ export function subscribeToFactoryConfig(
   return unsub;
 }
 
-// 6. Save or update a single log
+// ============================================================================
+// MUTATION METHODS (Saves to Firestore + Central Server + Local Storage)
+// ============================================================================
+
+/**
+ * 7. Save or update a single production log
+ */
 export async function saveLogToDatabase(log: ProductionLog): Promise<void> {
-  // Always update local cache first
+  // A. LocalStorage cache for instant offline responsiveness
   try {
-    const raw = localStorage.getItem('mca_logs_v3');
+    const raw = localStorage.getItem(LOCAL_LOGS_KEY);
     let list: ProductionLog[] = raw ? JSON.parse(raw) : [];
     const idx = list.findIndex((l) => l.id === log.id);
     if (idx >= 0) {
       list[idx] = log;
     } else {
-      list.push(log);
+      list = [log, ...list];
     }
-    localStorage.setItem('mca_logs_v3', JSON.stringify(list));
+    localStorage.setItem(LOCAL_LOGS_KEY, JSON.stringify(list));
   } catch {}
 
+  // B. Write to Firestore in real time
+  try {
+    const logRef = doc(db, 'logs', log.id);
+    await setDoc(logRef, {
+      ...log,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Firestore saveLog notice (queued):', err);
+    addToOfflineQueue({ type: 'log', payload: log });
+  }
+
+  // C. Mirror to Express Central Server
   try {
     await centralSync.saveLog(log);
   } catch {
-    // If request fails (offline or poor signal), queue for retry
-    addToOfflineQueue({ type: 'log', payload: log });
+    // Already handled locally and in queue if offline
   }
 }
 
-// 7. Delete a log
+/**
+ * 8. Delete a production log
+ */
 export async function deleteLogFromDatabase(id: string): Promise<void> {
   try {
-    const raw = localStorage.getItem('mca_logs_v3');
+    const raw = localStorage.getItem(LOCAL_LOGS_KEY);
     if (raw) {
       const list: ProductionLog[] = JSON.parse(raw);
       const filtered = list.filter((l) => l.id !== id);
-      localStorage.setItem('mca_logs_v3', JSON.stringify(filtered));
+      localStorage.setItem(LOCAL_LOGS_KEY, JSON.stringify(filtered));
     }
   } catch {}
 
   try {
-    await centralSync.deleteLog(id);
+    const logRef = doc(db, 'logs', id);
+    await deleteDoc(logRef);
   } catch {
     addToOfflineQueue({ type: 'delete_log', payload: id });
   }
+
+  try {
+    await centralSync.deleteLog(id);
+  } catch {}
 }
 
-// 8. Save Collaborators
+/**
+ * 9. Save Collaborators
+ */
 export async function saveCollaboratorsToDatabase(collaborators: Collaborator[]): Promise<void> {
   try {
     localStorage.setItem('mca_collaborators_v3', JSON.stringify(collaborators));
   } catch {}
 
   try {
-    await centralSync.saveCollaborators(collaborators);
+    await setDoc(doc(db, 'master_snapshot', 'collaborators'), {
+      list: collaborators,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
   } catch {
     addToOfflineQueue({ type: 'colab', payload: collaborators });
   }
+
+  try {
+    await centralSync.saveCollaborators(collaborators);
+  } catch {}
 }
 
-// 9. Save Activities
+/**
+ * 10. Save Activities
+ */
 export async function saveActivitiesToDatabase(activities: ActivityItem[]): Promise<void> {
   try {
     localStorage.setItem('mca_activities_v3', JSON.stringify(activities));
   } catch {}
 
   try {
-    await centralSync.saveActivities(activities);
+    await setDoc(doc(db, 'master_snapshot', 'activities'), {
+      list: activities,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
   } catch {
     addToOfflineQueue({ type: 'activity', payload: activities });
   }
+
+  try {
+    await centralSync.saveActivities(activities);
+  } catch {}
 }
 
-// 10. Save Shifts
+/**
+ * 11. Save Shifts
+ */
 export async function saveShiftsToDatabase(shifts: ShiftConfig[]): Promise<void> {
   try {
     localStorage.setItem('mca_shifts_v3', JSON.stringify(shifts));
   } catch {}
 
   try {
-    await centralSync.saveShifts(shifts);
+    await setDoc(doc(db, 'master_snapshot', 'shifts'), {
+      list: shifts,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
   } catch {
     addToOfflineQueue({ type: 'shift', payload: shifts });
   }
+
+  try {
+    await centralSync.saveShifts(shifts);
+  } catch {}
 }
 
-// 11. Save Factory Config
+/**
+ * 12. Save Factory Config
+ */
 export async function saveFactoryConfigToDatabase(config: any): Promise<void> {
   try {
-    await centralSync.saveFactoryConfig(config);
+    await setDoc(doc(db, 'master_snapshot', 'config'), {
+      ...config,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
   } catch {
     addToOfflineQueue({ type: 'config', payload: config });
   }
+
+  try {
+    await centralSync.saveFactoryConfig(config);
+  } catch {}
 }
 
-// 12. Save AutoClose Notification
+/**
+ * 13. Save AutoClose Notification
+ */
 export async function saveAutoCloseNotifToDatabase(notif: AutoCloseNotification): Promise<void> {
   try {
-    await centralSync.saveAutoCloseNotif(notif);
+    if (notif && notif.id) {
+      await setDoc(doc(db, 'autoclose_notifs', notif.id), notif, { merge: true });
+    }
   } catch {
     addToOfflineQueue({ type: 'notif', payload: notif });
   }
+
+  try {
+    await centralSync.saveAutoCloseNotif(notif);
+  } catch {}
 }
 
-// 13. Dismiss AutoClose Notification
 export async function dismissAutoCloseNotifInDatabase(notifId: string): Promise<void> {
   try {
-    await centralSync.saveAutoCloseNotif({ id: notifId, dismissed: true, read: true });
-  } catch {
-    addToOfflineQueue({ type: 'notif', payload: { id: notifId, dismissed: true, read: true } });
-  }
+    await saveAutoCloseNotifToDatabase({ id: notifId, dismissed: true, read: true } as any);
+  } catch {}
 }
 
-// 14. Clear all notifications
 export async function clearAllNotifsInDatabase(): Promise<void> {
   try {
     await centralSync.saveAutoCloseNotif({ id: 'all_cleared', clearAll: true });
   } catch {}
 }
 
-// 15. Master JSON Snapshot Save
+/**
+ * 14. Master JSON Snapshot Save
+ * Writes unified state to Firestore master_snapshot/current and Central Server /api/master-snapshot
+ */
 export async function saveMasterJsonSnapshotToDatabase(snapshot: {
   collaborators: Collaborator[];
   shifts: ShiftConfig[];
@@ -345,19 +548,52 @@ export async function saveMasterJsonSnapshotToDatabase(snapshot: {
   // Store locally for instant offline availability
   try {
     localStorage.setItem(LOCAL_MASTER_KEY, JSON.stringify(snapshot));
+    if (Array.isArray(snapshot.logs)) {
+      localStorage.setItem(LOCAL_LOGS_KEY, JSON.stringify(snapshot.logs));
+    }
   } catch {}
 
-  // Push to central server smoothly without triggering full-restore broadcast storms
+  // A. Save to Firestore (Primary universal state for all tablets)
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    await setDoc(snapRef, {
+      ...snapshot,
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Firestore master_snapshot save notice:', err);
+    addToOfflineQueue({ type: 'master_snap', payload: snapshot });
+  }
+
+  // B. Save to Central Express Server
   try {
     await centralSync.saveMasterSnapshot(snapshot);
-  } catch (err) {
-    console.warn('Master JSON save buffered locally (server unreachable):', err);
-  }
+  } catch {}
 }
 
-// 16. Fetch Master JSON Snapshot
+/**
+ * 15. Fetch Master JSON Snapshot
+ * Reads latest state from Firestore, falls back to Server, then LocalStorage
+ */
 export async function fetchMasterJsonSnapshotFromDatabase(): Promise<any | null> {
-  // Try server first
+  // 1. Try Firestore first
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    const docSnap = await getDoc(snapRef);
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      if (data && Array.isArray(data.collaborators) && data.collaborators.length > 0) {
+        try {
+          localStorage.setItem(LOCAL_MASTER_KEY, JSON.stringify(data));
+        } catch {}
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('Firestore master_snapshot fetch notice:', err);
+  }
+
+  // 2. Try Central Server
   try {
     const full = await centralSync.fetchFullSync();
     if (full && Array.isArray(full.collaborators) && full.collaborators.length > 0) {
@@ -366,11 +602,9 @@ export async function fetchMasterJsonSnapshotFromDatabase(): Promise<any | null>
       } catch {}
       return full;
     }
-  } catch {
-    // Network failure
-  }
+  } catch {}
 
-  // Fallback to local snapshot when offline
+  // 3. Fallback to LocalStorage
   try {
     const raw = localStorage.getItem(LOCAL_MASTER_KEY);
     if (raw) return JSON.parse(raw);
@@ -379,20 +613,19 @@ export async function fetchMasterJsonSnapshotFromDatabase(): Promise<any | null>
   return null;
 }
 
-// 17. Subscribe to Master JSON Snapshot
-export function subscribeToMasterJsonSnapshot(onUpdate: (snapshot: any) => void) {
-  // Hook to central SSE logs_restored & full sync
-  const unsub = centralSync.onLogs((logs) => {
-    centralSync.fetchFullSync().then((state) => {
-      if (state) onUpdate(state);
-    }).catch(() => {});
-  });
-
-  return unsub;
-}
-
-// 18. Reset logs
+/**
+ * 16. Reset logs
+ */
 export async function resetProductionLogsInDatabase(): Promise<boolean> {
+  try {
+    // Clear in Firestore
+    const logsCol = collection(db, 'logs');
+    const snap = await getDocs(logsCol);
+    for (const d of snap.docs) {
+      deleteDoc(d.ref).catch(() => {});
+    }
+  } catch {}
+
   try {
     await centralSync.resetLogs();
     return true;
@@ -401,11 +634,21 @@ export async function resetProductionLogsInDatabase(): Promise<boolean> {
   }
 }
 
-// 19. Restore logs from backup
+/**
+ * 17. Restore logs from backup
+ */
 export async function restoreProductionLogsToDatabase(
   logs: ProductionLog[],
   _notifs?: AutoCloseNotification[]
 ): Promise<boolean> {
+  try {
+    for (const log of logs) {
+      if (log && log.id) {
+        setDoc(doc(db, 'logs', log.id), log, { merge: true }).catch(() => {});
+      }
+    }
+  } catch {}
+
   try {
     await centralSync.restoreLogs(logs);
     return true;
@@ -414,7 +657,9 @@ export async function restoreProductionLogsToDatabase(
   }
 }
 
-// 20. Helper to export backup file
+/**
+ * 18. Helper to export backup file
+ */
 export function exportProductionLogsBackupFile(
   logs: ProductionLog[],
   autoCloseNotifsOrColabs?: AutoCloseNotification[] | Collaborator[],
@@ -475,7 +720,7 @@ export const seedInitialFirestoreDataIfEmpty = async (..._args: any[]) => true;
 export const fetchAllDataFromFirestore = fetchMasterJsonSnapshotFromDatabase;
 export const subscribeToAutoCloseNotifs = () => () => {};
 
-// Supabase legacy name aliases (pointing to 100% native server DB)
+// Supabase legacy name aliases
 export const saveLogToSupabase = saveLogToDatabase;
 export const deleteLogFromSupabase = deleteLogFromDatabase;
 export const saveCollaboratorsToSupabase = saveCollaboratorsToDatabase;

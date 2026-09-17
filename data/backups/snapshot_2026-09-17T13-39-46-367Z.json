@@ -806,9 +806,7 @@
       "activity": "LIMPEZA DO CAVACO",
       "category": "5S & Limpeza",
       "startTime": "08:00:00",
-      "endTime": "17:30:00",
-      "durationMinutes": 480,
-      "status": "Concluída"
+      "status": "Em Execução"
     },
     {
       "id": "log-1789651355784-x66ws",
@@ -823,6 +821,15 @@
       "machineId": "TORNO-01",
       "initialDescription": "F",
       "notes": "F"
+    },
+    {
+      "id": "test-curl-1",
+      "date": "17/09/2026",
+      "collaboratorName": "TESTE",
+      "role": "OPERADOR",
+      "activity": "TESTE",
+      "startTime": "10:30:00",
+      "status": "Em Execução"
     }
   ],
   "autocloseNotifs": [],
