@@ -1,20 +1,20 @@
 import { ActivityItem, Collaborator, ShiftConfig } from '../types';
 
 export const INITIAL_COLLABORATORS: Collaborator[] = [
-  { id: 'col-1', name: 'GERALDO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
-  { id: 'col-2', name: 'DIEGO', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
-  { id: 'col-3', name: 'CARLOS', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 2', active: true },
-  { id: 'col-4', name: 'EVANDRO', role: 'AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true },
-  { id: 'col-5', name: 'GABRIEL', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
-  { id: 'col-6', name: 'ALEXANDER', role: 'INSPETOR / OPERADOR TA', shift: 'Turno 1', active: true },
-  { id: 'col-7', name: 'WANDERSON', role: 'SISTEMA / AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true },
-  { id: 'col-8', name: 'ANSELMO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true },
-  { id: 'col-9', name: 'CRISTIAN', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 1', active: true },
-  { id: 'col-10', name: 'IGOR', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true },
-  { id: 'col-11', name: 'CLEMILSON', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true },
-  { id: 'col-12', name: 'JULIO', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
-  { id: 'col-13', name: 'VITOR', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
-  { id: 'col-14', name: 'DANIEL', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true },
+  { id: 'col-1', name: 'GERALDO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-2', name: 'DIEGO', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-3', name: 'CARLOS', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 2', active: true, mealDurationMinutes: 60 },
+  { id: 'col-4', name: 'EVANDRO', role: 'AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-5', name: 'GABRIEL', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-6', name: 'ALEXANDER', role: 'INSPETOR / OPERADOR TA', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-7', name: 'WANDERSON', role: 'SISTEMA / AREA DO CAVACO E OLEO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-8', name: 'ANSELMO', role: 'PREPARADOR TORNO AUTOMATICO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-9', name: 'CRISTIAN', role: 'PREPARADOR DE FERRAMENTAS', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-10', name: 'IGOR', role: 'PREPARADOR PROGAMADOR', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-11', name: 'CLEMILSON', role: 'INSPETOR TCNC / OPERADOR', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-12', name: 'JULIO', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-13', name: 'VITOR', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
+  { id: 'col-14', name: 'DANIEL', role: 'SERVIÇOS GERAIS TORNO AUTOMATICO', shift: 'Turno 1', active: true, mealDurationMinutes: 90 },
 ];
 
 export const INITIAL_SHIFTS: ShiftConfig[] = [

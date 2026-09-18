@@ -140,8 +140,7 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
   const [newColabName, setNewColabName] = useState('');
   const [newColabRole, setNewColabRole] = useState('PREPARADOR TORNO AUTOMATICO');
   const [newColabShift, setNewColabShift] = useState(shifts[0]?.name.toUpperCase() || 'TURNO 1');
-  const [newColabMealStart, setNewColabMealStart] = useState('12:00');
-  const [newColabMealEnd, setNewColabMealEnd] = useState('13:30');
+  const [newColabMealDurationMinutes, setNewColabMealDurationMinutes] = useState<number>(90);
   const [colabSuccess, setColabSuccess] = useState(false);
 
   const handleShiftChange = (shiftId: string, field: keyof ShiftConfig, value: any) => {
@@ -168,64 +167,50 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
     setSavedSuccess(false);
   };
 
-  // Atualização dos horários individuais de refeição de um colaborador
-  const handleCollaboratorMealChange = (colabId: string, field: 'mealStart' | 'mealEnd', value: string) => {
+  // Atualização direta do TEMPO DE REFEIÇÃO (minutos) de um colaborador (sem horários de início e fim)
+  const handleCollaboratorMealDurationChange = (colabId: string, minutes: number) => {
     isDirtyRef.current = true;
+    const cleanMin = isNaN(minutes) ? 0 : Math.max(0, minutes);
     setLocalColabs((prev) =>
-      prev.map((c) => (c.id === colabId ? { ...c, [field]: value } : c))
+      prev.map((c) => (c.id === colabId ? { ...c, mealDurationMinutes: cleanMin } : c))
     );
     setSavedSuccess(false);
   };
 
-  // Restaura os horários de refeição do colaborador para o padrão do seu turno
-  const handleResetCollaboratorMealToShift = (colabId: string) => {
+  // Restaura o tempo de refeição do colaborador para o padrão do seu turno (Turno 1 = 90 min, Turnos 2/3 = 60 min)
+  const handleResetCollaboratorMealDuration = (colabId: string) => {
     isDirtyRef.current = true;
     setLocalColabs((prev) =>
       prev.map((c) => {
         if (c.id !== colabId) return c;
-        const assignedShift = localShifts.find(
-          (s) =>
-            s.name.toUpperCase() === c.shift.toUpperCase() ||
-            s.code.toUpperCase() === c.shift.toUpperCase() ||
-            c.shift.toUpperCase().includes(s.name.toUpperCase())
-        ) || localShifts[0];
-
+        const defaultMin = c.shift?.toUpperCase().includes('2') || c.shift?.toUpperCase().includes('3') ? 60 : 90;
         return {
           ...c,
-          mealStart: assignedShift?.saidaAlmoco || '12:00',
-          mealEnd: assignedShift?.retornoAlmoco || '13:30',
+          mealDurationMinutes: defaultMin,
         };
       })
     );
     setSavedSuccess(false);
   };
 
-  // Aplica o padrão de refeição do turno a todos os colaboradores de um turno ou a todos
-  const handleApplyShiftMealToAll = (targetShiftName?: string) => {
+  // Define um tempo específico (ex: 60 ou 90 min) para todos os colaboradores (ou filtrados)
+  const handleSetMealDurationForAll = (minutes: number, targetShiftName?: string) => {
     isDirtyRef.current = true;
     setLocalColabs((prev) =>
       prev.map((c) => {
-        if (targetShiftName && padronizarNomeTurno(c.shift) !== padronizarNomeTurno(targetShiftName)) {
+        if (targetShiftName && targetShiftName !== 'TODOS' && padronizarNomeTurno(c.shift) !== padronizarNomeTurno(targetShiftName)) {
           return c;
         }
-        const assignedShift = localShifts.find(
-          (s) =>
-            s.name.toUpperCase() === c.shift.toUpperCase() ||
-            s.code.toUpperCase() === c.shift.toUpperCase() ||
-            c.shift.toUpperCase().includes(s.name.toUpperCase())
-        ) || localShifts[0];
-
         return {
           ...c,
-          mealStart: assignedShift?.saidaAlmoco || '12:00',
-          mealEnd: assignedShift?.retornoAlmoco || '13:30',
+          mealDurationMinutes: minutes,
         };
       })
     );
     setSavedSuccess(false);
   };
 
-  // Salvar tudo: Turnos + Horários individuais de Colaboradores
+  // Salvar tudo: Turnos + Tempos individuais de Colaboradores
   const handleSaveAll = () => {
     isDirtyRef.current = false;
     try {
@@ -250,8 +235,7 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
       role: newColabRole.trim().toUpperCase(),
       shift: newColabShift.toUpperCase(),
       active: true,
-      mealStart: newColabMealStart || '12:00',
-      mealEnd: newColabMealEnd || '13:30',
+      mealDurationMinutes: newColabMealDurationMinutes || (newColabShift.includes('1') ? 90 : 60),
     });
     setNewColabName('');
     setColabSuccess(true);
@@ -476,23 +460,42 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
                   <Utensils className="w-5 h-5" />
                 </span>
                 <h3 className="text-base sm:text-lg font-black text-white">
-                  2. Horários de Refeição (Almoço / Janta) por Colaborador
+                  2. Tempo de Refeição Definido por Colaborador
                 </h3>
               </div>
-              <p className="text-xs text-[#AAAAAA] mt-1">
-                Preencha o horário de início e fim da refeição de cada colaborador. Ao atingir o horário definido, o sistema <strong className="text-white">pausará automaticamente</strong> a atividade e <strong className="text-[#00E676]">retomará automaticamente</strong> no término do período para todos os turnos.
+              <p className="text-xs text-[#AAAAAA] mt-1 max-w-3xl">
+                Preencha na frente de cada colaborador o <strong className="text-white">tempo de refeição (em minutos)</strong> sem horários de início e fim e salve. Quando o operador apertar <strong className="text-[#FF8C00]">REFEIÇÃO</strong> no chão de fábrica, o sistema fará a contagem regressiva deste tempo salvo. Se o colaborador esquecer até o fim do turno, o sistema <strong className="text-[#00E676]">lança automaticamente</strong> ao encerrar o turno para cálculo dos indicadores, sem conflito de horários nos registros!
               </p>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => handleApplyShiftMealToAll()}
+                onClick={() => handleSetMealDurationForAll(60, shiftFilter)}
                 className="px-3 py-1.5 bg-[#2A2A2A] hover:bg-[#333333] text-[#FFB74D] hover:text-white border border-[#FF8C00]/40 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
-                title="Aplica os horários de refeição do turno de cada colaborador"
+                title="Define 60 minutos para os colaboradores exibidos no filtro"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Aplicar Padrão do Turno a Todos</span>
+                <Clock className="w-3.5 h-3.5" />
+                <span>Definir 60 min p/ Todos</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleSetMealDurationForAll(90, shiftFilter)}
+                className="px-3 py-1.5 bg-[#2A2A2A] hover:bg-[#333333] text-[#00E676] hover:text-white border border-[#00E676]/40 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                title="Define 90 minutos para os colaboradores exibidos no filtro"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Definir 90 min p/ Todos</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveAll}
+                className="px-4 py-1.5 bg-[#00E676] hover:bg-[#00c853] text-black font-black rounded-lg text-xs transition flex items-center gap-1.5 cursor-pointer shadow-lg active:scale-95"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Salvar Tempos</span>
               </button>
             </div>
           </div>
@@ -529,44 +532,32 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
             </div>
           </div>
 
-          {/* Tabela de Colaboradores com Horários de Início e Fim da Refeição */}
+          {/* Tabela Simplificada: Nome + Tempo de Refeição */}
           <div className="overflow-x-auto bg-[#111111] rounded-lg border border-[#333333] shadow-inner">
             <table className="w-full border-collapse text-left text-xs sm:text-sm">
               <thead>
                 <tr className="bg-[#222222] text-[#007BFF] text-xs uppercase tracking-wider font-bold">
-                  <th className="p-3 border-b border-[#333333]">Colaborador</th>
+                  <th className="p-3 border-b border-[#333333]">Nome do Colaborador</th>
                   <th className="p-3 border-b border-[#333333]">Turno</th>
-                  <th className="p-3 border-b border-[#333333]">Saída Almoço / Janta (Início)</th>
-                  <th className="p-3 border-b border-[#333333]">Retorno Almoço / Janta (Fim)</th>
-                  <th className="p-3 border-b border-[#333333]">Duração</th>
-                  <th className="p-3 border-b border-[#333333]">Status</th>
+                  <th className="p-3 border-b border-[#333333] text-center min-w-[220px]">
+                    Tempo de Refeição (Minutos)
+                  </th>
+                  <th className="p-3 border-b border-[#333333]">Duração Formatada</th>
                   <th className="p-3 border-b border-[#333333] text-right">Ação</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#222222]">
                 {filteredColabs.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="p-6 text-center text-[#888888]">
+                    <td colSpan={5} className="p-6 text-center text-[#888888]">
                       Nenhum colaborador encontrado com os filtros aplicados.
                     </td>
                   </tr>
                 ) : (
                   filteredColabs.map((colab) => {
                     const cor = definirCorFuncao(colab.role);
-                    const assignedShift = localShifts.find(
-                      (s) =>
-                        s.name.toUpperCase() === colab.shift.toUpperCase() ||
-                        s.code.toUpperCase() === colab.shift.toUpperCase() ||
-                        colab.shift.toUpperCase().includes(s.name.toUpperCase())
-                    ) || localShifts[0];
-
-                    const defaultStart = assignedShift?.saidaAlmoco || '12:00';
-                    const defaultEnd = assignedShift?.retornoAlmoco || '13:30';
-                    const currentStart = colab.mealStart || defaultStart;
-                    const currentEnd = colab.mealEnd || defaultEnd;
-                    const isCustom = colab.mealStart && colab.mealEnd && (colab.mealStart !== defaultStart || colab.mealEnd !== defaultEnd);
-
-                    const durationMin = calcularDiferencaMinutos(currentStart, currentEnd);
+                    const defaultDuration = (colab.shift?.toUpperCase().includes('2') || colab.shift?.toUpperCase().includes('3')) ? 60 : 90;
+                    const durationMin = colab.mealDurationMinutes !== undefined ? colab.mealDurationMinutes : defaultDuration;
 
                     return (
                       <tr key={colab.id} className="hover:bg-[#1A1A1A] transition-colors">
@@ -591,27 +582,46 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
                           </span>
                         </td>
 
-                        {/* Início Refeição (Saída) */}
-                        <td className="p-3 whitespace-nowrap">
-                          <input
-                            type="time"
-                            value={currentStart}
-                            onChange={(e) => handleCollaboratorMealChange(colab.id, 'mealStart', e.target.value)}
-                            className="p-1.5 bg-[#222222] text-white border border-[#555555] focus:border-[#FF8C00] rounded text-xs font-mono w-28 text-center"
-                          />
+                        {/* Campo de Tempo de Refeição com atalhos rápidos 60m e 90m */}
+                        <td className="p-3 whitespace-nowrap text-center">
+                          <div className="inline-flex items-center gap-1.5 justify-center">
+                            <input
+                              type="number"
+                              min="1"
+                              max="300"
+                              value={durationMin}
+                              onChange={(e) => handleCollaboratorMealDurationChange(colab.id, parseInt(e.target.value) || 0)}
+                              className="p-1.5 bg-[#222222] text-white border border-[#555555] focus:border-[#00E676] rounded text-center text-sm font-bold font-mono w-24 focus:outline-none"
+                            />
+                            <span className="text-xs text-[#888888]">min</span>
+                            <div className="flex items-center gap-1 ml-2">
+                              <button
+                                type="button"
+                                onClick={() => handleCollaboratorMealDurationChange(colab.id, 60)}
+                                className={`px-2 py-1 text-[11px] font-bold rounded cursor-pointer transition ${
+                                  durationMin === 60
+                                    ? 'bg-[#FF8C00] text-black font-black'
+                                    : 'bg-[#2A2A2A] hover:bg-[#333333] text-[#CCCCCC]'
+                                }`}
+                              >
+                                60m
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCollaboratorMealDurationChange(colab.id, 90)}
+                                className={`px-2 py-1 text-[11px] font-bold rounded cursor-pointer transition ${
+                                  durationMin === 90
+                                    ? 'bg-[#00E676] text-black font-black'
+                                    : 'bg-[#2A2A2A] hover:bg-[#333333] text-[#CCCCCC]'
+                                }`}
+                              >
+                                90m
+                              </button>
+                            </div>
+                          </div>
                         </td>
 
-                        {/* Fim Refeição (Retorno) */}
-                        <td className="p-3 whitespace-nowrap">
-                          <input
-                            type="time"
-                            value={currentEnd}
-                            onChange={(e) => handleCollaboratorMealChange(colab.id, 'mealEnd', e.target.value)}
-                            className="p-1.5 bg-[#222222] text-white border border-[#555555] focus:border-[#FF8C00] rounded text-xs font-mono w-28 text-center"
-                          />
-                        </td>
-
-                        {/* Duração Calculada */}
+                        {/* Duração Formatada */}
                         <td className="p-3 whitespace-nowrap font-mono">
                           <span className="px-2 py-1 bg-[#FF8C00]/20 text-[#FFB74D] border border-[#FF8C00]/40 rounded font-bold text-xs inline-flex items-center gap-1">
                             <span>🍽️ {durationMin} min</span>
@@ -619,28 +629,16 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
                           </span>
                         </td>
 
-                        {/* Status (Personalizado vs Padrão) */}
-                        <td className="p-3 whitespace-nowrap text-xs">
-                          {isCustom ? (
-                            <span className="text-[#00E676] font-bold flex items-center gap-1">
-                              <span>● Personalizado</span>
-                            </span>
-                          ) : (
-                            <span className="text-[#888888]">
-                              Padrão ({assignedShift?.name || 'Turno'})
-                            </span>
-                          )}
-                        </td>
-
                         {/* Ações */}
                         <td className="p-3 whitespace-nowrap text-right">
                           <button
                             type="button"
-                            onClick={() => handleResetCollaboratorMealToShift(colab.id)}
-                            className="p-1.5 text-[#888888] hover:text-[#007BFF] hover:bg-[#222222] rounded transition cursor-pointer"
-                            title="Restaurar para o horário padrão do turno"
+                            onClick={() => handleResetCollaboratorMealDuration(colab.id)}
+                            className="px-2.5 py-1 text-[#AAAAAA] hover:text-[#007BFF] hover:bg-[#222222] rounded transition cursor-pointer text-xs flex items-center gap-1 ml-auto border border-[#333333]"
+                            title={`Restaurar para o padrão do turno (${defaultDuration} min)`}
                           >
-                            <RefreshCw className="w-3.5 h-3.5" />
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Padrão ({defaultDuration}m)</span>
                           </button>
                         </td>
                       </tr>
@@ -731,24 +729,18 @@ export const ShiftAndFactoryConfigView: React.FC<ShiftAndFactoryConfigViewProps>
               </select>
             </div>
 
-            <div className="grid grid-cols-2 gap-1.5">
-              <div>
-                <label className="block text-[10px] font-bold text-[#CCCCCC] mb-1">Almoço Início:</label>
+            <div>
+              <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Tempo Refeição (Minutos):</label>
+              <div className="flex items-center gap-1.5">
                 <input
-                  type="time"
-                  value={newColabMealStart}
-                  onChange={(e) => setNewColabMealStart(e.target.value)}
-                  className="w-full p-1.5 bg-[#222222] text-white border border-[#555555] rounded text-xs font-mono"
+                  type="number"
+                  min="1"
+                  max="240"
+                  value={newColabMealDurationMinutes}
+                  onChange={(e) => setNewColabMealDurationMinutes(parseInt(e.target.value) || 60)}
+                  className="w-full p-2 bg-[#222222] text-white border border-[#555555] rounded text-xs font-mono font-bold"
                 />
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold text-[#CCCCCC] mb-1">Almoço Fim:</label>
-                <input
-                  type="time"
-                  value={newColabMealEnd}
-                  onChange={(e) => setNewColabMealEnd(e.target.value)}
-                  className="w-full p-1.5 bg-[#222222] text-white border border-[#555555] rounded text-xs font-mono"
-                />
+                <span className="text-xs text-[#888888]">min</span>
               </div>
             </div>
 

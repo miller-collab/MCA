@@ -39,6 +39,7 @@ import {
   timeToSecondsOfDay,
   timeToMinutesOfDay,
   obterStatusTurno,
+  isMealActivity,
 } from './utils/factoryCalculations';
 
 import {
@@ -202,6 +203,7 @@ export function App() {
 
   // Helper to persist master JSON snapshot to Firestore & Server on every change
   const isApplyingRemoteMasterRef = useRef(false);
+  const lastActivityUpdateMsRef = useRef<number>(0);
 
   const triggerMasterJsonSave = useCallback(
     (
@@ -259,7 +261,9 @@ export function App() {
         setShifts(data.shifts);
       }
       if (data.activities && data.activities.length > 0) {
-        setActivities(data.activities);
+        if (Date.now() - lastActivityUpdateMsRef.current > 8000) {
+          setActivities(data.activities);
+        }
       }
       if (data.logs && Array.isArray(data.logs)) {
         const cleanLogs = data.logs.filter((l) => l && l.id);
@@ -336,7 +340,9 @@ export function App() {
 
     const unsubActivitiesCentral = centralSync.onActivities((newActs) => {
       if (newActs && newActs.length > 0 && !isApplyingRemoteMasterRef.current) {
-        setActivities(newActs);
+        if (Date.now() - lastActivityUpdateMsRef.current > 8000) {
+          setActivities(newActs);
+        }
       }
     });
 
@@ -401,7 +407,9 @@ export function App() {
 
       unsubActsFirestore = subscribeToActivities((cloudActs) => {
         if (cloudActs && cloudActs.length > 0 && !isApplyingRemoteMasterRef.current) {
-          setActivities(cloudActs);
+          if (Date.now() - lastActivityUpdateMsRef.current > 8000) {
+            setActivities(cloudActs);
+          }
         }
       });
 
@@ -550,43 +558,15 @@ export function App() {
           const colabShiftName = (colab?.shift || log.shift || 'Turno 1').toUpperCase();
           const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName, shifts, collaborators);
 
-          // A. Pausa Automática de Refeição ao atingir o Horário de Início do Almoço/Janta do Colaborador
-          const isTodayLog = !log.date || log.date === todayDateStr;
-          const nowTimePtBr = formatarHoraPtBr(now);
-          const nowSec = timeToSecondsOfDay(nowTimePtBr);
-          const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
-          const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
-
-          if (
-            log.status === 'Em Execução' &&
-            isTodayLog &&
-            nowSec >= mealStartSec &&
-            nowSec < mealEndSec &&
-            !log.mealBreakDeducted &&
-            !colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs)
-          ) {
-            changed = true;
-            const pausedLog: ProductionLog = {
-              ...log,
-              status: 'Pausada',
-              isMealPause: true,
-              mealPauseStartTime: formatarHoraPtBr(now),
-              mealPauseTimestampMs: nowMs,
-              mealPauseDurationMinutes: mealConfig.duracaoMinutos,
-              observation: log.observation
-                ? `${log.observation} | 🍽️ Pausa Automática de Refeição (${mealConfig.saidaAlmoco} - ${mealConfig.retornoAlmoco})`
-                : `🍽️ Pausa Automática de Refeição (${mealConfig.saidaAlmoco} - ${mealConfig.retornoAlmoco})`,
-            };
-            saveLogToFirestore(pausedLog);
-            return pausedLog;
-          }
-
-          // B. Retomada Automática de Refeição ao Vencer os Minutos Configurados (ex: 90 min) ou chegar no Retorno do Almoço
+          // REGRA DE REFEIÇÃO (ALMOÇO):
+          // O almoço NÃO é lançado sozinho. Quem dá o start no almoço é o operador no tablet.
+          // Caso o operador tenha acionado a pausa de refeição manualmente, quando vencer o tempo configurado (ex: 60/90 min) ou chegar no retorno do almoço,
+          // o sistema retoma a contagem de trabalho automaticamente para não prejudicar o tempo do colaborador.
           if (
             log.status === 'Pausada' &&
             (log.isMealPause || log.mealPauseTimestampMs || log.mealPauseStartTime || log.observation?.includes('Refeição'))
           ) {
-            const mealMinutes = log.mealPauseDurationMinutes || mealConfig.duracaoMinutos || 90;
+            const mealMinutes = log.mealPauseDurationMinutes || mealConfig.duracaoMinutos || 60;
             let pauseStartMs = log.mealPauseTimestampMs;
             if (!pauseStartMs && log.mealPauseStartTime) {
               const pParts = log.mealPauseStartTime.split(':');
@@ -608,11 +588,14 @@ export function App() {
               pauseStartMs = dI.getTime() + (log.durationMinutes * 60 * 1000);
             }
 
+            const isTodayLog = !log.date || log.date === todayDateStr;
+            const nowSec = timeToSecondsOfDay(formatarHoraPtBr(now));
+            const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
             const mealTimeReached = isTodayLog && nowSec >= mealEndSec;
             const mealDurationElapsed = pauseStartMs && (nowMs - pauseStartMs) >= mealMinutes * 60 * 1000;
 
             if (mealDurationElapsed || mealTimeReached) {
-              // Venceu o tempo de refeição! Retoma automaticamente a contagem na mesma atividade
+              // Venceu o tempo de refeição configurado! Retoma a contagem de trabalho na atividade
               changed = true;
               const resumedLog: ProductionLog = {
                 ...log,
@@ -625,26 +608,6 @@ export function App() {
               saveLogToFirestore(resumedLog);
               return resumedLog;
             }
-          }
-
-          // B2. Dedução Automática de Refeição se a tarefa continuou em execução e já passou do horário de almoço
-          const startSec = timeToSecondsOfDay(log.startTime);
-          if (
-            log.status === 'Em Execução' &&
-            isTodayLog &&
-            nowSec >= mealEndSec &&
-            startSec <= mealStartSec + 300 &&
-            !log.mealBreakDeducted
-          ) {
-            changed = true;
-            const updatedWithMeal: ProductionLog = {
-              ...log,
-              mealBreakDeducted: true,
-              mealBreakMinutes: mealConfig.duracaoMinutos || 90,
-              mealBreakSource: 'automatic',
-            };
-            saveLogToFirestore(updatedWithMeal);
-            return updatedWithMeal;
           }
 
           // C. Encerramento Automático no Fim do Turno Específico do Colaborador
@@ -761,7 +724,11 @@ export function App() {
           if (soundEnabled) playFactoryChime('alert');
         }
 
-        return changed ? updated : prevLogs;
+        if (changed) {
+          triggerMasterJsonSave(collaborators, shifts, activities, updated, autoCloseNotifs);
+          return updated;
+        }
+        return prevLogs;
       });
     };
 
@@ -770,7 +737,7 @@ export function App() {
     const interval = setInterval(checkEngine, 10000); // Check every 10s
 
     return () => clearInterval(interval);
-  }, [collaborators, shifts, soundEnabled]);
+  }, [collaborators, shifts, soundEnabled, activities, autoCloseNotifs, triggerMasterJsonSave]);
 
   // Simulation Trigger for testing auto-closure on demand
   const handleSimulateShiftAutoClose = useCallback((targetLogId?: string) => {
@@ -891,6 +858,12 @@ export function App() {
       const now = new Date();
       const nowTimeStr = formatarHoraPtBr(now);
       const colab = collaborators.find((c) => c.name.trim().toLowerCase() === collaboratorName.trim().toLowerCase());
+      const isMeal = isMealActivity(activityName, category);
+      const mealConfig = isMeal ? obterConfiguracaoRefeicao(collaboratorName, shifts, collaborators) : null;
+      const descMeal = isMeal
+        ? (initialDescription?.trim() || `Horário de Almoço: ${mealConfig?.saidaAlmoco} às ${mealConfig?.retornoAlmoco} (${mealConfig?.duracaoMinutos} min)`)
+        : (initialDescription?.trim() || undefined);
+
       const newLog: ProductionLog = {
         id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         date: formatarDataPtBr(now),
@@ -898,28 +871,43 @@ export function App() {
         role,
         shift: padronizarNomeTurno(colab?.shift || 'Turno 1'),
         activity: activityName,
-        category,
+        category: isMeal ? 'Refeição' : category,
         startTime: nowTimeStr,
         status: 'Em Execução',
-        machineId: machineId || 'TORNO-01',
-        initialDescription: initialDescription?.trim() || undefined,
-        notes: initialDescription?.trim() || undefined,
+        machineId: machineId || (isMeal ? 'REFEIÇÃO' : 'TORNO-01'),
+        initialDescription: descMeal,
+        notes: descMeal,
+        isMealPause: isMeal,
+        mealBreakDeducted: isMeal,
+        mealBreakMinutes: mealConfig?.duracaoMinutos,
+        mealBreakSource: isMeal ? 'manual' : undefined,
+        mealPauseStartTime: isMeal ? nowTimeStr : undefined,
+        mealPauseTimestampMs: isMeal ? now.getTime() : undefined,
+        mealPauseDurationMinutes: mealConfig?.duracaoMinutos,
       };
 
       setLogs((prev) => {
         // Encerra com segurança qualquer atividade anterior que estivesse aberta para este operador (1 por vez)
         const updated = prev.map((l) => {
           if (
-            l.status === 'Em Execução' &&
+            (l.status === 'Em Execução' || l.status === 'Pausada') &&
             l.collaboratorName.trim().toLowerCase() === collaboratorName.trim().toLowerCase()
           ) {
             const dur = calcularDiferencaMinutos(l.startTime, nowTimeStr);
+            const isOldMeal = l.isMealPause || isMealActivity(l.activity, l.category);
             const finishedOld: ProductionLog = {
               ...l,
               endTime: nowTimeStr,
               durationMinutes: dur > 0 ? dur : 1,
               status: 'Concluída',
-              observation: l.observation || 'Finalizada automaticamente por nova atividade iniciada',
+              observation:
+                l.observation ||
+                (isOldMeal
+                  ? 'Retorno da refeição / Início de nova atividade'
+                  : 'Finalizada automaticamente por nova atividade iniciada'),
+              mealBreakDeducted: isOldMeal ? true : l.mealBreakDeducted,
+              mealBreakMinutes: isOldMeal ? (l.mealBreakMinutes || dur) : l.mealBreakMinutes,
+              mealBreakSource: isOldMeal ? 'manual' : l.mealBreakSource,
             };
             saveLogToFirestore(finishedOld);
             return finishedOld;
@@ -1021,7 +1009,8 @@ export function App() {
       notes: string,
       partsProduced?: number,
       scrapCount?: number,
-      customEndTime?: string
+      customEndTime?: string,
+      forceDeductMeal?: boolean
     ) => {
       const now = new Date();
       const endTimeStr = customEndTime || formatarHoraPtBr(now);
@@ -1035,12 +1024,37 @@ export function App() {
             const colabShift = colab?.shift || log.shift || 'Turno 1';
             const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
 
-            const { duracaoLiquida, minutosRefeicaoDeduzidos, deveDebitarRefeicao } =
-              calcularDuracaoComDeducaoRefeicao(log.startTime, endTimeStr, log.collaboratorName || colabShift, shifts, !!jaTeveRefeicao, collaborators);
+            let deveDebitarRefeicao = false;
+            let minutosRefeicaoDeduzidos = 0;
+            let duracaoLiquida = calcularDiferencaMinutos(log.startTime, endTimeStr);
+
+            if (!jaTeveRefeicao) {
+              if (forceDeductMeal === true) {
+                const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName || colabShift, shifts, collaborators);
+                minutosRefeicaoDeduzidos = mealConfig.duracaoMinutos;
+                duracaoLiquida = Math.max(1, duracaoLiquida - minutosRefeicaoDeduzidos);
+                deveDebitarRefeicao = true;
+              } else if (forceDeductMeal === false) {
+                deveDebitarRefeicao = false;
+                minutosRefeicaoDeduzidos = 0;
+              } else {
+                const res = calcularDuracaoComDeducaoRefeicao(
+                  log.startTime,
+                  endTimeStr,
+                  log.collaboratorName || colabShift,
+                  shifts,
+                  false,
+                  collaborators
+                );
+                duracaoLiquida = res.duracaoLiquida;
+                minutosRefeicaoDeduzidos = res.minutosRefeicaoDeduzidos;
+                deveDebitarRefeicao = res.deveDebitarRefeicao;
+              }
+            }
 
             let obsFinal = observation || 'Operação Concluída com Sucesso sem Anomalias';
             if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
-              obsFinal = `${obsFinal} | 🍽️ Refeição debitada automaticamente (${minutosRefeicaoDeduzidos} min)`;
+              obsFinal = `${obsFinal} | 🍽️ Refeição debitada no encerramento (${minutosRefeicaoDeduzidos} min)`;
             }
 
             const finishedLog: ProductionLog = {
@@ -1054,7 +1068,7 @@ export function App() {
               scrapCount: scrapCount !== undefined && !isNaN(scrapCount) ? scrapCount : undefined,
               mealBreakDeducted: log.mealBreakDeducted || deveDebitarRefeicao,
               mealBreakMinutes: log.mealBreakMinutes || (deveDebitarRefeicao ? minutosRefeicaoDeduzidos : undefined),
-              mealBreakSource: log.mealBreakSource || (deveDebitarRefeicao ? 'automatic' : undefined),
+              mealBreakSource: log.mealBreakSource || (deveDebitarRefeicao ? 'encerramento' : undefined),
             };
             saveLogToFirestore(finishedLog);
             return finishedLog;
@@ -1255,15 +1269,25 @@ export function App() {
   }, [deletedRoles]);
 
   const handleUpdateActivities = useCallback((newActivities: ActivityItem[]) => {
+    lastActivityUpdateMsRef.current = Date.now();
     setActivities(newActivities);
+    try {
+      localStorage.setItem('mca_activities_v3', JSON.stringify(newActivities));
+    } catch {}
     saveActivitiesToFirestore(newActivities);
-  }, []);
+    savePermanentLocalBackup(collaborators, newActivities, shifts, logs);
+    triggerMasterJsonSave(collaborators, shifts, newActivities, logs, autoCloseNotifs);
+  }, [collaborators, shifts, logs, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleSaveCollaborators = useCallback((newColabs: Collaborator[]) => {
     setCollaborators(newColabs);
+    try {
+      localStorage.setItem('mca_colabs_v3', JSON.stringify(newColabs));
+    } catch {}
     saveCollaboratorsToFirestore(newColabs);
     savePermanentLocalBackup(newColabs, activities, shifts, logs);
-  }, [activities, shifts, logs]);
+    triggerMasterJsonSave(newColabs, shifts, activities, logs, autoCloseNotifs);
+  }, [activities, shifts, logs, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleUpdateShifts = useCallback((newShifts: ShiftConfig[]) => {
     setShifts(newShifts);
@@ -1272,7 +1296,8 @@ export function App() {
     } catch {}
     saveShiftsToFirestore(newShifts);
     savePermanentLocalBackup(collaborators, activities, newShifts, logs);
-  }, [collaborators, activities, logs]);
+    triggerMasterJsonSave(collaborators, newShifts, activities, logs, autoCloseNotifs);
+  }, [collaborators, activities, logs, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleDrilldownClick = useCallback((operatorName: string) => {
     setDrilldownFilter(operatorName);

@@ -457,6 +457,17 @@ export async function saveActivitiesToDatabase(activities: ActivityItem[]): Prom
     addToOfflineQueue({ type: 'activity', payload: activities });
   }
 
+  // Update master_snapshot/current in Firestore so immediate fetches and periodic sync see latest activities
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    await setDoc(snapRef, {
+      activities,
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Notice updating master_snapshot/current with activities:', err);
+  }
+
   try {
     await centralSync.saveActivities(activities);
   } catch {}

@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { 
   Users, Briefcase, ListOrdered, MessageSquare, Clock, 
-  Plus, Trash2, Edit2, Check, X, Upload, Download, RotateCcw, 
+  Plus, Trash2, Edit2, Edit3, Check, X, Upload, Download, RotateCcw, 
   Save, AlertCircle, Palette, Sparkles, Filter, Copy, FileSpreadsheet,
-  CheckSquare, Square, Layers, Info, HelpCircle, TrendingUp
+  CheckSquare, Square, Layers, Info, HelpCircle, TrendingUp, CheckCircle2
 } from 'lucide-react';
 import { Collaborator, ActivityItem, ShiftConfig, ActivityCategory } from '../types';
 import { INITIAL_COLLABORATORS, INITIAL_ACTIVITIES, INITIAL_SHIFTS, INITIAL_OBSERVATIONS, INITIAL_ROLES, definirCorFuncao } from '../data/initialData';
@@ -55,6 +55,13 @@ const PRESET_CORES = [
   { nome: 'Índigo', hex: '#3F51B5' },
   { nome: 'Teal Escuro', hex: '#009688' },
 ];
+
+const formatarHorasMinutosHelper = (mins: number) => {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h${m > 0 ? ` ${m}m` : ''}`;
+};
 
 export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   collaborators,
@@ -144,11 +151,14 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   const [newActCategory, setNewActCategory] = useState<ActivityCategory>('Operação');
   const [newActMinutes, setNewActMinutes] = useState<number>(30);
   const [editingActId, setEditingActId] = useState<string | null>(null);
+  const [editActPriorityStr, setEditActPriorityStr] = useState<string>('1');
   const [editActForm, setEditActForm] = useState<Partial<ActivityItem>>({});
   const [editActRoleMode, setEditActRoleMode] = useState<'SINGLE' | 'ALL' | 'MULTI'>('SINGLE');
   const [selectedRolesForEditAct, setSelectedRolesForEditAct] = useState<string[]>([]);
   const [applyToAllMatchingActs, setApplyToAllMatchingActs] = useState<boolean>(true);
   const [originalActItem, setOriginalActItem] = useState<ActivityItem | null>(null);
+  const [fullEditModalAct, setFullEditModalAct] = useState<ActivityItem | null>(null);
+  const [actSaveSuccessMsg, setActSaveSuccessMsg] = useState<string | null>(null);
 
   // Multi-Role Deletion Modal State
   const [deleteMultiModal, setDeleteMultiModal] = useState<{
@@ -280,7 +290,10 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
   // -------------------------------------------------------------
   const handleAddActivity = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newActName.trim()) return;
+    if (!newActName.trim()) {
+      showNotification('Por favor, digite o Nome da Atividade no campo indicado!', 'error');
+      return;
+    }
 
     const trimmedName = newActName.trim().toUpperCase();
     const rawPriorityStr = typeof newActPriority === 'string' ? newActPriority.replace(',', '.') : String(newActPriority);
@@ -320,24 +333,24 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         )
     );
 
-    onUpdateActivities([...cleanExisting, ...newItems]);
+    const updatedList = [...cleanExisting, ...newItems];
+    onUpdateActivities(updatedList);
     setNewActName('');
 
-    if (targetRoles.length > 1) {
-      showNotification(
-        `Atividade "${trimmedName}" (${parsedMinutes} min) vinculada com sucesso a ${targetRoles.length} cargos!`
-      );
-    } else {
-      showNotification(
-        `Atividade P${parsedPriority} - "${trimmedName}" (${parsedMinutes} min) vinculada a ${targetRoles[0]}!`
-      );
-    }
+    const successMsg =
+      targetRoles.length > 1
+        ? `Atividade "${trimmedName}" (${parsedMinutes} min) gravada no Banco e vinculada a ${targetRoles.length} cargos!`
+        : `Atividade P${parsedPriority} - "${trimmedName}" (${parsedMinutes} min) salva e gravada no Banco com sucesso!`;
+    setActSaveSuccessMsg(successMsg);
+    showNotification(successMsg);
   };
 
   const handleStartEditAct = (act: ActivityItem) => {
     setEditingActId(act.id);
     setOriginalActItem(act);
     setEditActForm({ ...act });
+    setEditActPriorityStr(String(act.priority));
+    setFullEditModalAct(act);
 
     const actNameNorm = act.name.trim().toUpperCase();
     const sameNameActs = activities.filter((a) => a.name.trim().toUpperCase() === actNameNorm);
@@ -358,9 +371,7 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     }
     const trimmedName = editActForm.name.trim().toUpperCase();
     const origName = originalActItem?.name ? originalActItem.name.trim().toUpperCase() : trimmedName;
-    const rawPriorityStr = editActForm.priority !== undefined 
-      ? (typeof editActForm.priority === 'string' ? String(editActForm.priority).replace(',', '.') : String(editActForm.priority))
-      : '1';
+    const rawPriorityStr = editActPriorityStr.replace(',', '.');
     const parsedPriority = isNaN(parseFloat(rawPriorityStr)) ? 1 : parseFloat(rawPriorityStr);
     const parsedMinutes = Number(editActForm.standardMinutes) || 30;
     const category = editActForm.category || 'Operação';
@@ -396,7 +407,10 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
       onUpdateActivities(updatedActs);
       setEditingActId(null);
       setOriginalActItem(null);
-      showNotification(`Atividade "${trimmedName}" salva e vinculada a TODOS os ${existingRoles.length} cargos com sucesso!`);
+      setFullEditModalAct(null);
+      const msg = `Atividade "${trimmedName}" salva e gravada no Banco em TODOS os ${existingRoles.length} cargos!`;
+      setActSaveSuccessMsg(msg);
+      showNotification(msg);
       return;
     }
 
@@ -431,7 +445,10 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
       onUpdateActivities(updatedActs);
       setEditingActId(null);
       setOriginalActItem(null);
-      showNotification(`Atividade "${trimmedName}" salva em ${targetRoles.length} cargo(s) selecionados!`);
+      setFullEditModalAct(null);
+      const msg = `Atividade "${trimmedName}" salva e gravada no Banco em ${targetRoles.length} cargo(s) selecionados!`;
+      setActSaveSuccessMsg(msg);
+      showNotification(msg);
       return;
     }
 
@@ -456,7 +473,10 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
         onUpdateActivities(updatedActs);
         setEditingActId(null);
         setOriginalActItem(null);
-        showNotification(`Atividade "${trimmedName}" atualizada em todos os ${sameNameActs.length} cargos vinculados!`);
+        setFullEditModalAct(null);
+        const msg = `Atividade "${trimmedName}" gravada no Banco em todos os ${sameNameActs.length} cargos vinculados!`;
+        setActSaveSuccessMsg(msg);
+        showNotification(msg);
         return;
       }
     }
@@ -479,7 +499,10 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
     );
     setEditingActId(null);
     setOriginalActItem(null);
-    showNotification(`Atividade "${trimmedName}" atualizada com sucesso no cargo "${targetRole}"!`);
+    setFullEditModalAct(null);
+    const msg = `Atividade "${trimmedName}" salva e gravada com sucesso no cargo "${targetRole}"!`;
+    setActSaveSuccessMsg(msg);
+    showNotification(msg);
   };
 
   const handleDeleteActivity = (act: ActivityItem) => {
@@ -1299,6 +1322,22 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                     </div>
                   ) : (
                     <>
+                      {/* Botão de gravação instantânea de todas as atividades no banco */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateActivities([...activities]);
+                          const msg = `✅ Todas as ${activities.length} atividades foram salvas e confirmadas no Banco de Dados!`;
+                          setActSaveSuccessMsg(msg);
+                          showNotification(msg);
+                        }}
+                        className="px-3 py-1.5 bg-[#00E676] hover:bg-[#00c853] text-black font-black rounded-lg text-xs flex items-center gap-1.5 transition cursor-pointer shadow-md active:scale-95"
+                        title="Gravar imediatamente todas as atividades no banco de dados"
+                      >
+                        <Save className="w-3.5 h-3.5 text-black" />
+                        <span>SALVAR TODAS NO BANCO</span>
+                      </button>
+
                       {/* Seletor rápido de atividade para editar */}
                       {activities.length > 0 && (
                         <div className="flex items-center gap-1">
@@ -1506,6 +1545,23 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                 </div>
               )}
 
+              {/* Banner de Confirmação de Gravação no Banco de Dados */}
+              {actSaveSuccessMsg && (
+                <div className="p-3 bg-[#00E676]/15 border border-[#00E676]/50 rounded-xl flex items-center justify-between gap-3 text-xs text-white shadow-lg animate-in fade-in duration-200">
+                  <div className="flex items-center gap-2.5 font-bold">
+                    <CheckCircle2 className="w-4 h-4 text-[#00E676] shrink-0" />
+                    <span>{actSaveSuccessMsg}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActSaveSuccessMsg(null)}
+                    className="text-[#888888] hover:text-white text-xs px-2 py-0.5 rounded cursor-pointer hover:bg-[#222222]"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               {/* FORMULÁRIO DE CADASTRO OU EDIÇÃO */}
               <form
                 onSubmit={(e) => {
@@ -1596,19 +1652,14 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                 <div>
                   <label className="block text-xs font-bold text-[#CCCCCC] mb-1">Prioridade (P1, P2, P3.12...):</label>
                   <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    max="999"
-                    placeholder="Ex: 3.12"
-                    value={editingActId ? (editActForm.priority !== undefined ? editActForm.priority : '') : newActPriority}
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Ex: 1, 2, 6.3, 6,3"
+                    value={editingActId ? editActPriorityStr : newActPriority}
                     onChange={(e) => {
                       const val = e.target.value;
                       if (editingActId) {
-                        setEditActForm({
-                          ...editActForm,
-                          priority: val === '' ? 0 : parseFloat(val) || 0,
-                        });
+                        setEditActPriorityStr(val);
                       } else {
                         setNewActPriority(val);
                       }
@@ -1717,17 +1768,17 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                         </button>
                         <button
                           type="submit"
-                          className="py-2.5 px-6 bg-[#00E676] hover:bg-[#00c853] text-black font-extrabold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
+                          className="py-2.5 px-6 bg-[#00E676] hover:bg-[#00c853] text-black font-black rounded-lg text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-lg active:scale-95"
                         >
-                          <Save className="w-4 h-4" />
+                          <Save className="w-4 h-4 text-black" />
                           <span>
                             {editActRoleMode === 'ALL'
-                              ? `Salvar em TODOS os ${existingRoles.length} Cargos`
+                              ? `💾 SALVAR EM TODOS OS ${existingRoles.length} CARGOS`
                               : editActRoleMode === 'MULTI'
-                              ? `Salvar em ${selectedRolesForEditAct.length} Cargos Selecionados`
+                              ? `💾 SALVAR EM ${selectedRolesForEditAct.length} CARGOS SELECIONADOS`
                               : applyToAllMatchingActs && originalActItem && activities.filter(a => a.name.trim().toUpperCase() === originalActItem.name.trim().toUpperCase()).length > 1
-                              ? `Salvar em Todos os Cargos Vinculados (${activities.filter(a => a.name.trim().toUpperCase() === originalActItem.name.trim().toUpperCase()).length})`
-                              : 'Salvar Alterações na Atividade'}
+                              ? `💾 SALVAR EM TODOS OS CARGOS VINCULADOS (${activities.filter(a => a.name.trim().toUpperCase() === originalActItem.name.trim().toUpperCase()).length})`
+                              : '💾 SALVAR ALTERAÇÕES NA ATIVIDADE'}
                           </span>
                         </button>
                       </div>
@@ -1736,15 +1787,15 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                     <div className="w-full flex justify-end">
                       <button
                         type="submit"
-                        className="py-2.5 px-5 bg-[#0066CC] hover:bg-[#005bb5] text-white font-bold rounded text-xs flex items-center justify-center gap-1.5 transition cursor-pointer shadow-md"
+                        className="py-3 px-6 bg-[#00E676] hover:bg-[#00c853] text-black font-black rounded-lg text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-lg active:scale-95"
                       >
-                        <Plus className="w-4 h-4" />
+                        <Save className="w-4 h-4 text-black" />
                         <span>
                           {newActRole === 'ALL'
-                            ? `Vincular a TODOS os ${existingRoles.length} Cargos`
+                            ? `💾 SALVAR ATIVIDADE EM TODOS OS ${existingRoles.length} CARGOS`
                             : newActRole === 'MULTI'
-                            ? `Vincular a ${selectedRolesForNewAct.length} Cargos Selecionados`
-                            : 'Adicionar Atividade'}
+                            ? `💾 SALVAR ATIVIDADE EM ${selectedRolesForNewAct.length} CARGOS SELECIONADOS`
+                            : '💾 SALVAR ATIVIDADE NO BANCO DE DADOS'}
                         </span>
                       </button>
                     </div>
@@ -1818,19 +1869,11 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                           <tr key={act.id} className="bg-[#1A1A2E]">
                             <td className="p-2 text-center">
                               <input
-                                type="number"
-                                step="0.01"
-                                min="0.01"
-                                max="999"
-                                value={editActForm.priority !== undefined ? editActForm.priority : ''}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setEditActForm({
-                                    ...editActForm,
-                                    priority: val === '' ? 0 : parseFloat(val) || 0,
-                                  });
-                                }}
-                                className="w-16 p-1 bg-[#111111] text-white text-center font-mono rounded border border-[#555555] focus:border-[#007BFF] focus:outline-none"
+                                type="text"
+                                inputMode="decimal"
+                                value={editActPriorityStr}
+                                onChange={(e) => setEditActPriorityStr(e.target.value)}
+                                className="w-16 p-1 bg-[#111111] text-white text-center font-mono rounded border border-[#555555] focus:border-[#007BFF] focus:outline-none text-xs font-bold text-[#00E676]"
                               />
                             </td>
                             <td className="p-2">
@@ -1893,18 +1936,21 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                             <td className="p-2 text-right">
                               <div className="flex items-center justify-end gap-1">
                                 <button
+                                  type="button"
                                   onClick={() => setEditingActId(null)}
-                                  className="p-1 text-[#888888] hover:text-white cursor-pointer"
+                                  className="px-2 py-1 text-[#888888] hover:text-white text-xs cursor-pointer rounded"
                                   title="Cancelar"
                                 >
-                                  <X className="w-4 h-4" />
+                                  <X className="w-3.5 h-3.5" />
                                 </button>
                                 <button
+                                  type="button"
                                   onClick={() => handleSaveEditAct(act.id)}
-                                  className="p-1 text-[#00E676] hover:text-white font-bold cursor-pointer"
-                                  title="Salvar"
+                                  className="px-2.5 py-1 bg-[#00E676] hover:bg-[#00c853] text-black font-black rounded text-xs flex items-center gap-1 cursor-pointer shadow active:scale-95"
+                                  title="Salvar atividade no banco de dados"
                                 >
-                                  <Check className="w-4 h-4" />
+                                  <Save className="w-3.5 h-3.5 text-black" />
+                                  <span>Salvar</span>
                                 </button>
                               </div>
                             </td>
@@ -2757,6 +2803,272 @@ export const FactoryConfigManager: React.FC<FactoryConfigManagerProps> = ({
                   <span>
                     Excluir ({deleteMultiModal.roles.filter((r) => r.checked).length} Selecionados)
                   </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* MODAL DE EDIÇÃO COMPLETA DA ATIVIDADE PARA O LÍDER */}
+      {fullEditModalAct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/85 backdrop-blur-xs">
+          <div className="bg-[#1E1E1E] border-2 border-[#007BFF] rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in duration-150">
+            {/* Cabeçalho do Modal */}
+            <div className="p-4 bg-gradient-to-r from-[#111111] via-[#1A1A2E] to-[#111111] border-b border-[#333333] flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-[#007BFF]/20 border border-[#007BFF]/40 rounded-xl text-[#007BFF]">
+                  <Edit3 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>Edição Completa da Atividade</span>
+                    <span className="px-2 py-0.5 bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/40 text-[10px] rounded-full uppercase tracking-wider font-bold">
+                      Acesso Total Líder
+                    </span>
+                  </h3>
+                  <p className="text-xs text-[#AAAAAA]">
+                    Edite nome, prioridade decimal (ex: 6,3), tempo padrão e cargos sem restrições.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setFullEditModalAct(null);
+                  setEditingActId(null);
+                }}
+                className="p-1.5 text-[#888888] hover:text-white rounded-lg hover:bg-[#2A2A2A] transition cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Conteúdo do Formulário */}
+            <div className="p-5 space-y-4 overflow-y-auto flex-1">
+              {/* Nome da Atividade */}
+              <div>
+                <label className="block text-xs font-bold text-white mb-1.5 flex items-center justify-between">
+                  <span>Nome da Atividade:</span>
+                  <span className="text-[11px] text-[#888888] font-normal">Identificador no chão de fábrica</span>
+                </label>
+                <input
+                  type="text"
+                  value={editActForm.name || ''}
+                  onChange={(e) => setEditActForm({ ...editActForm, name: e.target.value })}
+                  placeholder="Ex: SETUP DE MÁQUINA"
+                  className="w-full p-2.5 bg-[#111111] text-white rounded-lg text-sm font-bold border border-[#007BFF]/50 focus:border-[#007BFF] focus:outline-none"
+                  autoFocus
+                />
+              </div>
+
+              {/* Grid: Prioridade + Tempo Padrão */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Prioridade */}
+                <div className="bg-[#141414] p-3 rounded-xl border border-[#333333] space-y-2">
+                  <label className="block text-xs font-bold text-white flex items-center justify-between">
+                    <span>Prioridade:</span>
+                    <span className="text-[10px] text-[#00E676] font-mono font-bold">
+                      P{editActPriorityStr.replace(',', '.')}
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Ex: 1, 2, 6.3, 6,3"
+                    value={editActPriorityStr}
+                    onChange={(e) => setEditActPriorityStr(e.target.value)}
+                    className="w-full p-2 bg-[#1E1E1E] text-white rounded-lg text-sm font-mono font-bold border border-[#444444] focus:border-[#00E676] focus:outline-none"
+                  />
+                  {/* Atalhos rápidos de prioridade */}
+                  <div className="flex flex-wrap items-center gap-1 pt-1">
+                    {['1', '2', '3', '4', '5', '6.3'].map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => setEditActPriorityStr(p)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold transition cursor-pointer ${
+                          editActPriorityStr === p
+                            ? 'bg-[#00E676] text-black font-black'
+                            : 'bg-[#222222] hover:bg-[#333333] text-[#AAAAAA]'
+                        }`}
+                      >
+                        P{p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tempo Padrão (Minutos) */}
+                <div className="bg-[#141414] p-3 rounded-xl border border-[#333333] space-y-2">
+                  <label className="block text-xs font-bold text-white flex items-center justify-between">
+                    <span>Tempo Padrão:</span>
+                    <span className="text-[10px] text-[#FF8C00] font-mono font-bold">
+                      {editActForm.standardMinutes || 30} min ({formatarHorasMinutosHelper(editActForm.standardMinutes || 30)})
+                    </span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="1"
+                      max="999"
+                      value={editActForm.standardMinutes || 30}
+                      onChange={(e) => setEditActForm({ ...editActForm, standardMinutes: parseInt(e.target.value, 10) || 30 })}
+                      className="w-full p-2 bg-[#1E1E1E] text-white rounded-lg text-sm font-mono font-bold pl-8 border border-[#444444] focus:border-[#FF8C00] focus:outline-none"
+                    />
+                    <Clock className="w-4 h-4 text-[#FF8C00] absolute left-2.5 top-2.5 pointer-events-none" />
+                  </div>
+                  {/* Atalhos rápidos de tempo */}
+                  <div className="flex flex-wrap items-center gap-1 pt-1">
+                    {[15, 30, 45, 60, 90, 120].map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setEditActForm({ ...editActForm, standardMinutes: m })}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold transition cursor-pointer ${
+                          (editActForm.standardMinutes || 30) === m
+                            ? 'bg-[#FF8C00] text-black font-black'
+                            : 'bg-[#222222] hover:bg-[#333333] text-[#AAAAAA]'
+                        }`}
+                      >
+                        {m}m
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Categoria */}
+              <div>
+                <label className="block text-xs font-bold text-white mb-1.5">Categoria:</label>
+                <select
+                  value={editActForm.category || 'Operação'}
+                  onChange={(e) => setEditActForm({ ...editActForm, category: e.target.value as ActivityCategory })}
+                  className="w-full p-2 bg-[#111111] text-white rounded-lg text-xs border border-[#444444] focus:border-[#007BFF] focus:outline-none"
+                >
+                  <option value="Operação">Operação</option>
+                  <option value="Setup">Setup</option>
+                  <option value="Qualidade / Inspeção">Qualidade / Inspeção</option>
+                  <option value="Manutenção">Manutenção</option>
+                  <option value="Treinamento">Treinamento</option>
+                  <option value="Logística / Movimentação">Logística / Movimentação</option>
+                  <option value="Limpeza / 5S">Limpeza / 5S</option>
+                  <option value="Outros">Outros</option>
+                </select>
+              </div>
+
+              {/* Escopo de Cargos */}
+              <div className="bg-[#141414] p-3.5 rounded-xl border border-[#333333] space-y-2.5">
+                <label className="block text-xs font-bold text-white">Vincular Atividade a Quais Cargos:</label>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <label className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition text-xs ${
+                    editActRoleMode === 'SINGLE' ? 'bg-[#007BFF]/15 border-[#007BFF] text-white font-bold' : 'bg-[#1E1E1E] border-[#333333] text-[#888888]'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="roleModeModal"
+                      checked={editActRoleMode === 'SINGLE'}
+                      onChange={() => setEditActRoleMode('SINGLE')}
+                      className="accent-[#007BFF]"
+                    />
+                    <span>Cargo Atual ({fullEditModalAct.role})</span>
+                  </label>
+
+                  <label className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition text-xs ${
+                    editActRoleMode === 'ALL' ? 'bg-[#00E676]/15 border-[#00E676] text-white font-bold' : 'bg-[#1E1E1E] border-[#333333] text-[#888888]'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="roleModeModal"
+                      checked={editActRoleMode === 'ALL'}
+                      onChange={() => setEditActRoleMode('ALL')}
+                      className="accent-[#00E676]"
+                    />
+                    <span>TODOS os Cargos ({existingRoles.length})</span>
+                  </label>
+
+                  <label className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition text-xs ${
+                    editActRoleMode === 'MULTI' ? 'bg-[#FF8C00]/15 border-[#FF8C00] text-white font-bold' : 'bg-[#1E1E1E] border-[#333333] text-[#888888]'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="roleModeModal"
+                      checked={editActRoleMode === 'MULTI'}
+                      onChange={() => setEditActRoleMode('MULTI')}
+                      className="accent-[#FF8C00]"
+                    />
+                    <span>Cargos Selecionados</span>
+                  </label>
+                </div>
+
+                {/* Seleção seletiva se MULTI */}
+                {editActRoleMode === 'MULTI' && (
+                  <div className="p-2.5 bg-[#1E1E1E] rounded-lg border border-[#444444] space-y-2 mt-2">
+                    <div className="text-[11px] font-bold text-[#CCCCCC]">Selecione os cargos desejados:</div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-32 overflow-y-auto">
+                      {existingRoles.map((r) => {
+                        const isChecked = selectedRolesForEditAct.includes(r.toUpperCase().trim());
+                        const cor = getRoleColor(r);
+                        return (
+                          <label key={r} className="flex items-center gap-1.5 p-1.5 rounded hover:bg-[#252525] cursor-pointer text-xs">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                const rUpper = r.toUpperCase().trim();
+                                if (e.target.checked) {
+                                  setSelectedRolesForEditAct([...selectedRolesForEditAct, rUpper]);
+                                } else {
+                                  setSelectedRolesForEditAct(selectedRolesForEditAct.filter((x) => x !== rUpper));
+                                }
+                              }}
+                              className="accent-[#FF8C00]"
+                            />
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: cor }} />
+                            <span className="truncate text-white font-mono text-[11px]">{r}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Rodapé de Ações */}
+            <div className="p-4 bg-[#141414] border-t border-[#333333] flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  handleDeleteActivity(fullEditModalAct);
+                  setFullEditModalAct(null);
+                }}
+                className="px-3.5 py-2 bg-[#2A2A2A] hover:bg-[#D50000] text-[#FF5252] hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border border-[#FF5252]/30"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Excluir Atividade</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFullEditModalAct(null);
+                    setEditingActId(null);
+                  }}
+                  className="px-4 py-2 bg-[#252525] hover:bg-[#333333] text-[#CCCCCC] hover:text-white rounded-xl text-xs font-bold transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSaveEditAct(fullEditModalAct.id)}
+                  className="px-5 py-2 bg-[#00E676] hover:bg-[#00c853] text-black font-black rounded-xl text-xs transition flex items-center gap-1.5 cursor-pointer shadow-lg active:scale-95"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>SALVAR ALTERAÇÕES (LÍDER)</span>
                 </button>
               </div>
             </div>

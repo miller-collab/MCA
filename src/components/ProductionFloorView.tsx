@@ -27,7 +27,9 @@ import {
   isColaboradorEmTurnoAtivo,
   obterConfiguracaoRefeicao,
   colaboradorJaUsouRefeicaoHoje,
-  calcularEstadoTempoRefeicao
+  calcularEstadoTempoRefeicao,
+  calcularDuracaoComDeducaoRefeicao,
+  isMealActivity
 } from '../utils/factoryCalculations';
 import { QuickCollaboratorModal } from './QuickCollaboratorModal';
 import { findSavedCollaboratorsInBrowser } from '../utils/recoveryUtils';
@@ -43,7 +45,15 @@ interface ProductionFloorViewProps {
   autoCloseNotifs?: AutoCloseNotification[];
   onDismissOperatorNotif?: (id: string) => void;
   onStartActivity: (collaboratorName: string, role: string, activityName: string, category: ActivityCategory, machineId?: string, initialDescription?: string) => void;
-  onFinishActivity: (logId: string, observation: string, notes: string, partsProduced?: number, scrapCount?: number, customEndTime?: string) => void;
+  onFinishActivity: (
+    logId: string,
+    observation: string,
+    notes: string,
+    partsProduced?: number,
+    scrapCount?: number,
+    customEndTime?: string,
+    forceDeductMeal?: boolean
+  ) => void;
   onPauseMeal?: (logId: string) => void;
   onResumeActivity?: (logId: string) => void;
   onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string, newInitialDescription?: string, customEndTime?: string) => void;
@@ -105,6 +115,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [finishNotes, setFinishNotes] = useState('');
   const [partsProduced, setPartsProduced] = useState<string>('');
   const [scrapCount, setScrapCount] = useState<string>('');
+  const [deductMealAtFinish, setDeductMealAtFinish] = useState(true);
 
   // Real-time ticking state (updates every second)
   const [secondsTick, setSecondsTick] = useState(0);
@@ -267,14 +278,41 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return Array.from(map.values());
   }, [autoCloseNotifs]);
 
-  // Filtered activities for selected collaborator's role
-  const roleActivities = selectedColab
-    ? activities.filter(a => a.role.trim().toUpperCase() === selectedColab.role.trim().toUpperCase())
-    : [];
+  // Filtered activities for selected collaborator's role (including universal REFEIÇÃO activity)
+  const roleActivities = useMemo(() => {
+    if (!selectedColab) return [];
+    const colabRole = selectedColab.role.trim().toUpperCase();
+    let acts = activities.filter(
+      (a) =>
+        a.role.trim().toUpperCase() === colabRole ||
+        a.role.trim().toUpperCase() === 'TODOS' ||
+        a.role.trim().toUpperCase() === 'GERAL' ||
+        isMealActivity(a.name, a.category)
+    );
 
-  const filteredRoleActivities = roleActivities.filter(a =>
-    a.name.toLowerCase().includes(activitySearch.toLowerCase())
-  ).sort((a, b) => a.priority - b.priority);
+    // Garante que a atividade REFEIÇÃO sempre exista para qualquer operador
+    const hasMeal = acts.some((a) => isMealActivity(a.name, a.category));
+    if (!hasMeal) {
+      acts = [
+        {
+          id: 'act-refeicao-universal',
+          role: 'TODOS',
+          name: 'REFEIÇÃO',
+          priority: 0,
+          category: 'Refeição',
+          standardMinutes: 90,
+        },
+        ...acts,
+      ];
+    }
+    return acts;
+  }, [selectedColab, activities]);
+
+  const filteredRoleActivities = useMemo(() => {
+    return roleActivities
+      .filter((a) => a.name.toLowerCase().includes(activitySearch.toLowerCase()))
+      .sort((a, b) => a.priority - b.priority);
+  }, [roleActivities, activitySearch]);
 
   // Filtered and deduplicated observations for finish modal
   const sanitizedObservations = useMemo(() => {
@@ -412,6 +450,23 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setPartsProduced('');
     setScrapCount('');
     setChangeoverInitiatedTime(initTime);
+
+    // Se o colaborador ainda não almoçou hoje, verifica se cabe sugerir a dedução no final
+    const colab = collaborators.find(
+      (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+    );
+    const colabShift = colab?.shift || log.shift || 'Turno 1';
+    const jaTeve = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, logs);
+    const res = calcularDuracaoComDeducaoRefeicao(
+      log.startTime,
+      initTime,
+      log.collaboratorName || colabShift,
+      shifts,
+      !!jaTeve,
+      collaborators
+    );
+    setDeductMealAtFinish(res.deveDebitarRefeicao);
+
     setCurrentScreen('fechamento');
   };
 
@@ -420,6 +475,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     const targetId = logToFinish.id;
     const noteText = finishNotes.trim();
     const finishEndTime = changeoverInitiatedTime || undefined;
+    const shouldDeduct = deductMealAtFinish;
     setLogToFinish(null);
     setChangeoverInitiatedTime('');
     onFinishActivity(
@@ -428,7 +484,8 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       noteText,
       undefined,
       undefined,
-      finishEndTime
+      finishEndTime,
+      shouldDeduct
     );
     setCurrentScreen('painel');
   };
@@ -611,6 +668,20 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                               Trabalho: {formatarTempoSegundos(mealState.tempoTrabalhadoSegundos)}
                             </div>
                           </div>
+
+                          {/* Botão de Retomar do Almoço com 1 toque */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (onResumeActivity) onResumeActivity(tarefa.id);
+                            }}
+                            className="w-full py-1.5 px-2 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-[11px] rounded-lg shadow-sm flex items-center justify-center gap-1 cursor-pointer active:scale-95 transition"
+                            title="Retomar da refeição e voltar ao trabalho"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>RETOMAR DO ALMOÇO</span>
+                          </button>
                         </div>
                       ) : (
                         <div>
@@ -632,6 +703,22 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                               <AlertTriangle className="w-3 h-3" />
                               <span>Fim de Turno!</span>
                             </div>
+                          )}
+
+                          {/* Botão: QUEM DÁ START NO ALMOÇO É O OPERADOR */}
+                          {!tarefa.mealBreakDeducted && !colaboradorJaUsouRefeicaoHoje(tarefa.collaboratorName, tarefa.date, logs) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onPauseMeal) onPauseMeal(tarefa.id);
+                              }}
+                              className="w-full mt-2 py-1.5 px-2 bg-[#FF8C00]/20 hover:bg-[#FF8C00]/35 border border-[#FF9800]/60 rounded-lg text-[11px] font-bold text-[#FFB74D] flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs"
+                              title={`Dar start no almoço agora. Descontará os ${mealState.duracaoPausaMinutos} min configurados.`}
+                            >
+                              <Utensils className="w-3.5 h-3.5 text-[#FF9800]" />
+                              <span>START ALMOÇO ({mealState.duracaoPausaMinutos}m)</span>
+                            </button>
                           )}
                         </div>
                       )}
@@ -1197,6 +1284,60 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] resize-none"
               />
             </div>
+
+            {/* Ações Específicas de Refeição dentro do Modal */}
+            {isPausedMeal ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (onResumeActivity) onResumeActivity(logToFinish.id);
+                  setCurrentScreen('painel');
+                  setLogToFinish(null);
+                }}
+                className="w-full py-3.5 bg-[#00E676] hover:bg-[#00c853] text-black font-black text-sm rounded-xl shadow flex items-center justify-center gap-2 cursor-pointer transition"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                <span>RETOMAR DO ALMOÇO (VOLTAR AO TRABALHO)</span>
+              </button>
+            ) : (
+              !jaUsouRefeicaoHoje && !logToFinish.mealBreakDeducted && (
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onPauseMeal) onPauseMeal(logToFinish.id);
+                      setCurrentScreen('painel');
+                      setLogToFinish(null);
+                    }}
+                    className="w-full py-3 px-3 bg-[#FF8C00]/20 hover:bg-[#FF8C00]/35 border border-[#FF8C00]/60 text-[#FFB74D] font-bold text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2 cursor-pointer transition"
+                  >
+                    <Utensils className="w-4 h-4 text-[#FF9800]" />
+                    <span>DAR START NO ALMOÇO AGORA (Pausar e Descontar {mealConfig.duracaoMinutos} min)</span>
+                  </button>
+
+                  {/* Opção para quando o operador esqueceu e vai lançar no final */}
+                  <div className="p-3 bg-[#1C1C1C] border border-[#FF9800]/40 rounded-xl">
+                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={deductMealAtFinish}
+                        onChange={(e) => setDeductMealAtFinish(e.target.checked)}
+                        className="w-5 h-5 mt-0.5 rounded accent-[#00E676] cursor-pointer"
+                      />
+                      <div>
+                        <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
+                          <Utensils className="w-3.5 h-3.5 text-[#FF9800]" />
+                          <span>Descontar Almoço no Encerramento ({mealConfig.duracaoMinutos} min)</span>
+                        </div>
+                        <p className="text-[11px] text-[#AAAAAA] mt-0.5 leading-snug">
+                          Caso tenha esquecido de dar start no almoço durante a atividade, marque esta opção para lançar o desconto da refeição configurada ({mealConfig.duracaoMinutos} min) agora no final.
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              )
+            )}
 
             {/* Botão de Troca Rápida de Setup */}
             {onQuickChangeover && (

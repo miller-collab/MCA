@@ -17,7 +17,8 @@ export type ActivityCategory =
   | 'Manutenção' 
   | '5S & Limpeza' 
   | 'Logística / Almoxarifado' 
-  | 'Sistema & Processo';
+  | 'Sistema & Processo'
+  | 'Refeição';
 
 export interface ActivityItem {
   id: string;
@@ -67,7 +68,7 @@ export interface ProductionLog {
   isMealPause?: boolean;
   mealBreakDeducted?: boolean;
   mealBreakMinutes?: number;
-  mealBreakSource?: 'manual' | 'automatic';
+  mealBreakSource?: 'manual' | 'automatic' | 'encerramento';
   mealPauseStartTime?: string;
   mealPauseTimestampMs?: number;
   mealPauseDurationMinutes?: number;

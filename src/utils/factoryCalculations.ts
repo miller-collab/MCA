@@ -170,13 +170,22 @@ export function obterConfiguracaoRefeicao(
         c.id === colabOrShift
     );
     if (colab) {
+      // Prioridade máxima: tempo de refeição definido diretamente pelo líder (em minutos)
+      if (colab.mealDurationMinutes !== undefined && colab.mealDurationMinutes > 0) {
+        return {
+          shiftName: colab.shift || 'Turno 1',
+          saidaAlmoco: colab.mealStart || '12:00',
+          retornoAlmoco: colab.mealEnd || '13:30',
+          duracaoMinutos: colab.mealDurationMinutes,
+        };
+      }
       if (colab.mealStart && colab.mealEnd) {
         const dur = calcularDiferencaMinutos(colab.mealStart, colab.mealEnd);
         return {
           shiftName: colab.shift || 'Turno 1',
           saidaAlmoco: colab.mealStart,
           retornoAlmoco: colab.mealEnd,
-          duracaoMinutos: dur > 0 ? dur : 90,
+          duracaoMinutos: dur > 0 ? dur : (colab.shift?.includes('1') ? 90 : 60),
         };
       }
       // Se não tiver horário customizado, usa o turno do colaborador
@@ -230,6 +239,35 @@ export function obterConfiguracaoRefeicao(
 }
 
 /**
+ * Identifica se a atividade ou categoria se refere a REFEIÇÃO / ALMOÇO / INTERVALO
+ */
+export function isMealActivity(activityName?: string, category?: string): boolean {
+  if (!activityName && !category) return false;
+  const act = (activityName || '').trim().toUpperCase();
+  const cat = (category || '').trim().toUpperCase();
+
+  return (
+    act === 'REFEIÇÃO' ||
+    act === 'REFEICAO' ||
+    act === 'ALMOÇO' ||
+    act === 'ALMOCO' ||
+    act === 'PAUSA REFEIÇÃO' ||
+    act === 'PAUSA REFEICAO' ||
+    act === 'PAUSA ALMOÇO' ||
+    act === 'PAUSA ALMOCO' ||
+    act === 'HORÁRIO DE ALMOÇO' ||
+    act === 'HORARIO DE ALMOCO' ||
+    act.includes('REFEIÇÃO') ||
+    act.includes('REFEICAO') ||
+    act.includes('ALMOÇO') ||
+    act.includes('ALMOCO') ||
+    cat === 'REFEIÇÃO' ||
+    cat === 'REFEICAO' ||
+    cat === 'PAUSA'
+  );
+}
+
+/**
  * Verifica se o colaborador já utilizou a pausa ou dedução de refeição hoje (limite de 1x ao dia)
  */
 export function colaboradorJaUsouRefeicaoHoje(
@@ -245,7 +283,7 @@ export function colaboradorJaUsouRefeicaoHoje(
     if (l.collaboratorName.trim().toLowerCase() !== colabKey) return false;
 
     if (l.isMealPause || l.mealBreakDeducted) return true;
-    if (l.activity && l.activity.toUpperCase().includes('REFEIÇÃO')) return true;
+    if (isMealActivity(l.activity, l.category)) return true;
     if (
       l.observation &&
       (l.observation.includes('🍽️') ||
@@ -326,11 +364,21 @@ export function calcularDuracaoComDeducaoRefeicao(
   const mealStartSec = timeToSecondsOfDay(mealConfig.saidaAlmoco);
   const mealEndSec = timeToSecondsOfDay(mealConfig.retornoAlmoco);
 
-  // A dedução integral da refeição (ex: 90 min) ocorre quando a atividade começou antes ou no início do almoço e terminou após o retorno
+  // A dedução integral da refeição (ex: 90 min) ocorre quando:
+  // 1. A atividade começou antes ou no início do almoço e terminou após o retorno, ou cruzou o intervalo de refeição
   const cruzouAlmoco = (startSec <= mealStartSec + 300 && endSec >= mealEndSec - 300) ||
     (duracaoBruta >= mealConfig.duracaoMinutos + 15 && startSec < mealEndSec && endSec > mealStartSec);
 
-  if (cruzouAlmoco) {
+  // 2. Ou caso o colaborador tenha esquecido de lançar e a atividade finalizou no fim do turno (ou passou do retorno do almoço)
+  const shift = shifts.find(
+    (s) =>
+      padronizarNomeTurno(s.name) === padronizarNomeTurno(mealConfig.shiftName) ||
+      padronizarNomeTurno(s.code) === padronizarNomeTurno(mealConfig.shiftName)
+  ) || shifts[0];
+  const shiftSaidaSec = timeToSecondsOfDay(shift?.saida || '17:30');
+  const terminouFimTurno = (endSec >= shiftSaidaSec - 1800 || endSec >= mealEndSec) && duracaoBruta > mealConfig.duracaoMinutos;
+
+  if (cruzouAlmoco || terminouFimTurno) {
     const deducao = mealConfig.duracaoMinutos; // Sempre o valor integral configurado (ex: 90 min)
     const duracaoLiquida = Math.max(1, duracaoBruta - deducao);
     return {
@@ -1736,6 +1784,21 @@ export function calcularEficienciaIndividualDiaria(
       operacoesMap[actName].tempoMinutos += duracao;
     });
 
+    // REGRA DE REFEIÇÃO: Caso o colaborador tenha esquecido de acionar REFEIÇÃO até o encerramento do seu turno,
+    // o sistema desconta automaticamente a duração configurada (ex: 90 ou 60 min) nos cálculos de indicadores
+    // para não distorcer o resultado e sem criar conflitos de registros de apontamento do colaborador.
+    const jaTeveRefeicao = logsDoDia.some(
+      (l) => l.mealBreakDeducted || isMealActivity(l.activity, l.category)
+    );
+    const mealCfg = obterConfiguracaoRefeicao(colab.name || colab.shift || 'Turno 1', shifts, collaborators);
+    const duracaoRefeicaoDefinida = mealCfg.duracaoMinutos || (turnoKey.includes('1') ? 90 : 60);
+
+    if (!jaTeveRefeicao && logsDoDia.length > 0 && statusDia === 'ENCERRADO') {
+      if (trabalhadoMinutosDia > shiftData.min) {
+        trabalhadoMinutosDia = Math.max(shiftData.min, trabalhadoMinutosDia - duracaoRefeicaoDefinida);
+      }
+    }
+
     const trabalhadoAjustado = Math.min(trabalhadoMinutosDia, Math.max(esperadoDia, 540));
     const semApontar = esperadoDia > 0 ? Math.max(0, esperadoDia - trabalhadoAjustado) : 0;
 
@@ -2016,18 +2079,21 @@ export function isColaboradorEmTurnoAtivo(colab: Collaborator, shifts: ShiftConf
 export function calcularEstadoTempoRefeicao(
   log: ProductionLog,
   now: Date,
-  shifts: ShiftConfig[]
+  shifts: ShiftConfig[],
+  collaborators?: Collaborator[]
 ): {
   emPausaRefeicao: boolean;
   tempoRestantePausaSegundos: number;
+  tempoDecorridoPausaSegundos: number;
   duracaoPausaMinutos: number;
   tempoTrabalhadoSegundos: number;
   pausaVenceuRetomou: boolean;
+  horarioConfigurado?: string;
 } {
-  const colabShift = log.shift || 'Turno 1';
-  const mealConfig = obterConfiguracaoRefeicao(colabShift, shifts);
+  const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName || log.shift || 'Turno 1', shifts, collaborators);
   const duracaoMinutos = log.mealPauseDurationMinutes || log.mealBreakMinutes || mealConfig.duracaoMinutos || 90;
   const duracaoPausaSegundos = duracaoMinutos * 60;
+  const horarioConfigurado = `${mealConfig.saidaAlmoco} às ${mealConfig.retornoAlmoco} (${duracaoMinutos} min)`;
 
   // Calcular segundos desde o início da atividade
   const [hI, mI, sI] = (log.startTime || '00:00:00').split(':').map((v) => parseInt(v, 10) || 0);
@@ -2038,13 +2104,17 @@ export function calcularEstadoTempoRefeicao(
   }
   const totalDesdeInicioSegundos = Math.max(0, Math.floor((now.getTime() - dataInicio.getTime()) / 1000));
 
-  if (!log.isMealPause && log.status !== 'Pausada' && !log.mealPauseTimestampMs && !log.mealPauseStartTime) {
+  const isRefeicaoAct = isMealActivity(log.activity, log.category);
+
+  if (!isRefeicaoAct && !log.isMealPause && log.status !== 'Pausada' && !log.mealPauseTimestampMs && !log.mealPauseStartTime) {
     return {
       emPausaRefeicao: false,
       tempoRestantePausaSegundos: 0,
+      tempoDecorridoPausaSegundos: 0,
       duracaoPausaMinutos: duracaoMinutos,
       tempoTrabalhadoSegundos: totalDesdeInicioSegundos,
       pausaVenceuRetomou: false,
+      horarioConfigurado,
     };
   }
 
@@ -2060,6 +2130,11 @@ export function calcularEstadoTempoRefeicao(
     pauseStartMs = dataPausa.getTime();
   }
 
+  // Se for a própria atividade REFEIÇÃO, o início da contagem é o início da atividade
+  if (!pauseStartMs && isRefeicaoAct) {
+    pauseStartMs = dataInicio.getTime();
+  }
+
   // Fallback 1: Se duracaoMinutes foi gravado no momento da pausa
   if (!pauseStartMs && log.durationMinutes !== undefined && log.durationMinutes > 0 && dataInicio) {
     pauseStartMs = dataInicio.getTime() + (log.durationMinutes * 60 * 1000);
@@ -2073,6 +2148,21 @@ export function calcularEstadoTempoRefeicao(
   const decorridoPausaSegundos = Math.max(0, Math.floor((now.getTime() - pauseStartMs) / 1000));
   const tempoRestantePausaSegundos = Math.max(0, duracaoPausaSegundos - decorridoPausaSegundos);
 
+  // CASO 1: Atividade dedicada de REFEIÇÃO
+  if (isRefeicaoAct) {
+    const pausaVenceu = decorridoPausaSegundos >= duracaoPausaSegundos;
+    return {
+      emPausaRefeicao: true,
+      tempoRestantePausaSegundos,
+      tempoDecorridoPausaSegundos: decorridoPausaSegundos,
+      duracaoPausaMinutos: duracaoMinutos,
+      tempoTrabalhadoSegundos: 0, // Durante refeição não soma trabalho
+      pausaVenceuRetomou: pausaVenceu,
+      horarioConfigurado,
+    };
+  }
+
+  // CASO 2: Pausa temporária dentro de outra atividade
   if (decorridoPausaSegundos < duracaoPausaSegundos && log.status === 'Pausada') {
     // Ainda dentro do intervalo da pausa de refeição
     const tempoTrabalhadoAntesPausa = Math.max(
@@ -2082,9 +2172,11 @@ export function calcularEstadoTempoRefeicao(
     return {
       emPausaRefeicao: true,
       tempoRestantePausaSegundos,
+      tempoDecorridoPausaSegundos: decorridoPausaSegundos,
       duracaoPausaMinutos: duracaoMinutos,
       tempoTrabalhadoSegundos: tempoTrabalhadoAntesPausa,
       pausaVenceuRetomou: false,
+      horarioConfigurado,
     };
   } else {
     // A pausa de refeição venceu os minutos configurados!
@@ -2093,9 +2185,11 @@ export function calcularEstadoTempoRefeicao(
     return {
       emPausaRefeicao: false,
       tempoRestantePausaSegundos: 0,
+      tempoDecorridoPausaSegundos: decorridoPausaSegundos,
       duracaoPausaMinutos: duracaoMinutos,
       tempoTrabalhadoSegundos: tempoTrabalhadoLiquido,
       pausaVenceuRetomou: true,
+      horarioConfigurado,
     };
   }
 }
