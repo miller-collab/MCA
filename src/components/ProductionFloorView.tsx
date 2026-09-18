@@ -641,13 +641,13 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                         {/* Descrição informada pelo operador ao iniciar (Foto 1: O que vai executar agora) */}
                         {(tarefa.initialDescription || tarefa.notes) && (
                           <div
-                            className="mb-2 px-2 py-1.5 bg-[#1C1C1C] border border-[#FFD700]/35 rounded-lg text-[11px] sm:text-xs text-[#FFE082] leading-tight line-clamp-2 text-center shadow-inner"
+                            className="mb-2.5 px-3 py-2 bg-[#1B1812] border border-[#FFD700]/50 hover:border-[#FFD700]/80 rounded-lg text-xs sm:text-[13px] text-[#FFE082] leading-snug text-center shadow-md transition-colors min-h-[50px] max-h-40 overflow-y-auto"
                             title={tarefa.initialDescription || tarefa.notes}
                           >
-                            <span className="text-[#888888] text-[9px] uppercase tracking-wider font-mono font-bold block">
+                            <span className="text-[#FFD700]/90 text-[10px] sm:text-[11px] uppercase tracking-wider font-mono font-black block mb-0.5">
                               Executando:
                             </span>
-                            <span className="italic font-medium">
+                            <span className="italic font-semibold break-words select-text">
                               "{tarefa.initialDescription || tarefa.notes}"
                             </span>
                           </div>
