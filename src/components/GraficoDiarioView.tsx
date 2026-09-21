@@ -95,6 +95,7 @@ interface GraficoDiarioViewProps {
   shifts: ShiftConfig[];
   initialCollaborator?: string | null;
   onNavigateToHistory?: (collaboratorName: string) => void;
+  onSelectCollaborator?: (collaboratorName: string) => void;
 }
 
 type TabGraficoMode = 'evolucao_diaria' | 'top10_atividades';
@@ -119,6 +120,7 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
   shifts = [],
   initialCollaborator = null,
   onNavigateToHistory,
+  onSelectCollaborator,
 }) => {
   // Aba ativa de visualização
   const [activeTabMode, setActiveTabMode] = useState<TabGraficoMode>('evolucao_diaria');
@@ -154,14 +156,22 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
     return 'TODOS';
   });
 
-  // Sincroniza o operador selecionado quando a lista carregar ou initialCollaborator mudar
+  // Ref para acompanhar apenas alterações reais de initialCollaborator vindas de fora
+  const prevInitialColabRef = React.useRef<string | null>(initialCollaborator || null);
+
   useEffect(() => {
-    if (initialCollaborator && typeof initialCollaborator === 'string' && initialCollaborator.trim()) {
+    if (initialCollaborator && initialCollaborator.trim() && initialCollaborator !== prevInitialColabRef.current) {
+      prevInitialColabRef.current = initialCollaborator;
       setSelectedColabName(initialCollaborator.trim());
-    } else if (!selectedColabName && listaColaboradores.length > 0 && listaColaboradores[0].name) {
+    }
+  }, [initialCollaborator]);
+
+  // Se lista carregar tardiamente e não houver seleção
+  useEffect(() => {
+    if (!selectedColabName && listaColaboradores.length > 0 && listaColaboradores[0]?.name) {
       setSelectedColabName(listaColaboradores[0].name);
     }
-  }, [initialCollaborator, listaColaboradores, selectedColabName]);
+  }, [listaColaboradores, selectedColabName]);
 
   // Período de datas (padrão: últimos 7 dias até hoje)
   const [startDate, setStartDate] = useState<string>(() => {
@@ -616,7 +626,11 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
               <div className="relative">
                 <select
                   value={safeSelectedName}
-                  onChange={(e) => setSelectedColabName(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedColabName(val);
+                    if (onSelectCollaborator) onSelectCollaborator(val);
+                  }}
                   className="w-full bg-[#202020] border border-[#3E3E3E] hover:border-[#007BFF] focus:border-[#007BFF] rounded-lg px-3.5 py-2.5 text-sm font-bold text-white outline-none transition cursor-pointer appearance-none"
                 >
                   <option value="TODOS" className="bg-[#1C1C1C] text-[#00E676] font-black">
@@ -1172,6 +1186,7 @@ const GraficoDiarioContent: React.FC<GraficoDiarioViewProps> = ({
                     <button
                       onClick={() => {
                         setSelectedColabName(item.collaborator.name);
+                        if (onSelectCollaborator) onSelectCollaborator(item.collaborator.name);
                       }}
                       className="px-2.5 py-1.5 bg-[#202020] hover:bg-[#007BFF] hover:text-white text-[#AAAAAA] rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
                       title="Focar individualmente neste operador"

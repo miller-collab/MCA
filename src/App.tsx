@@ -122,8 +122,13 @@ export function App() {
   });
 
   const [activities, setActivities] = useState<ActivityItem[]>(() => {
-    const saved = localStorage.getItem('mca_activities_v3');
-    return saved ? JSON.parse(saved) : INITIAL_ACTIVITIES;
+    try {
+      const permanent = localStorage.getItem('mca_permanent_activities_v3');
+      if (permanent) return JSON.parse(permanent);
+      const saved = localStorage.getItem('mca_activities_v3');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return INITIAL_ACTIVITIES;
   });
 
   const [shifts, setShifts] = useState<ShiftConfig[]>(() => {
@@ -204,6 +209,56 @@ export function App() {
   // Helper to persist master JSON snapshot to Firestore & Server on every change
   const isApplyingRemoteMasterRef = useRef(false);
   const lastActivityUpdateMsRef = useRef<number>(0);
+  const lastNotifsClearedMsRef = useRef<number>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('mca_last_notifs_cleared_ms');
+        return saved ? Number(saved) : 0;
+      } catch {
+        return 0;
+      }
+    })()
+  );
+  const lastLogsResetMsRef = useRef<number>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('mca_last_logs_reset_ms');
+        return saved ? Number(saved) : 0;
+      } catch {
+        return 0;
+      }
+    })()
+  );
+  const deletedActivityIdsRef = useRef<string[]>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('mca_deleted_activity_ids_v3');
+        return saved ? JSON.parse(saved) : [];
+      } catch {
+        return [];
+      }
+    })()
+  );
+  const deletedLogIdsRef = useRef<string[]>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('mca_deleted_log_ids_v3');
+        return saved ? JSON.parse(saved) : [];
+      } catch {
+        return [];
+      }
+    })()
+  );
+  const dismissedNotifIdsRef = useRef<string[]>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('mca_dismissed_notif_ids_v3');
+        return saved ? JSON.parse(saved) : [];
+      } catch {
+        return [];
+      }
+    })()
+  );
 
   const triggerMasterJsonSave = useCallback(
     (
@@ -241,7 +296,7 @@ export function App() {
   useEffect(() => {
     let isMounted = true;
 
-    // Master JSON apply helper
+    // Master JSON apply helper with strict preservation of local edits & explicit deletions
     const applyMasterSnapshotData = (data: {
       collaborators?: Collaborator[];
       shifts?: ShiftConfig[];
@@ -254,28 +309,83 @@ export function App() {
       if (!isMounted || !data) return;
       isApplyingRemoteMasterRef.current = true;
 
-      if (data.collaborators && data.collaborators.length > 0) {
-        setCollaborators(data.collaborators);
+      // 1. Colaboradores: mesclagem segura
+      if (data.collaborators && Array.isArray(data.collaborators) && data.collaborators.length > 0) {
+        setCollaborators((prev) => {
+          const colabMap = new Map<string, Collaborator>();
+          for (const c of data.collaborators!) {
+            if (c && (c.id || c.name)) colabMap.set(c.id || c.name, c);
+          }
+          for (const localC of prev) {
+            const key = localC.id || localC.name;
+            if (key && !colabMap.has(key)) {
+              colabMap.set(key, localC);
+            }
+          }
+          const merged = Array.from(colabMap.values());
+          try { localStorage.setItem('mca_colabs_v3', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
-      if (data.shifts && data.shifts.length > 0) {
+
+      // 2. Turnos
+      if (data.shifts && Array.isArray(data.shifts) && data.shifts.length > 0) {
         setShifts(data.shifts);
+        try { localStorage.setItem('mca_shifts_v3', JSON.stringify(data.shifts)); } catch {}
       }
-      if (data.activities && data.activities.length > 0) {
-        if (Date.now() - lastActivityUpdateMsRef.current > 8000) {
-          setActivities(data.activities);
-        }
+
+      // 3. Atividades: NUNCA perder tarefas cadastradas pelo líder (ex: P2.3)
+      if (data.activities && Array.isArray(data.activities) && data.activities.length > 0) {
+        setActivities((prev) => {
+          if (Date.now() - lastActivityUpdateMsRef.current < 45000) {
+            return prev;
+          }
+          const actMap = new Map<string, ActivityItem>();
+          const deletedSet = new Set(deletedActivityIdsRef.current);
+          for (const act of data.activities!) {
+            if (act && act.id && !deletedSet.has(act.id)) {
+              actMap.set(act.id, act);
+            }
+          }
+          for (const localAct of prev) {
+            if (localAct && localAct.id && !deletedSet.has(localAct.id)) {
+              if (!actMap.has(localAct.id)) {
+                actMap.set(localAct.id, localAct);
+              }
+            }
+          }
+          const merged = Array.from(actMap.values());
+          try {
+            localStorage.setItem('mca_activities_v3', JSON.stringify(merged));
+            localStorage.setItem('mca_permanent_activities_v3', JSON.stringify(merged));
+          } catch {}
+          return merged;
+        });
       }
+
+      // 4. Logs de Produção: respeitar exclusões definitivas e reset do líder
       if (data.logs && Array.isArray(data.logs)) {
-        const cleanLogs = data.logs.filter((l) => l && l.id);
+        const lastReset = typeof lastLogsResetMsRef.current === 'number' ? lastLogsResetMsRef.current : 0;
+        const deletedLogsSet = new Set(deletedLogIdsRef.current);
+        const cleanLogs = data.logs.filter((l) => {
+          if (!l || !l.id) return false;
+          if (deletedLogsSet.has(l.id)) return false;
+          if (lastReset > 0 && l.createdAt && new Date(l.createdAt).getTime() < lastReset) {
+            return false;
+          }
+          return true;
+        });
         const formatted = cleanLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
         setLogs((prev) => {
-          // Merge incoming logs with local logs to ensure neither active tasks nor newly added/edited manual logs vanish!
           const logMap = new Map<string, ProductionLog>();
           for (const l of formatted) {
-            if (l && l.id) logMap.set(l.id, l);
+            if (l && l.id && !deletedLogsSet.has(l.id)) logMap.set(l.id, l);
           }
           for (const pl of prev) {
-            if (pl && pl.id) {
+            if (pl && pl.id && !deletedLogsSet.has(pl.id)) {
+              if (lastReset > 0 && pl.createdAt && new Date(pl.createdAt).getTime() < lastReset) {
+                continue;
+              }
               if (!logMap.has(pl.id)) {
                 logMap.set(pl.id, pl);
               }
@@ -287,12 +397,30 @@ export function App() {
             data.collaborators || collaborators,
             data.shifts || shifts
           );
+          try { localStorage.setItem('mca_logs_v3', JSON.stringify(sanitizedLogs)); } catch {}
           return sanitizedLogs;
         });
       }
+
+      // 5. Notificações de Encerramento Automático: respeitar limpeza do líder
       if (data.autocloseNotifs && Array.isArray(data.autocloseNotifs)) {
-        setAutoCloseNotifs(data.autocloseNotifs);
+        const lastCleared = typeof lastNotifsClearedMsRef.current === 'number' ? lastNotifsClearedMsRef.current : 0;
+        if (Date.now() - lastCleared < 45000) {
+          // Mantém limpo durante a janela de limpeza do líder
+        } else {
+          const dismissedSet = new Set(dismissedNotifIdsRef.current);
+          const validNotifs = data.autocloseNotifs.filter((n: any) => {
+            if (!n || !n.id || n.id === 'all_cleared') return false;
+            if (n.dismissed || n.deleted) return false;
+            if (dismissedSet.has(n.id)) return false;
+            if (lastCleared > 0 && n.timestamp && n.timestamp < lastCleared) return false;
+            return true;
+          });
+          setAutoCloseNotifs(validNotifs);
+          try { localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(validNotifs)); } catch {}
+        }
       }
+
       if (data.factoryConfig) {
         const cfg = data.factoryConfig;
         if (cfg.toleranceMinutes) setToleranceMinutes(cfg.toleranceMinutes);
@@ -340,8 +468,49 @@ export function App() {
 
     const unsubActivitiesCentral = centralSync.onActivities((newActs) => {
       if (newActs && newActs.length > 0 && !isApplyingRemoteMasterRef.current) {
-        if (Date.now() - lastActivityUpdateMsRef.current > 8000) {
-          setActivities(newActs);
+        if (Date.now() - lastActivityUpdateMsRef.current > 45000) {
+          setActivities((prev) => {
+            const actMap = new Map<string, ActivityItem>();
+            const deletedSet = new Set(deletedActivityIdsRef.current);
+            for (const act of newActs) {
+              if (act && act.id && !deletedSet.has(act.id)) {
+                actMap.set(act.id, act);
+              }
+            }
+            for (const localAct of prev) {
+              if (localAct && localAct.id && !deletedSet.has(localAct.id)) {
+                if (!actMap.has(localAct.id)) {
+                  actMap.set(localAct.id, localAct);
+                }
+              }
+            }
+            const merged = Array.from(actMap.values());
+            try {
+              localStorage.setItem('mca_activities_v3', JSON.stringify(merged));
+              localStorage.setItem('mca_permanent_activities_v3', JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
+        }
+      }
+    });
+
+    const unsubSingleLogCentral = centralSync.onSingleLog(({ action, log, id }) => {
+      if (action === 'delete' && id) {
+        if (!deletedLogIdsRef.current.includes(id)) {
+          deletedLogIdsRef.current.push(id);
+          try {
+            localStorage.setItem('mca_deleted_log_ids_v3', JSON.stringify(deletedLogIdsRef.current));
+          } catch {}
+        }
+        setLogs((prev) => prev.filter((l) => l.id !== id));
+      } else if (action === 'save' && log && log.id) {
+        if (!deletedLogIdsRef.current.includes(log.id)) {
+          setLogs((prev) => {
+            const map = new Map(prev.map((l) => [l.id, l]));
+            map.set(log.id, log);
+            return Array.from(map.values());
+          });
         }
       }
     });
@@ -370,17 +539,25 @@ export function App() {
       });
 
       unsubLogsFirestore = subscribeToLogs((cloudLogs) => {
-        const realLogs = (cloudLogs || []).filter((l) => l && l.id);
+        const deletedLogsSet = new Set(deletedLogIdsRef.current);
+        const lastReset = typeof lastLogsResetMsRef.current === 'number' ? lastLogsResetMsRef.current : 0;
+        const realLogs = (cloudLogs || []).filter((l) => {
+          if (!l || !l.id) return false;
+          if (deletedLogsSet.has(l.id)) return false;
+          if (lastReset > 0 && l.createdAt && new Date(l.createdAt).getTime() < lastReset) return false;
+          return true;
+        });
         if (realLogs.length > 0 && !isApplyingRemoteMasterRef.current) {
           const formatted = realLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
           setLogs((prev) => {
             const logMap = new Map<string, ProductionLog>();
             for (const l of formatted) {
-              if (l && l.id) logMap.set(l.id, l);
+              if (l && l.id && !deletedLogsSet.has(l.id)) logMap.set(l.id, l);
             }
             // Preserve local logs so they never flicker or disappear
             for (const pl of prev) {
-              if (pl && pl.id) {
+              if (pl && pl.id && !deletedLogsSet.has(pl.id)) {
+                if (lastReset > 0 && pl.createdAt && new Date(pl.createdAt).getTime() < lastReset) continue;
                 if (!logMap.has(pl.id)) {
                   logMap.set(pl.id, pl);
                 }
@@ -407,8 +584,29 @@ export function App() {
 
       unsubActsFirestore = subscribeToActivities((cloudActs) => {
         if (cloudActs && cloudActs.length > 0 && !isApplyingRemoteMasterRef.current) {
-          if (Date.now() - lastActivityUpdateMsRef.current > 8000) {
-            setActivities(cloudActs);
+          if (Date.now() - lastActivityUpdateMsRef.current > 45000) {
+            setActivities((prev) => {
+              const actMap = new Map<string, ActivityItem>();
+              const deletedSet = new Set(deletedActivityIdsRef.current);
+              for (const act of cloudActs) {
+                if (act && act.id && !deletedSet.has(act.id)) {
+                  actMap.set(act.id, act);
+                }
+              }
+              for (const localAct of prev) {
+                if (localAct && localAct.id && !deletedSet.has(localAct.id)) {
+                  if (!actMap.has(localAct.id)) {
+                    actMap.set(localAct.id, localAct);
+                  }
+                }
+              }
+              const merged = Array.from(actMap.values());
+              try {
+                localStorage.setItem('mca_activities_v3', JSON.stringify(merged));
+                localStorage.setItem('mca_permanent_activities_v3', JSON.stringify(merged));
+              } catch {}
+              return merged;
+            });
           }
         }
       });
@@ -831,19 +1029,52 @@ export function App() {
 
   // Notification dismissal handlers - Instant Firestore sync for all connected tablets
   const handleDismissOperatorNotif = useCallback((notifId: string) => {
-    setAutoCloseNotifs((prev) => prev.filter((n) => n.id !== notifId));
+    if (!dismissedNotifIdsRef.current.includes(notifId)) {
+      dismissedNotifIdsRef.current.push(notifId);
+      try {
+        localStorage.setItem('mca_dismissed_notif_ids_v3', JSON.stringify(dismissedNotifIdsRef.current));
+      } catch {}
+    }
+    setAutoCloseNotifs((prev) => {
+      const remaining = prev.filter((n) => n.id !== notifId);
+      try {
+        localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(remaining));
+      } catch {}
+      triggerMasterJsonSave(collaborators, shifts, activities, logs, remaining);
+      return remaining;
+    });
     dismissAutoCloseNotifInFirestore(notifId);
-  }, []);
+  }, [collaborators, shifts, activities, logs, triggerMasterJsonSave]);
 
   const handleDismissLeaderNotif = useCallback((notifId: string) => {
-    setAutoCloseNotifs((prev) => prev.filter((n) => n.id !== notifId));
+    if (!dismissedNotifIdsRef.current.includes(notifId)) {
+      dismissedNotifIdsRef.current.push(notifId);
+      try {
+        localStorage.setItem('mca_dismissed_notif_ids_v3', JSON.stringify(dismissedNotifIdsRef.current));
+      } catch {}
+    }
+    setAutoCloseNotifs((prev) => {
+      const remaining = prev.filter((n) => n.id !== notifId);
+      try {
+        localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(remaining));
+      } catch {}
+      triggerMasterJsonSave(collaborators, shifts, activities, logs, remaining);
+      return remaining;
+    });
     dismissAutoCloseNotifInFirestore(notifId);
-  }, []);
+  }, [collaborators, shifts, activities, logs, triggerMasterJsonSave]);
 
-  const handleClearAllNotifs = useCallback(() => {
+  const handleClearAllNotifs = useCallback(async () => {
+    const now = Date.now();
+    lastNotifsClearedMsRef.current = now;
+    try {
+      localStorage.setItem('mca_last_notifs_cleared_ms', String(now));
+      localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify([]));
+    } catch {}
     setAutoCloseNotifs([]);
-    clearAllNotifsInFirestore();
-  }, []);
+    await clearAllNotifsInFirestore();
+    triggerMasterJsonSave(collaborators, shifts, activities, logs, []);
+  }, [collaborators, shifts, activities, logs, triggerMasterJsonSave]);
 
   // 6. Operations Handlers (Synchronized to Cloud & Tablet Clients)
   const handleStartActivity = useCallback(
@@ -1167,8 +1398,17 @@ export function App() {
   );
 
   const handleDeleteLog = useCallback((id: string) => {
+    if (!deletedLogIdsRef.current.includes(id)) {
+      deletedLogIdsRef.current.push(id);
+      try {
+        localStorage.setItem('mca_deleted_log_ids_v3', JSON.stringify(deletedLogIdsRef.current));
+      } catch {}
+    }
     setLogs((prev) => {
       const nextLogs = prev.filter((l) => l.id !== id);
+      try {
+        localStorage.setItem('mca_logs_v3', JSON.stringify(nextLogs));
+      } catch {}
       triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
       return nextLogs;
     });
@@ -1287,14 +1527,27 @@ export function App() {
 
   const handleUpdateActivities = useCallback((newActivities: ActivityItem[]) => {
     lastActivityUpdateMsRef.current = Date.now();
+
+    // Detecta atividades excluídas explicitamente para que snapshots remotos não as restaurem
+    const newIds = new Set(newActivities.map((a) => a.id));
+    const newlyDeleted = activities.filter((a) => !newIds.has(a.id)).map((a) => a.id);
+    if (newlyDeleted.length > 0) {
+      const updatedDeleted = Array.from(new Set([...deletedActivityIdsRef.current, ...newlyDeleted]));
+      deletedActivityIdsRef.current = updatedDeleted;
+      try {
+        localStorage.setItem('mca_deleted_activity_ids_v3', JSON.stringify(updatedDeleted));
+      } catch {}
+    }
+
     setActivities(newActivities);
     try {
       localStorage.setItem('mca_activities_v3', JSON.stringify(newActivities));
+      localStorage.setItem('mca_permanent_activities_v3', JSON.stringify(newActivities));
     } catch {}
     saveActivitiesToFirestore(newActivities);
     savePermanentLocalBackup(collaborators, newActivities, shifts, logs);
     triggerMasterJsonSave(collaborators, shifts, newActivities, logs, autoCloseNotifs);
-  }, [collaborators, shifts, logs, autoCloseNotifs, triggerMasterJsonSave]);
+  }, [activities, collaborators, shifts, logs, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleSaveCollaborators = useCallback((newColabs: Collaborator[]) => {
     setCollaborators(newColabs);
@@ -1323,6 +1576,16 @@ export function App() {
   // Handlers para Reset de Produção com Backup Automático e Restauração
   const handleResetProductionLogs = useCallback(async () => {
     try {
+      const now = Date.now();
+      lastLogsResetMsRef.current = now;
+      lastNotifsClearedMsRef.current = now;
+      try {
+        localStorage.setItem('mca_last_logs_reset_ms', String(now));
+        localStorage.setItem('mca_last_notifs_cleared_ms', String(now));
+        localStorage.setItem('mca_logs_v3', JSON.stringify([]));
+        localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify([]));
+      } catch {}
+
       // 1. Exporta backup imediatamente para download seguro no navegador
       exportProductionLogsBackupFile(logs, autoCloseNotifs);
 
@@ -1332,11 +1595,14 @@ export function App() {
       // 3. Atualiza estado da UI
       setLogs([]);
       setAutoCloseNotifs([]);
+
+      // 4. Salva Master JSON limpo imediatamente no Firestore e no servidor Central
+      triggerMasterJsonSave(collaborators, shifts, activities, [], []);
     } catch (err) {
       console.error('Erro ao resetar registros de produção:', err);
       throw err;
     }
-  }, [logs, autoCloseNotifs]);
+  }, [logs, autoCloseNotifs, collaborators, shifts, activities, triggerMasterJsonSave]);
 
   const handleRestoreProductionLogs = useCallback(
     async (restoredLogs: ProductionLog[], restoredNotifs: AutoCloseNotification[] = []) => {

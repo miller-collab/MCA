@@ -279,17 +279,42 @@ export function subscribeToCollaborators(
   onUpdate: (colabs: Collaborator[]) => void,
   _onError?: (err: Error) => void
 ) {
+  let isSubscribed = true;
+
+  let unsubFirestore1 = () => {};
+  let unsubFirestore2 = () => {};
+  try {
+    unsubFirestore1 = onSnapshot(doc(db, 'master_snapshot', 'collaborators'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && Array.isArray(data.list) && data.list.length > 0) {
+          onUpdate(data.list);
+        }
+      }
+    }, (err) => console.warn('Collaborators snapshot error:', err));
+
+    unsubFirestore2 = onSnapshot(doc(db, 'master_snapshot', 'current'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && Array.isArray(data.collaborators) && data.collaborators.length > 0) {
+          onUpdate(data.collaborators);
+        }
+      }
+    }, (err) => console.warn('Master snap current collaborators error:', err));
+  } catch (e) {
+    console.warn('Firestore collaborators subscription error:', e);
+  }
+
   const unsubCentral = centralSync.onCollaborators((colabs) => {
-    if (Array.isArray(colabs) && colabs.length > 0) onUpdate(colabs);
+    if (Array.isArray(colabs) && colabs.length > 0 && isSubscribed) onUpdate(colabs);
   });
 
-  centralSync.fetchFullSync().then((state) => {
-    if (state && Array.isArray(state.collaborators) && state.collaborators.length > 0) {
-      onUpdate(state.collaborators);
-    }
-  }).catch(() => {});
-
-  return unsubCentral;
+  return () => {
+    isSubscribed = false;
+    try { unsubFirestore1(); } catch {}
+    try { unsubFirestore2(); } catch {}
+    try { unsubCentral(); } catch {}
+  };
 }
 
 /**
@@ -299,17 +324,42 @@ export function subscribeToActivities(
   onUpdate: (acts: ActivityItem[]) => void,
   _onError?: (err: Error) => void
 ) {
-  const unsub = centralSync.onActivities((acts) => {
-    if (Array.isArray(acts) && acts.length > 0) onUpdate(acts);
+  let isSubscribed = true;
+
+  let unsubFirestore1 = () => {};
+  let unsubFirestore2 = () => {};
+  try {
+    unsubFirestore1 = onSnapshot(doc(db, 'master_snapshot', 'activities'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && Array.isArray(data.list) && data.list.length > 0) {
+          onUpdate(data.list);
+        }
+      }
+    }, (err) => console.warn('Activities snapshot error:', err));
+
+    unsubFirestore2 = onSnapshot(doc(db, 'master_snapshot', 'current'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && Array.isArray(data.activities) && data.activities.length > 0) {
+          onUpdate(data.activities);
+        }
+      }
+    }, (err) => console.warn('Master snap current activities error:', err));
+  } catch (e) {
+    console.warn('Firestore activities subscription error:', e);
+  }
+
+  const unsubCentral = centralSync.onActivities((acts) => {
+    if (Array.isArray(acts) && acts.length > 0 && isSubscribed) onUpdate(acts);
   });
 
-  centralSync.fetchFullSync().then((state) => {
-    if (state && Array.isArray(state.activities) && state.activities.length > 0) {
-      onUpdate(state.activities);
-    }
-  }).catch(() => {});
-
-  return unsub;
+  return () => {
+    isSubscribed = false;
+    try { unsubFirestore1(); } catch {}
+    try { unsubFirestore2(); } catch {}
+    try { unsubCentral(); } catch {}
+  };
 }
 
 /**
@@ -319,17 +369,42 @@ export function subscribeToShifts(
   onUpdate: (shifts: ShiftConfig[]) => void,
   _onError?: (err: Error) => void
 ) {
-  const unsub = centralSync.onShifts((shifts) => {
-    if (Array.isArray(shifts) && shifts.length > 0) onUpdate(shifts);
+  let isSubscribed = true;
+
+  let unsubFirestore1 = () => {};
+  let unsubFirestore2 = () => {};
+  try {
+    unsubFirestore1 = onSnapshot(doc(db, 'master_snapshot', 'shifts'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && Array.isArray(data.list) && data.list.length > 0) {
+          onUpdate(data.list);
+        }
+      }
+    }, (err) => console.warn('Shifts snapshot error:', err));
+
+    unsubFirestore2 = onSnapshot(doc(db, 'master_snapshot', 'current'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && Array.isArray(data.shifts) && data.shifts.length > 0) {
+          onUpdate(data.shifts);
+        }
+      }
+    }, (err) => console.warn('Master snap current shifts error:', err));
+  } catch (e) {
+    console.warn('Firestore shifts subscription error:', e);
+  }
+
+  const unsubCentral = centralSync.onShifts((shifts) => {
+    if (Array.isArray(shifts) && shifts.length > 0 && isSubscribed) onUpdate(shifts);
   });
 
-  centralSync.fetchFullSync().then((state) => {
-    if (state && Array.isArray(state.shifts) && state.shifts.length > 0) {
-      onUpdate(state.shifts);
-    }
-  }).catch(() => {});
-
-  return unsub;
+  return () => {
+    isSubscribed = false;
+    try { unsubFirestore1(); } catch {}
+    try { unsubFirestore2(); } catch {}
+    try { unsubCentral(); } catch {}
+  };
 }
 
 /**
@@ -339,17 +414,42 @@ export function subscribeToFactoryConfig(
   onUpdate: (config: any) => void,
   _onError?: (err: Error) => void
 ) {
-  const unsub = centralSync.onConfig((cfg) => {
-    if (cfg) onUpdate(cfg);
+  let isSubscribed = true;
+
+  let unsubFirestore1 = () => {};
+  let unsubFirestore2 = () => {};
+  try {
+    unsubFirestore1 = onSnapshot(doc(db, 'master_snapshot', 'config'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data) {
+          onUpdate(data);
+        }
+      }
+    }, (err) => console.warn('Config snapshot error:', err));
+
+    unsubFirestore2 = onSnapshot(doc(db, 'master_snapshot', 'current'), (snap) => {
+      if (snap.exists() && isSubscribed) {
+        const data = snap.data();
+        if (data && data.factoryConfig) {
+          onUpdate(data.factoryConfig);
+        }
+      }
+    }, (err) => console.warn('Master snap current config error:', err));
+  } catch (e) {
+    console.warn('Firestore config subscription error:', e);
+  }
+
+  const unsubCentral = centralSync.onConfig((cfg) => {
+    if (cfg && isSubscribed) onUpdate(cfg);
   });
 
-  centralSync.fetchFullSync().then((state) => {
-    if (state && state.factoryConfig) {
-      onUpdate(state.factoryConfig);
-    }
-  }).catch(() => {});
-
-  return unsub;
+  return () => {
+    isSubscribed = false;
+    try { unsubFirestore1(); } catch {}
+    try { unsubFirestore2(); } catch {}
+    try { unsubCentral(); } catch {}
+  };
 }
 
 // ============================================================================
@@ -604,14 +704,80 @@ export async function saveAutoCloseNotifToDatabase(notif: AutoCloseNotification)
 }
 
 export async function dismissAutoCloseNotifInDatabase(notifId: string): Promise<void> {
+  // 1. Delete from Firestore autoclose_notifs collection
   try {
-    await saveAutoCloseNotifToDatabase({ id: notifId, dismissed: true, read: true } as any);
+    await deleteDoc(doc(db, 'autoclose_notifs', notifId));
+  } catch (err) {
+    console.warn('Notice deleting notif doc from Firestore:', err);
+  }
+
+  // 2. Update master_snapshot/current in Firestore
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    const docSnap = await getDoc(snapRef);
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      if (data && Array.isArray(data.autocloseNotifs)) {
+        const filtered = data.autocloseNotifs.filter((n: any) => n.id !== notifId);
+        await setDoc(snapRef, {
+          autocloseNotifs: filtered,
+          lastUpdated: new Date().toISOString(),
+        }, { merge: true });
+      }
+    }
+  } catch (err) {
+    console.warn('Notice updating master_snapshot/current without dismissed notif:', err);
+  }
+
+  // 3. Update localStorage cache
+  try {
+    const raw = localStorage.getItem('mca_autoclose_notifs_v3');
+    if (raw) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        const filtered = list.filter((n: any) => n.id !== notifId);
+        localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(filtered));
+      }
+    }
+  } catch {}
+
+  // 4. Delete on Central Express Server
+  try {
+    await centralSync.deleteAutoCloseNotif(notifId);
   } catch {}
 }
 
 export async function clearAllNotifsInDatabase(): Promise<void> {
+  // 1. Clear local storage cache immediately
   try {
-    await centralSync.saveAutoCloseNotif({ id: 'all_cleared', clearAll: true });
+    localStorage.removeItem('mca_autoclose_notifs_v3');
+    localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify([]));
+  } catch {}
+
+  // 2. Clear master_snapshot/current in Firestore
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    await setDoc(snapRef, {
+      autocloseNotifs: [],
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Notice clearing autocloseNotifs in master_snapshot/current:', err);
+  }
+
+  // 3. Delete all documents from autoclose_notifs collection in Firestore
+  try {
+    const notifsCol = collection(db, 'autoclose_notifs');
+    const snap = await getDocs(notifsCol);
+    const deletePromises = snap.docs.map((d) => deleteDoc(d.ref));
+    await Promise.allSettled(deletePromises);
+  } catch (err) {
+    console.warn('Notice deleting all autoclose_notifs docs from Firestore:', err);
+  }
+
+  // 4. Clear on Central Express Server
+  try {
+    await centralSync.clearAutoCloseNotifs();
   } catch {}
 }
 

@@ -537,16 +537,26 @@ async function startServer() {
     }
   });
 
-  // 10. Save auto-close notification
+  // 10. Save or clear auto-close notification
   app.post('/api/autoclose-notif', (req, res) => {
     try {
       const notif = req.body;
+      if (notif && notif.clearAll) {
+        centralDb.autocloseNotifs = [];
+        saveDatabaseToDisk(centralDb);
+        broadcastToClients('notifs_cleared', {});
+        return res.json({ success: true, cleared: true, count: 0 });
+      }
       if (notif && notif.id) {
-        const idx = centralDb.autocloseNotifs.findIndex((n) => n.id === notif.id);
-        if (idx >= 0) {
-          centralDb.autocloseNotifs[idx] = notif;
+        if (notif.dismissed || notif.deleted) {
+          centralDb.autocloseNotifs = centralDb.autocloseNotifs.filter((n) => n.id !== notif.id);
         } else {
-          centralDb.autocloseNotifs.unshift(notif);
+          const idx = centralDb.autocloseNotifs.findIndex((n) => n.id === notif.id);
+          if (idx >= 0) {
+            centralDb.autocloseNotifs[idx] = notif;
+          } else {
+            centralDb.autocloseNotifs.unshift(notif);
+          }
         }
         if (centralDb.autocloseNotifs.length > 50) {
           centralDb.autocloseNotifs = centralDb.autocloseNotifs.slice(0, 50);
@@ -555,6 +565,31 @@ async function startServer() {
         broadcastToClients('notif_updated', notif);
       }
       return res.json({ success: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 10.1 Delete a single auto-close notification
+  app.delete('/api/autoclose-notif/:id', (req, res) => {
+    try {
+      const { id } = req.params;
+      centralDb.autocloseNotifs = centralDb.autocloseNotifs.filter((n) => n.id !== id);
+      saveDatabaseToDisk(centralDb);
+      broadcastToClients('notif_deleted', { id });
+      return res.json({ success: true, id });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // 10.2 Clear all auto-close notifications permanently
+  app.post('/api/clear-autoclose-notifs', (req, res) => {
+    try {
+      centralDb.autocloseNotifs = [];
+      saveDatabaseToDisk(centralDb);
+      broadcastToClients('notifs_cleared', {});
+      return res.json({ success: true, message: 'Todas as notificações foram limpas com sucesso', count: 0 });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }

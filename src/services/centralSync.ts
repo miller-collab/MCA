@@ -25,6 +25,8 @@ class CentralSyncService {
   private shiftListeners: Set<SyncListener<ShiftConfig[]>> = new Set();
   private activityListeners: Set<SyncListener<ActivityItem[]>> = new Set();
   private configListeners: Set<SyncListener<any>> = new Set();
+  private notifListeners: Set<SyncListener<any[]>> = new Set();
+  private notifDeleteListeners: Set<SyncListener<string>> = new Set();
   private eventSource: EventSource | null = null;
   private reconnectTimeout: any = null;
   private isConnecting = false;
@@ -118,6 +120,23 @@ class CentralSyncService {
           this.logListeners.forEach((fn) => fn(logs));
         } catch (err) {
           console.error('Failed to parse SSE logs_restored', err);
+        }
+      });
+
+      this.eventSource.addEventListener('notifs_cleared', () => {
+        try {
+          this.notifListeners.forEach((fn) => fn([]));
+        } catch (err) {
+          console.error('Failed to handle SSE notifs_cleared', err);
+        }
+      });
+
+      this.eventSource.addEventListener('notif_deleted', (e) => {
+        try {
+          const { id } = JSON.parse(e.data);
+          this.notifDeleteListeners.forEach((fn) => fn(id));
+        } catch (err) {
+          console.error('Failed to handle SSE notif_deleted', err);
         }
       });
 
@@ -282,7 +301,33 @@ class CentralSyncService {
     }
   }
 
+  async clearAutoCloseNotifs(): Promise<void> {
+    try {
+      await fetch('/api/clear-autoclose-notifs', { method: 'POST' });
+    } catch (err) {
+      console.warn('Failed to clear autoclose notifs on Cloud Run:', err);
+    }
+  }
+
+  async deleteAutoCloseNotif(id: string): Promise<void> {
+    try {
+      await fetch(`/api/autoclose-notif/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch (err) {
+      console.warn('Failed to delete autoclose notif on Cloud Run:', err);
+    }
+  }
+
   // Subscriptions
+  onNotifsCleared(fn: SyncListener<any[]>): () => void {
+    this.notifListeners.add(fn);
+    return () => this.notifListeners.delete(fn);
+  }
+
+  onNotifDeleted(fn: SyncListener<string>): () => void {
+    this.notifDeleteListeners.add(fn);
+    return () => this.notifDeleteListeners.delete(fn);
+  }
+
   onCollaborators(fn: SyncListener<Collaborator[]>): () => void {
     this.collaboratorListeners.add(fn);
     return () => this.collaboratorListeners.delete(fn);
@@ -311,6 +356,10 @@ class CentralSyncService {
   onSingleLogChange(fn: SyncListener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>): () => void {
     this.singleLogListeners.add(fn);
     return () => this.singleLogListeners.delete(fn);
+  }
+
+  onSingleLog(fn: SyncListener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>): () => void {
+    return this.onSingleLogChange(fn);
   }
 }
 

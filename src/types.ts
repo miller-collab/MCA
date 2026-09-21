@@ -74,6 +74,7 @@ export interface ProductionLog {
   mealPauseDurationMinutes?: number;
   totalPausedSeconds?: number;
   mealResumedAt?: string;
+  createdAt?: string;
 }
 
 export interface AutoCloseNotification {
