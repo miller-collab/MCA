@@ -11,7 +11,7 @@ export interface ReportPDFOptions {
   filterStatus?: string;
   conciliationMetrics: {
     totalProdutivoMin: number;
-    totalRefeicaoMin: number;
+    totalRefeicaoMin?: number;
     totalGapsMin: number;
     totalJornadaMin: number;
     aderenciaPct: number;
@@ -106,7 +106,7 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
 
   // 3. CARDS DE RESUMO DA AUDITORIA / JORNADA
   const cardY = margin + 28;
-  const cardW = (pageWidth - margin * 2 - 9) / 4;
+  const cardW = (pageWidth - margin * 2 - 6) / 3;
   const cardH = 13;
 
   const cardsData = [
@@ -116,11 +116,6 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
       sub: `${conciliationMetrics.totalProdutivoMin} min`,
     },
     {
-      title: 'REFEIÇÃO / ALMOÇO',
-      val: formatarHorasMinutos(conciliationMetrics.totalRefeicaoMin),
-      sub: `${conciliationMetrics.totalRefeicaoMin} min`,
-    },
-    {
       title: 'SEM APONTAMENTO (GAPs)',
       val: formatarHorasMinutos(conciliationMetrics.totalGapsMin),
       sub: `${conciliationMetrics.totalGapsMin} min (${gapsCount} lacuna(s))`,
@@ -128,7 +123,7 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
     {
       title: 'TOTAL CONCILIADO',
       val: formatarHorasMinutos(conciliationMetrics.totalJornadaMin),
-      sub: `${conciliationMetrics.aderenciaPct}% aderência de turno`,
+      sub: `${conciliationMetrics.aderenciaPct}% aderência produtiva`,
     },
   ];
 
@@ -192,9 +187,6 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
       const comentariosTexto =
         observacoesArray.length > 0 ? observacoesArray.join(' | ') : log.observation || '-';
 
-      const refeicaoTexto =
-        log.mealBreakDeducted || log.isMealPause ? `Sim (${log.mealBreakMinutes || 90}m)` : '-';
-
       const dateFmt = log.date ? log.date.split('-').reverse().join('/') : '-';
 
       return [
@@ -206,7 +198,6 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
         log.startTime || '-',
         log.endTime || '-',
         formatarHorasMinutos(dur),
-        refeicaoTexto,
         log.status || 'Concluída',
         comentariosTexto,
       ];
@@ -222,7 +213,6 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
         gap.startTime || '-',
         gap.endTime || '-',
         formatarHorasMinutos(gap.durationMinutes),
-        '-',
         'Sem Registro',
         `Lacuna sem atividade registrada (${gap.durationMinutes} min)`,
       ];
@@ -242,7 +232,6 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
         'Início',
         'Fim',
         'Tempo',
-        'Refeição',
         'Status',
         'Observações / Comentários de Execução',
       ],
@@ -272,13 +261,12 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
       1: { cellWidth: 18, halign: 'center' },
       2: { cellWidth: 32, fontStyle: 'bold' },
       3: { cellWidth: 16, halign: 'center' },
-      4: { cellWidth: 50, fontStyle: 'bold' },
+      4: { cellWidth: 52, fontStyle: 'bold' },
       5: { cellWidth: 16, halign: 'center', font: 'courier' },
       6: { cellWidth: 16, halign: 'center', font: 'courier' },
       7: { cellWidth: 18, halign: 'center', fontStyle: 'bold', font: 'courier' },
-      8: { cellWidth: 16, halign: 'center' },
-      9: { cellWidth: 18, halign: 'center' },
-      10: { cellWidth: 'auto' }, // Observações ocupam o restante da largura
+      8: { cellWidth: 20, halign: 'center' },
+      9: { cellWidth: 'auto' }, // Observações ocupam o restante da largura
     },
     didParseCell: (data) => {
       // Destaque visual suave para linhas de GAP

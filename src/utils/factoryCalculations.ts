@@ -1489,6 +1489,24 @@ export function calcularEficienciaEquipePeriodo(
     colabEntry.operacoes[actName].tempoMinutos += duracaoLogMin;
   });
 
+  // 3.5. Calcula lacunas reais de jornada a partir do histórico detalhado de cada colaborador
+  const todasLacunasPeriodo = calcularGapsJornadaColaboradores(
+    logs,
+    collaborators,
+    shifts,
+    undefined,
+    agora
+  );
+
+  const gapsReaisPorColab: Record<string, number> = {};
+  todasLacunasPeriodo.forEach((gap) => {
+    if (gap.isMealInterval || gap.status === 'Refeição') return;
+    const gapDatePtBr = padronizarDataPtBr(gap.date);
+    if (!setDatasPtBr.has(gapDatePtBr)) return;
+    const key = gap.collaboratorName.trim().toLowerCase();
+    gapsReaisPorColab[key] = (gapsReaisPorColab[key] || 0) + (gap.durationMinutes || 0);
+  });
+
   // 4. Monta resultado consolidado por operador
   const arrayFinal: OperatorEfficiency[] = [];
 
@@ -1504,19 +1522,30 @@ export function calcularEficienciaEquipePeriodo(
     });
 
     const esperado = cData.esperadoTotalMinutos;
+    const colabKey = cData.collaborator.name.trim().toLowerCase();
+    const gapsHistorico = gapsReaisPorColab[colabKey] || 0;
+
+    // Respeita estritamente o histórico do operador: o tempo sem apontar vem diretamente
+    // das lacunas reais registradas entre atividades, início e fim de jornada.
+    // Caso o colaborador não tenha tido qualquer registro de atividade em dia esperado, o sem apontar é o esperado.
+    const semApontar = (totalTrabalhado > 0 || gapsHistorico > 0)
+      ? gapsHistorico
+      : esperado;
+
+    const jornadaRealTotal = totalTrabalhado + semApontar;
     
-    // Cálculo de Eficiência
+    // Cálculo de Eficiência: tempo trabalhado / jornada real decorrida (trabalhado + lacunas sem apontar)
     let efi = 0;
     if (cData.statusTurnoHoje === 'NAO_INICIADO' && diasIntervalo.length === 1 && diasIntervalo[0].datePtBr === hojePtBr) {
       // Se estamos vendo apenas hoje e o turno ainda não iniciou, não há jornada decorrida
       efi = 0;
+    } else if (jornadaRealTotal > 0) {
+      efi = Math.min(100, (totalTrabalhado / jornadaRealTotal) * 100);
     } else if (esperado > 0) {
       efi = (totalTrabalhado / esperado) * 100;
     } else {
       efi = 0;
     }
-
-    const semApontar = esperado > 0 ? Math.max(0, esperado - totalTrabalhado) : 0;
     
     // Análise de Alertas e Ociosidade em Tempo Real
     let isAlerta = false;
@@ -1800,13 +1829,26 @@ export function calcularEficienciaIndividualDiaria(
     }
 
     const trabalhadoAjustado = Math.min(trabalhadoMinutosDia, Math.max(esperadoDia, 540));
-    const semApontar = esperadoDia > 0 ? Math.max(0, esperadoDia - trabalhadoAjustado) : 0;
+
+    // Obtém as lacunas reais do dia a partir do histórico do colaborador
+    const gapsDoDia = calcularGapsJornadaColaboradores(logsDoDia, collaborators, shifts, diaInfo.datePtBr, agora);
+    const gapsReaisDia = gapsDoDia
+      .filter((g) => !g.isMealInterval && g.status === 'Sem Apontamento')
+      .reduce((sum, g) => sum + (g.durationMinutes || 0), 0);
+
+    const semApontar = (trabalhadoMinutosDia > 0 || gapsReaisDia > 0)
+      ? gapsReaisDia
+      : (trabalhaNesteDia ? esperadoDia : 0);
+
+    const jornadaRealDia = trabalhadoAjustado + semApontar;
 
     let efi = 0;
     if (statusDia === 'NAO_INICIADO') {
       efi = 0;
     } else if (statusDia === 'FOLGA') {
       efi = trabalhadoAjustado > 0 ? 100 : 0;
+    } else if (jornadaRealDia > 0) {
+      efi = Math.min(100, (trabalhadoAjustado / jornadaRealDia) * 100);
     } else if (esperadoDia > 0) {
       efi = (trabalhadoAjustado / esperadoDia) * 100;
     } else {

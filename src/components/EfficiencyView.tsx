@@ -892,28 +892,33 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                     title="Clique para visualizar o histórico de apontamentos deste operador"
                   >
                     {/* Card Header */}
-                    <div className="card-header bg-[#1E1E1E] text-white p-3.5 flex justify-between items-center border-b border-[#2A2A2A]">
-                      <div className="flex items-center gap-2 truncate max-w-[60%]">
-                        <span className="font-black text-sm text-white truncate tracking-wide">
-                          {d.nome}
-                        </span>
-                        {hasAutoClosed && (
-                          <span className="bg-[#FF9800] text-black text-[9px] font-black px-1.5 py-0.5 rounded shrink-0" title="Teve operação auto-encerrada no turno">
-                            Auto-fechado
+                    <div className="card-header bg-[#1E1E1E] text-white p-3 sm:p-3.5 border-b border-[#2A2A2A] space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <span className="font-black text-sm sm:text-base text-white tracking-wide truncate" title={d.nome}>
+                            {d.nome}
                           </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                          {hasAutoClosed && (
+                            <span className="bg-[#FF9800] text-black text-[9px] font-black px-1.5 py-0.5 rounded shrink-0 uppercase tracking-tight" title="Teve operação auto-encerrada no turno">
+                              Auto-fechado
+                            </span>
+                          )}
+                        </div>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${
                           d.statusTurno === 'NAO_INICIADO'
                             ? 'bg-[#333333] text-[#AAAAAA]'
                             : d.statusTurno === 'EM_ANDAMENTO'
-                            ? 'bg-[#00E676]/20 text-[#00E676]'
-                            : 'bg-[#2979FF]/20 text-[#2979FF]'
+                            ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/30'
+                            : 'bg-[#2979FF]/20 text-[#2979FF] border border-[#2979FF]/30'
                         }`}>
                           {d.statusTurno === 'NAO_INICIADO' ? '⏳ Aguarda' : d.statusTurno === 'EM_ANDAMENTO' ? '🟢 No Turno' : '🏁 Fim Turno'}
                         </span>
-                        <span className="text-[#007BFF] text-xs font-bold font-mono">
+                      </div>
+                      <div className="flex items-center justify-between text-xs pt-0.5">
+                        <span className="text-[11px] text-[#888888] truncate font-medium max-w-[55%]">
+                          {d.role || 'OPERADOR'}
+                        </span>
+                        <span className="text-[#007BFF] text-[11px] font-bold font-mono shrink-0 bg-[#007BFF]/10 px-1.5 py-0.5 rounded border border-[#007BFF]/20">
                           {d.turno} {d.esperadoMinutos > 0 ? `(${d.turnoEntrada}-${d.turnoSaida})` : '(Inativo)'}
                         </span>
                       </div>

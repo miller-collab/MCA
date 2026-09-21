@@ -269,13 +269,13 @@ export function App() {
         const cleanLogs = data.logs.filter((l) => l && l.id);
         const formatted = cleanLogs.map((l) => ({ ...l, shift: padronizarNomeTurno(l.shift) }));
         setLogs((prev) => {
-          // Merge incoming logs with currently active local logs to ensure newly started tasks NEVER vanish
+          // Merge incoming logs with local logs to ensure neither active tasks nor newly added/edited manual logs vanish!
           const logMap = new Map<string, ProductionLog>();
           for (const l of formatted) {
             if (l && l.id) logMap.set(l.id, l);
           }
           for (const pl of prev) {
-            if (pl && pl.id && (pl.status === 'Em Execução' || pl.status === 'Pausada')) {
+            if (pl && pl.id) {
               if (!logMap.has(pl.id)) {
                 logMap.set(pl.id, pl);
               }
@@ -378,9 +378,9 @@ export function App() {
             for (const l of formatted) {
               if (l && l.id) logMap.set(l.id, l);
             }
-            // Preserve locally running active tasks so they never flicker or disappear
+            // Preserve local logs so they never flicker or disappear
             for (const pl of prev) {
-              if (pl && pl.id && (pl.status === 'Em Execução' || pl.status === 'Pausada')) {
+              if (pl && pl.id) {
                 if (!logMap.has(pl.id)) {
                   logMap.set(pl.id, pl);
                 }
@@ -1178,10 +1178,27 @@ export function App() {
   const handleUpdateLog = useCallback((updatedLog: ProductionLog) => {
     setLogs((prev) => {
       const nextLogs = prev.map((l) => (l.id === updatedLog.id ? updatedLog : l));
+      try {
+        localStorage.setItem('mca_logs_v3', JSON.stringify(nextLogs));
+      } catch {}
+      savePermanentLocalBackup(collaborators, activities, shifts, nextLogs);
       triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
       return nextLogs;
     });
     saveLogToFirestore(updatedLog);
+  }, [collaborators, shifts, activities, autoCloseNotifs, triggerMasterJsonSave]);
+
+  const handleAddManualLog = useCallback((newLog: ProductionLog) => {
+    setLogs((prev) => {
+      const nextLogs = [newLog, ...prev.filter((l) => l.id !== newLog.id)];
+      try {
+        localStorage.setItem('mca_logs_v3', JSON.stringify(nextLogs));
+      } catch {}
+      savePermanentLocalBackup(collaborators, activities, shifts, nextLogs);
+      triggerMasterJsonSave(collaborators, shifts, activities, nextLogs, autoCloseNotifs);
+      return nextLogs;
+    });
+    saveLogToFirestore(newLog);
   }, [collaborators, shifts, activities, autoCloseNotifs, triggerMasterJsonSave]);
 
   const handleUnlockLeader = useCallback(
@@ -1597,12 +1614,10 @@ export function App() {
             shifts={shifts}
             onDeleteLog={handleDeleteLog}
             onUpdateLog={handleUpdateLog}
-            onAddLog={(newLog) => {
-              setLogs((prev) => [newLog, ...prev]);
-              saveLogToFirestore(newLog);
-            }}
+            onAddLog={handleAddManualLog}
             initialFilterTerm={drilldownFilter}
             isLeaderUnlocked={isLeaderUnlocked}
+            onUnlockLeader={handleUnlockLeader}
             leaderPin={leaderPin}
           />
         )}

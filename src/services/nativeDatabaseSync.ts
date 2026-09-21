@@ -391,6 +391,28 @@ export async function saveLogToDatabase(log: ProductionLog): Promise<void> {
   } catch {
     // Already handled locally and in queue if offline
   }
+
+  // D. Also update master_snapshot/current in Firestore immediately so master truth is never stale
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    const docSnap = await getDoc(snapRef);
+    if (docSnap.exists()) {
+      const curData = docSnap.data();
+      if (curData && Array.isArray(curData.logs)) {
+        const curLogs = curData.logs;
+        const idx = curLogs.findIndex((l: any) => l && l.id === log.id);
+        let updatedLogs = [...curLogs];
+        if (idx >= 0) {
+          updatedLogs[idx] = log;
+        } else {
+          updatedLogs = [log, ...updatedLogs];
+        }
+        await setDoc(snapRef, { logs: updatedLogs, lastUpdated: new Date().toISOString() }, { merge: true });
+      }
+    }
+  } catch (err) {
+    console.warn('Notice updating master_snapshot with log in saveLogToDatabase:', err);
+  }
 }
 
 /**
@@ -413,6 +435,19 @@ export async function deleteLogFromDatabase(id: string): Promise<void> {
     addToOfflineQueue({ type: 'delete_log', payload: id });
   }
 
+  // Also remove from master_snapshot/current in Firestore
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    const docSnap = await getDoc(snapRef);
+    if (docSnap.exists()) {
+      const curData = docSnap.data();
+      if (curData && Array.isArray(curData.logs)) {
+        const updatedLogs = curData.logs.filter((l: any) => l && l.id !== id);
+        await setDoc(snapRef, { logs: updatedLogs, lastUpdated: new Date().toISOString() }, { merge: true });
+      }
+    }
+  } catch {}
+
   try {
     await centralSync.deleteLog(id);
   } catch {}
@@ -424,6 +459,7 @@ export async function deleteLogFromDatabase(id: string): Promise<void> {
 export async function saveCollaboratorsToDatabase(collaborators: Collaborator[]): Promise<void> {
   try {
     localStorage.setItem('mca_collaborators_v3', JSON.stringify(collaborators));
+    localStorage.setItem('mca_colabs_v3', JSON.stringify(collaborators));
   } catch {}
 
   try {
@@ -433,6 +469,17 @@ export async function saveCollaboratorsToDatabase(collaborators: Collaborator[])
     }, { merge: true });
   } catch {
     addToOfflineQueue({ type: 'colab', payload: collaborators });
+  }
+
+  // Update master_snapshot/current in Firestore so immediate fetches and periodic sync see latest collaborators
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    await setDoc(snapRef, {
+      collaborators,
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Notice updating master_snapshot/current with collaborators:', err);
   }
 
   try {
@@ -490,6 +537,17 @@ export async function saveShiftsToDatabase(shifts: ShiftConfig[]): Promise<void>
     addToOfflineQueue({ type: 'shift', payload: shifts });
   }
 
+  // Update master_snapshot/current in Firestore so immediate fetches and periodic sync see latest shifts
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    await setDoc(snapRef, {
+      shifts,
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Notice updating master_snapshot/current with shifts:', err);
+  }
+
   try {
     await centralSync.saveShifts(shifts);
   } catch {}
@@ -500,12 +558,27 @@ export async function saveShiftsToDatabase(shifts: ShiftConfig[]): Promise<void>
  */
 export async function saveFactoryConfigToDatabase(config: any): Promise<void> {
   try {
+    localStorage.setItem('mca_factory_config_v3', JSON.stringify(config));
+  } catch {}
+
+  try {
     await setDoc(doc(db, 'master_snapshot', 'config'), {
       ...config,
       updatedAt: new Date().toISOString(),
     }, { merge: true });
   } catch {
     addToOfflineQueue({ type: 'config', payload: config });
+  }
+
+  // Update master_snapshot/current in Firestore so immediate fetches and periodic sync see latest config
+  try {
+    const snapRef = doc(db, 'master_snapshot', 'current');
+    await setDoc(snapRef, {
+      factoryConfig: config,
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Notice updating master_snapshot/current with factoryConfig:', err);
   }
 
   try {

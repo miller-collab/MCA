@@ -442,19 +442,12 @@ async function startServer() {
       if (!Array.isArray(colabs)) {
         return res.status(400).json({ error: 'Expected an array of collaborators' });
       }
-      // Guarantee Turno 2 has ONLY CARLOS
-      const sanitized = colabs.map((c: any) => {
-        if (c.shift === 'Turno 2' && c.name !== 'CARLOS') {
-          return { ...c, shift: 'Turno 1' };
-        }
-        return c;
-      });
-      centralDb.collaborators = sanitized;
-      appendAuditLog('UPDATE_COLLABORATORS', { count: sanitized.length });
+      centralDb.collaborators = colabs;
+      appendAuditLog('UPDATE_COLLABORATORS', { count: colabs.length });
       saveDatabaseToDisk(centralDb);
       createBackupSnapshot(centralDb);
-      broadcastToClients('collaborators_updated', sanitized);
-      return res.json({ success: true, count: sanitized.length });
+      broadcastToClients('collaborators_updated', colabs);
+      return res.json({ success: true, count: colabs.length });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
     }
@@ -640,15 +633,7 @@ async function startServer() {
         centralDb.factoryConfig = { ...centralDb.factoryConfig, ...data.factoryConfig };
       }
       if (Array.isArray(data.logs)) {
-        // Merge without losing logs
-        const logMap = new Map<string, any>();
-        for (const l of centralDb.logs) {
-          if (l && l.id) logMap.set(l.id, l);
-        }
-        for (const l of data.logs) {
-          if (l && l.id) logMap.set(l.id, l);
-        }
-        centralDb.logs = Array.from(logMap.values());
+        centralDb.logs = data.logs;
       }
       if (Array.isArray(data.autocloseNotifs)) {
         centralDb.autocloseNotifs = data.autocloseNotifs;

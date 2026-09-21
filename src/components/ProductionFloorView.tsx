@@ -2,8 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, CheckCircle2, Play, AlertTriangle, Search, Filter, 
   Clock, User, Wrench, ChevronRight, X, ArrowRight, RotateCcw,
-  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles,
-  Utensils, Pause, Coffee
+  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles
 } from 'lucide-react';
 import { ActivityItem, Collaborator, ProductionLog, ShiftConfig, ActivityCategory, AutoCloseNotification } from '../types';
 import { 
@@ -24,12 +23,7 @@ import {
   obterTurnosAtivosNoMomento,
   obterConfigTurno,
   isTurnoAtivoNoMomento,
-  isColaboradorEmTurnoAtivo,
-  obterConfiguracaoRefeicao,
-  colaboradorJaUsouRefeicaoHoje,
-  calcularEstadoTempoRefeicao,
-  calcularDuracaoComDeducaoRefeicao,
-  isMealActivity
+  isColaboradorEmTurnoAtivo
 } from '../utils/factoryCalculations';
 import { QuickCollaboratorModal } from './QuickCollaboratorModal';
 import { findSavedCollaboratorsInBrowser } from '../utils/recoveryUtils';
@@ -115,7 +109,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [finishNotes, setFinishNotes] = useState('');
   const [partsProduced, setPartsProduced] = useState<string>('');
   const [scrapCount, setScrapCount] = useState<string>('');
-  const [deductMealAtFinish, setDeductMealAtFinish] = useState(true);
 
   // Real-time ticking state (updates every second)
   const [secondsTick, setSecondsTick] = useState(0);
@@ -278,34 +271,16 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return Array.from(map.values());
   }, [autoCloseNotifs]);
 
-  // Filtered activities for selected collaborator's role (including universal REFEIÇÃO activity)
+  // Filtered activities for selected collaborator's role
   const roleActivities = useMemo(() => {
     if (!selectedColab) return [];
     const colabRole = selectedColab.role.trim().toUpperCase();
-    let acts = activities.filter(
+    return activities.filter(
       (a) =>
         a.role.trim().toUpperCase() === colabRole ||
         a.role.trim().toUpperCase() === 'TODOS' ||
-        a.role.trim().toUpperCase() === 'GERAL' ||
-        isMealActivity(a.name, a.category)
+        a.role.trim().toUpperCase() === 'GERAL'
     );
-
-    // Garante que a atividade REFEIÇÃO sempre exista para qualquer operador
-    const hasMeal = acts.some((a) => isMealActivity(a.name, a.category));
-    if (!hasMeal) {
-      acts = [
-        {
-          id: 'act-refeicao-universal',
-          role: 'TODOS',
-          name: 'REFEIÇÃO',
-          priority: 0,
-          category: 'Refeição',
-          standardMinutes: 90,
-        },
-        ...acts,
-      ];
-    }
-    return acts;
   }, [selectedColab, activities]);
 
   const filteredRoleActivities = useMemo(() => {
@@ -450,23 +425,6 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setPartsProduced('');
     setScrapCount('');
     setChangeoverInitiatedTime(initTime);
-
-    // Se o colaborador ainda não almoçou hoje, verifica se cabe sugerir a dedução no final
-    const colab = collaborators.find(
-      (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
-    );
-    const colabShift = colab?.shift || log.shift || 'Turno 1';
-    const jaTeve = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, logs);
-    const res = calcularDuracaoComDeducaoRefeicao(
-      log.startTime,
-      initTime,
-      log.collaboratorName || colabShift,
-      shifts,
-      !!jaTeve,
-      collaborators
-    );
-    setDeductMealAtFinish(res.deveDebitarRefeicao);
-
     setCurrentScreen('fechamento');
   };
 
@@ -475,17 +433,15 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     const targetId = logToFinish.id;
     const noteText = finishNotes.trim();
     const finishEndTime = changeoverInitiatedTime || undefined;
-    const shouldDeduct = deductMealAtFinish;
     setLogToFinish(null);
     setChangeoverInitiatedTime('');
     onFinishActivity(
       targetId,
-      noteText || 'Operação Concluída com Sucesso',
+      finishObs || noteText || 'Operação Concluída com Sucesso',
       noteText,
-      undefined,
-      undefined,
-      finishEndTime,
-      shouldDeduct
+      partsProduced ? parseInt(partsProduced, 10) : undefined,
+      scrapCount ? parseInt(scrapCount, 10) : undefined,
+      finishEndTime
     );
     setCurrentScreen('painel');
   };
@@ -600,31 +556,27 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 const corBase = getRoleColor(tarefa.role);
                 const corTextoHead = definirCorTextoHeader(corBase);
                 const flashing = isCardFlashing(tarefa);
-                const mealState = calcularEstadoTempoRefeicao(tarefa, new Date(), shifts);
-                const isPausedMeal = mealState.emPausaRefeicao;
+                const elapsedSeconds = getElapsedSeconds(tarefa.startTime);
 
                 return (
                   <div
                     key={tarefa.id}
                     onClick={() => handleCardClick(tarefa)}
                     className={`card bg-[#141414] border rounded-xl overflow-hidden cursor-pointer flex flex-col transition-all hover:scale-[1.02] hover:border-[#666666] active:scale-[0.98] shadow-lg select-none min-h-[160px] ${
-                      isPausedMeal
-                        ? 'border-[#FF9800] bg-[#1A1200] ring-1 ring-[#FF9800]/50'
-                        : flashing
+                      flashing
                         ? 'card-piscar border-[#FF3D00]'
                         : 'border-[#2D2D2D]'
                     }`}
                   >
-                    {/* Header com a cor do cargo ou indicação de refeição */}
+                    {/* Header com a cor do cargo */}
                     <div
                       className="card-header p-2.5 sm:p-3 font-black text-center text-xs sm:text-sm uppercase tracking-wide truncate flex items-center justify-center gap-1.5"
                       style={{
-                        backgroundColor: isPausedMeal ? '#FF8C00' : corBase,
-                        color: isPausedMeal ? '#000000' : corTextoHead,
+                        backgroundColor: corBase,
+                        color: corTextoHead,
                       }}
                       title={tarefa.collaboratorName}
                     >
-                      {isPausedMeal && <Utensils className="w-3.5 h-3.5 text-black shrink-0" />}
                       <span className="truncate">{tarefa.collaboratorName}</span>
                     </div>
 
@@ -654,74 +606,21 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                         )}
                       </div>
 
-                      {isPausedMeal ? (
-                        <div className="space-y-2">
-                          <div className="text-[11px] font-mono font-bold text-[#FFB74D] bg-[#2D1B00] p-1.5 rounded-lg border border-[#FF9800]/40">
-                            <div className="flex items-center justify-center gap-1">
-                              <Utensils className="w-3.5 h-3.5 text-[#FF9800]" />
-                              <span>EM REFEIÇÃO ({mealState.duracaoPausaMinutos} MIN)</span>
-                            </div>
-                            <div className="text-sm font-black text-[#00E676] mt-0.5 tabular-nums">
-                              {formatarTempoSegundos(mealState.tempoRestantePausaSegundos)} restantes
-                            </div>
-                            <div className="text-[9px] text-[#AAAAAA] mt-0.5">
-                              Trabalho: {formatarTempoSegundos(mealState.tempoTrabalhadoSegundos)}
-                            </div>
-                          </div>
-
-                          {/* Botão de Retomar do Almoço com 1 toque */}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onResumeActivity) onResumeActivity(tarefa.id);
-                            }}
-                            className="w-full py-1.5 px-2 bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black font-black text-[11px] rounded-lg shadow-sm flex items-center justify-center gap-1 cursor-pointer active:scale-95 transition"
-                            title="Retomar da refeição e voltar ao trabalho"
-                          >
-                            <Play className="w-3 h-3 fill-current" />
-                            <span>RETOMAR DO ALMOÇO</span>
-                          </button>
+                      <div>
+                        <div className="timer text-xl sm:text-2xl font-black text-[#00E676] font-mono tracking-wider tabular-nums">
+                          {formatarTempoSegundos(elapsedSeconds)}
                         </div>
-                      ) : (
-                        <div>
-                          <div className="timer text-xl sm:text-2xl font-black text-[#00E676] font-mono tracking-wider tabular-nums">
-                            {formatarTempoSegundos(mealState.tempoTrabalhadoSegundos)}
-                          </div>
-                          <div className="text-[10px] text-[#777777] font-mono mt-0.5 flex items-center justify-center gap-1">
-                            <Clock className="w-3 h-3 text-[#555555]" />
-                            <span>Início: {tarefa.startTime}</span>
-                          </div>
-                          {mealState.pausaVenceuRetomou && (
-                            <div className="mt-1 text-[9px] font-bold text-[#FFB74D] flex items-center justify-center gap-1 bg-[#2B1B00] px-1.5 py-0.5 rounded border border-[#FF9800]/30">
-                              <Utensils className="w-2.5 h-2.5" />
-                              <span>Refeição debitada ({mealState.duracaoPausaMinutos}m)</span>
-                            </div>
-                          )}
-                          {flashing && (
-                            <div className="mt-1 text-[10px] font-bold text-[#FF3D00] flex items-center justify-center gap-1">
-                              <AlertTriangle className="w-3 h-3" />
-                              <span>Fim de Turno!</span>
-                            </div>
-                          )}
-
-                          {/* Botão: QUEM DÁ START NO ALMOÇO É O OPERADOR */}
-                          {!tarefa.mealBreakDeducted && !colaboradorJaUsouRefeicaoHoje(tarefa.collaboratorName, tarefa.date, logs) && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (onPauseMeal) onPauseMeal(tarefa.id);
-                              }}
-                              className="w-full mt-2 py-1.5 px-2 bg-[#FF8C00]/20 hover:bg-[#FF8C00]/35 border border-[#FF9800]/60 rounded-lg text-[11px] font-bold text-[#FFB74D] flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 transition shadow-xs"
-                              title={`Dar start no almoço agora. Descontará os ${mealState.duracaoPausaMinutos} min configurados.`}
-                            >
-                              <Utensils className="w-3.5 h-3.5 text-[#FF9800]" />
-                              <span>START ALMOÇO ({mealState.duracaoPausaMinutos}m)</span>
-                            </button>
-                          )}
+                        <div className="text-[10px] text-[#777777] font-mono mt-0.5 flex items-center justify-center gap-1">
+                          <Clock className="w-3 h-3 text-[#555555]" />
+                          <span>Início: {tarefa.startTime}</span>
                         </div>
-                      )}
+                        {flashing && (
+                          <div className="mt-1 text-[10px] font-bold text-[#FF3D00] flex items-center justify-center gap-1">
+                            <AlertTriangle className="w-3 h-3" />
+                            <span>Fim de Turno!</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -1217,15 +1116,12 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
         const colab = collaborators.find(
           (c) => c.name.trim().toLowerCase() === logToFinish.collaboratorName.trim().toLowerCase()
         );
-        const mealConfig = obterConfiguracaoRefeicao(colab?.shift || logToFinish.shift || 'Turno 1', shifts);
-        const jaUsouRefeicaoHoje = colaboradorJaUsouRefeicaoHoje(logToFinish.collaboratorName, logToFinish.date, logs);
-        const isPausedMeal = logToFinish.status === 'Pausada' || !!logToFinish.isMealPause;
 
         return (
           <div className="max-w-xl mx-auto space-y-4 animate-in fade-in duration-150">
             <div className="border-b border-[#333333] pb-3">
               <h2 className="text-xl sm:text-2xl font-bold text-white">
-                {isPausedMeal ? 'Atividade em Pausa de Refeição' : 'Concluir Atividade'}
+                Concluir Atividade
               </h2>
 
               {/* Box de Informações da Atividade */}
@@ -1285,59 +1181,7 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               />
             </div>
 
-            {/* Ações Específicas de Refeição dentro do Modal */}
-            {isPausedMeal ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (onResumeActivity) onResumeActivity(logToFinish.id);
-                  setCurrentScreen('painel');
-                  setLogToFinish(null);
-                }}
-                className="w-full py-3.5 bg-[#00E676] hover:bg-[#00c853] text-black font-black text-sm rounded-xl shadow flex items-center justify-center gap-2 cursor-pointer transition"
-              >
-                <Play className="w-4 h-4 fill-current" />
-                <span>RETOMAR DO ALMOÇO (VOLTAR AO TRABALHO)</span>
-              </button>
-            ) : (
-              !jaUsouRefeicaoHoje && !logToFinish.mealBreakDeducted && (
-                <div className="space-y-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (onPauseMeal) onPauseMeal(logToFinish.id);
-                      setCurrentScreen('painel');
-                      setLogToFinish(null);
-                    }}
-                    className="w-full py-3 px-3 bg-[#FF8C00]/20 hover:bg-[#FF8C00]/35 border border-[#FF8C00]/60 text-[#FFB74D] font-bold text-xs sm:text-sm rounded-xl flex items-center justify-center gap-2 cursor-pointer transition"
-                  >
-                    <Utensils className="w-4 h-4 text-[#FF9800]" />
-                    <span>DAR START NO ALMOÇO AGORA (Pausar e Descontar {mealConfig.duracaoMinutos} min)</span>
-                  </button>
 
-                  {/* Opção para quando o operador esqueceu e vai lançar no final */}
-                  <div className="p-3 bg-[#1C1C1C] border border-[#FF9800]/40 rounded-xl">
-                    <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={deductMealAtFinish}
-                        onChange={(e) => setDeductMealAtFinish(e.target.checked)}
-                        className="w-5 h-5 mt-0.5 rounded accent-[#00E676] cursor-pointer"
-                      />
-                      <div>
-                        <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-1.5">
-                          <Utensils className="w-3.5 h-3.5 text-[#FF9800]" />
-                          <span>Descontar Almoço no Encerramento ({mealConfig.duracaoMinutos} min)</span>
-                        </div>
-                        <p className="text-[11px] text-[#AAAAAA] mt-0.5 leading-snug">
-                          Caso tenha esquecido de dar start no almoço durante a atividade, marque esta opção para lançar o desconto da refeição configurada ({mealConfig.duracaoMinutos} min) agora no final.
-                        </p>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-              )
-            )}
 
             {/* Botão de Troca Rápida de Setup */}
             {onQuickChangeover && (
