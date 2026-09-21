@@ -581,10 +581,10 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                     </div>
 
                     {/* Body do Card */}
-                    <div className="card-body p-2.5 sm:p-3 text-center flex-grow flex flex-col justify-between">
-                      <div>
+                    <div className="card-body p-2 sm:p-2.5 text-center flex-grow flex flex-col justify-between">
+                      <div className="w-full">
                         <div
-                          className="card-atividade text-xs sm:text-[13px] text-[#FFFFFF] font-bold mb-1.5 min-h-[32px] line-clamp-2 leading-tight flex items-center justify-center"
+                          className="card-atividade text-xs sm:text-[13px] text-[#FFFFFF] font-bold mb-2 leading-snug text-center break-words [overflow-wrap:anywhere] px-0.5"
                           title={tarefa.activity}
                         >
                           {tarefa.activity}
@@ -593,13 +593,13 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                         {/* Descrição informada pelo operador ao iniciar (Foto 1: O que vai executar agora) */}
                         {(tarefa.initialDescription || tarefa.notes) && (
                           <div
-                            className="mb-2.5 px-3 py-2 bg-[#1B1812] border border-[#FFD700]/50 hover:border-[#FFD700]/80 rounded-lg text-xs sm:text-[13px] text-[#FFE082] leading-snug text-center shadow-md transition-colors min-h-[50px] max-h-40 overflow-y-auto"
+                            className="mb-2.5 px-2.5 py-1.5 bg-[#1B1812] border border-[#FFD700]/50 hover:border-[#FFD700]/80 rounded-lg text-xs sm:text-[13px] text-[#FFE082] leading-snug text-center shadow-md transition-colors min-h-[44px] max-h-40 overflow-y-auto"
                             title={tarefa.initialDescription || tarefa.notes}
                           >
                             <span className="text-[#FFD700]/90 text-[10px] sm:text-[11px] uppercase tracking-wider font-mono font-black block mb-0.5">
                               Executando:
                             </span>
-                            <span className="italic font-semibold break-words select-text">
+                            <span className="italic font-semibold break-words [overflow-wrap:anywhere] select-text">
                               "{tarefa.initialDescription || tarefa.notes}"
                             </span>
                           </div>
