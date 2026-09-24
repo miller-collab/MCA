@@ -849,18 +849,8 @@ export function App() {
 
             if (turnoEncerrou) {
               changed = true;
-              const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs);
               let dur = calcularDiferencaMinutos(log.startTime, shift.saida);
               if (dur <= 0) dur = 60;
-              let debitouRefeicaoAuto = false;
-              let minsRefeicao = 0;
-
-              // Se o colaborador não acionou pausa de refeição durante o dia, deduz automaticamente a refeição do colaborador no final do turno
-              if (!jaTeveRefeicao && dur > mealConfig.duracaoMinutos) {
-                dur = Math.max(1, dur - mealConfig.duracaoMinutos);
-                debitouRefeicaoAuto = true;
-                minsRefeicao = mealConfig.duracaoMinutos;
-              }
               
               // ID estável e determinístico para garantir ZERO duplicações
               const notifId = `autoclose-${log.id}`;
@@ -881,13 +871,9 @@ export function App() {
               newNotifs.push(notif);
               saveAutoCloseNotifToFirestore(notif);
 
-              const obsBase = log.observation
+              const obsFinal = log.observation
                 ? `${log.observation} | ⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida})`
                 : `⚠️ Encerrado Automaticamente: Fim de Turno (${shift.saida}) - Colaborador não finalizou`;
-
-              const obsFinal = debitouRefeicaoAuto
-                ? `${obsBase} | 🍽️ Refeição debitada automaticamente (${minsRefeicao} min)`
-                : obsBase;
 
               const closedLog: ProductionLog = {
                 ...log,
@@ -898,9 +884,9 @@ export function App() {
                 autoClosed: true,
                 autoClosedAtShiftEnd: true,
                 pendingNextShiftResume: false,
-                mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
-                mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
-                mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
+                mealBreakDeducted: false,
+                mealBreakMinutes: undefined,
+                mealBreakSource: undefined,
               };
 
               saveLogToFirestore(closedLog);
@@ -953,17 +939,7 @@ export function App() {
           ) || shifts[0];
 
           const endHour = shift?.saida || '17:30:00';
-          const mealConfig = obterConfiguracaoRefeicao(shift?.name || 'Turno 1', shifts);
-          const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prevLogs);
-          let dur = calcularDiferencaMinutos(log.startTime, endHour);
-          let debitouRefeicaoAuto = false;
-          let minsRefeicao = 0;
-
-          if (!jaTeveRefeicao && dur > mealConfig.duracaoMinutos) {
-            dur = Math.max(1, dur - mealConfig.duracaoMinutos);
-            debitouRefeicaoAuto = true;
-            minsRefeicao = mealConfig.duracaoMinutos;
-          }
+          let dur = Math.max(1, calcularDiferencaMinutos(log.startTime, endHour));
 
           const notifId = `autoclose-${log.id}`;
           const notif: AutoCloseNotification = {
@@ -983,13 +959,9 @@ export function App() {
           newNotifs.push(notif);
           saveAutoCloseNotifToFirestore(notif);
 
-          const obsBase = log.observation
+          const obsFinal = log.observation
             ? `${log.observation} | ⚠️ Encerrado Automaticamente (Fim de Turno ${endHour})`
             : `⚠️ Encerrado Automaticamente (Fim de Turno ${endHour}) - Colaborador não fechou`;
-
-          const obsFinal = debitouRefeicaoAuto
-            ? `${obsBase} | 🍽️ Refeição debitada automaticamente (${minsRefeicao} min)`
-            : obsBase;
 
           const closedLog: ProductionLog = {
             ...log,
@@ -1000,9 +972,9 @@ export function App() {
             autoClosed: true,
             autoClosedAtShiftEnd: true,
             pendingNextShiftResume: false,
-            mealBreakDeducted: log.mealBreakDeducted || debitouRefeicaoAuto,
-            mealBreakMinutes: log.mealBreakMinutes || (debitouRefeicaoAuto ? minsRefeicao : undefined),
-            mealBreakSource: log.mealBreakSource || (debitouRefeicaoAuto ? 'automatic' : undefined),
+            mealBreakDeducted: false,
+            mealBreakMinutes: undefined,
+            mealBreakSource: undefined,
           };
 
           saveLogToFirestore(closedLog);
@@ -1241,7 +1213,8 @@ export function App() {
       partsProduced?: number,
       scrapCount?: number,
       customEndTime?: string,
-      forceDeductMeal?: boolean
+      forceDeductMeal?: boolean,
+      partModel?: string
     ) => {
       const now = new Date();
       const endTimeStr = customEndTime || formatarHoraPtBr(now);
@@ -1255,51 +1228,22 @@ export function App() {
             const colabShift = colab?.shift || log.shift || 'Turno 1';
             const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
 
-            let deveDebitarRefeicao = false;
-            let minutosRefeicaoDeduzidos = 0;
-            let duracaoLiquida = calcularDiferencaMinutos(log.startTime, endTimeStr);
-
-            if (!jaTeveRefeicao) {
-              if (forceDeductMeal === true) {
-                const mealConfig = obterConfiguracaoRefeicao(log.collaboratorName || colabShift, shifts, collaborators);
-                minutosRefeicaoDeduzidos = mealConfig.duracaoMinutos;
-                duracaoLiquida = Math.max(1, duracaoLiquida - minutosRefeicaoDeduzidos);
-                deveDebitarRefeicao = true;
-              } else if (forceDeductMeal === false) {
-                deveDebitarRefeicao = false;
-                minutosRefeicaoDeduzidos = 0;
-              } else {
-                const res = calcularDuracaoComDeducaoRefeicao(
-                  log.startTime,
-                  endTimeStr,
-                  log.collaboratorName || colabShift,
-                  shifts,
-                  false,
-                  collaborators
-                );
-                duracaoLiquida = res.duracaoLiquida;
-                minutosRefeicaoDeduzidos = res.minutosRefeicaoDeduzidos;
-                deveDebitarRefeicao = res.deveDebitarRefeicao;
-              }
-            }
-
-            let obsFinal = observation || 'Operação Concluída com Sucesso sem Anomalias';
-            if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
-              obsFinal = `${obsFinal} | 🍽️ Refeição debitada no encerramento (${minutosRefeicaoDeduzidos} min)`;
-            }
+            const duracaoReal = Math.max(1, calcularDiferencaMinutos(log.startTime, endTimeStr));
+            const obsFinal = observation || 'Operação Concluída com Sucesso sem Anomalias';
 
             const finishedLog: ProductionLog = {
               ...log,
               endTime: endTimeStr,
-              durationMinutes: duracaoLiquida,
+              durationMinutes: duracaoReal,
               status: 'Concluída',
               observation: obsFinal,
               notes: notes && notes.trim() ? notes.trim() : undefined,
               partsProduced: partsProduced !== undefined && !isNaN(partsProduced) ? partsProduced : undefined,
               scrapCount: scrapCount !== undefined && !isNaN(scrapCount) ? scrapCount : undefined,
-              mealBreakDeducted: log.mealBreakDeducted || deveDebitarRefeicao,
-              mealBreakMinutes: log.mealBreakMinutes || (deveDebitarRefeicao ? minutosRefeicaoDeduzidos : undefined),
-              mealBreakSource: log.mealBreakSource || (deveDebitarRefeicao ? 'encerramento' : undefined),
+              partModel: partModel?.trim() || log.partModel || undefined,
+              mealBreakDeducted: false,
+              mealBreakMinutes: undefined,
+              mealBreakSource: undefined,
             };
             saveLogToFirestore(finishedLog);
             return finishedLog;
@@ -1322,7 +1266,11 @@ export function App() {
       newCategory: ActivityCategory,
       machineId?: string,
       newInitialDescription?: string,
-      customEndTime?: string
+      customEndTime?: string,
+      partsProduced?: number,
+      scrapCount?: number,
+      finishNotes?: string,
+      partModel?: string
     ) => {
       const now = new Date();
       const timeStr = formatarHoraPtBr(now);
@@ -1340,16 +1288,8 @@ export function App() {
             const colab = collaborators.find(
               (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
             );
-            const colabShift = colab?.shift || log.shift || 'Turno 1';
-            const jaTeveRefeicao = log.mealBreakDeducted || colaboradorJaUsouRefeicaoHoje(log.collaboratorName, log.date, prev);
-
-            const { duracaoLiquida, minutosRefeicaoDeduzidos, deveDebitarRefeicao } =
-              calcularDuracaoComDeducaoRefeicao(log.startTime, prevEndTime, colabShift, shifts, !!jaTeveRefeicao);
-
-            let obsFinal = observation || 'Setup / Troca Rápida de Operação';
-            if (deveDebitarRefeicao && minutosRefeicaoDeduzidos > 0) {
-              obsFinal = `${obsFinal} | 🍽️ Refeição debitada automaticamente (${minutosRefeicaoDeduzidos} min)`;
-            }
+            const duracaoLiquida = Math.max(1, calcularDiferencaMinutos(log.startTime, prevEndTime));
+            const obsFinal = observation || 'Setup / Troca Rápida de Operação';
 
             const finishedLog: ProductionLog = {
               ...log,
@@ -1357,9 +1297,13 @@ export function App() {
               durationMinutes: duracaoLiquida,
               status: 'Concluída' as const,
               observation: obsFinal,
-              mealBreakDeducted: log.mealBreakDeducted || deveDebitarRefeicao,
-              mealBreakMinutes: log.mealBreakMinutes || (deveDebitarRefeicao ? minutosRefeicaoDeduzidos : undefined),
-              mealBreakSource: log.mealBreakSource || (deveDebitarRefeicao ? 'automatic' : undefined),
+              notes: finishNotes && finishNotes.trim() ? finishNotes.trim() : log.notes,
+              partsProduced: partsProduced !== undefined && !isNaN(partsProduced) ? partsProduced : log.partsProduced,
+              scrapCount: scrapCount !== undefined && !isNaN(scrapCount) ? scrapCount : log.scrapCount,
+              partModel: partModel?.trim() || log.partModel || undefined,
+              mealBreakDeducted: false,
+              mealBreakMinutes: undefined,
+              mealBreakSource: undefined,
             };
             saveLogToFirestore(finishedLog);
             return finishedLog;

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, CheckCircle2, Play, AlertTriangle, Search, Filter, 
   Clock, User, Wrench, ChevronRight, X, ArrowRight, RotateCcw,
-  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles
+  Zap, BellRing, Check, ShieldAlert, Tablet, Users, Settings, UserPlus, Sparkles,
+  ClipboardCheck, AlertCircle
 } from 'lucide-react';
 import { ActivityItem, Collaborator, ProductionLog, ShiftConfig, ActivityCategory, AutoCloseNotification } from '../types';
 import { 
@@ -23,7 +24,10 @@ import {
   obterTurnosAtivosNoMomento,
   obterConfigTurno,
   isTurnoAtivoNoMomento,
-  isColaboradorEmTurnoAtivo
+  isColaboradorEmTurnoAtivo,
+  obterTempoRefeicaoPorTurno,
+  isMealActivity,
+  isMedirPecasNaoConforme
 } from '../utils/factoryCalculations';
 import { QuickCollaboratorModal } from './QuickCollaboratorModal';
 import { findSavedCollaboratorsInBrowser } from '../utils/recoveryUtils';
@@ -46,11 +50,24 @@ interface ProductionFloorViewProps {
     partsProduced?: number,
     scrapCount?: number,
     customEndTime?: string,
-    forceDeductMeal?: boolean
+    forceDeductMeal?: boolean,
+    partModel?: string
   ) => void;
   onPauseMeal?: (logId: string) => void;
   onResumeActivity?: (logId: string) => void;
-  onQuickChangeover?: (finishLogId: string, observation: string, newActivityName: string, newCategory: ActivityCategory, machineId?: string, newInitialDescription?: string, customEndTime?: string) => void;
+  onQuickChangeover?: (
+    finishLogId: string,
+    observation: string,
+    newActivityName: string,
+    newCategory: ActivityCategory,
+    machineId?: string,
+    newInitialDescription?: string,
+    customEndTime?: string,
+    partsProduced?: number,
+    scrapCount?: number,
+    finishNotes?: string,
+    partModel?: string
+  ) => void;
   onSaveCollaborators?: (colabs: Collaborator[]) => void;
   isLeaderUnlocked?: boolean;
   onUnlockLeader?: (pin: string) => boolean;
@@ -110,6 +127,12 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   const [partsProduced, setPartsProduced] = useState<string>('');
   const [scrapCount, setScrapCount] = useState<string>('');
 
+  // Estados obrigatórios para "MEDIR PEÇAS NA AREA DE PRODUTO NÃO CONFORME"
+  const [pncPartModel, setPncPartModel] = useState('');
+  const [pncGoodParts, setPncGoodParts] = useState('');
+  const [pncBadParts, setPncBadParts] = useState('');
+  const [pncError, setPncError] = useState('');
+
   // Real-time ticking state (updates every second)
   const [secondsTick, setSecondsTick] = useState(0);
 
@@ -119,6 +142,17 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Interrupção de Refeição protegida por Senha do Líder
+  const [mealPinModalTarget, setMealPinModalTarget] = useState<{
+    log: ProductionLog;
+    action: 'cardClick' | 'changeover';
+  } | null>(null);
+  const [mealPinInput, setMealPinInput] = useState('');
+  const [mealPinError, setMealPinError] = useState(false);
+
+  // Auto-finalização de refeição ao atingir o tempo previsto (Turno 1: 90 min, Turno 2: 60 min)
+  const autoFinishingMealsRef = useRef<Set<string>>(new Set());
 
   // Filter active logs (Em Execução e Pausada) - Garante ESTRITAMENTE 1 cartão ativo por colaborador mais recente
   const allActiveLogs = useMemo(() => {
@@ -339,6 +373,45 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     return definirCorFuncao(r);
   };
 
+  // Auto-finalização de refeição ao atingir o tempo previsto (Turno 1: 90 min, Turno 2: 60 min)
+  useEffect(() => {
+    for (const tarefa of allActiveLogs) {
+      if (tarefa.status !== 'Em Execução') continue;
+      if (!isMealActivity(tarefa.activity, tarefa.category)) continue;
+      if (autoFinishingMealsRef.current.has(tarefa.id)) continue;
+
+      const colab = collaborators.find(
+        (c) => c.name.trim().toLowerCase() === tarefa.collaboratorName.trim().toLowerCase()
+      );
+      const mealMinutes = obterTempoRefeicaoPorTurno(colab?.shift || tarefa.shift);
+      const mealTotalSeconds = mealMinutes * 60;
+      const elapsedSeconds = getElapsedSeconds(tarefa.startTime);
+
+      if (elapsedSeconds >= mealTotalSeconds) {
+        autoFinishingMealsRef.current.add(tarefa.id);
+
+        const [h, m] = (tarefa.startTime || '00:00').split(':').map((v) => parseInt(v, 10) || 0);
+        const totalMins = h * 60 + m + mealMinutes;
+        const endH = Math.floor(totalMins / 60) % 24;
+        const endM = totalMins % 60;
+        const customEndTime = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+
+        onFinishActivity(
+          tarefa.id,
+          `🍽️ Refeição Concluída Automaticamente (${mealMinutes} min)`,
+          `Tempo de refeição previsto de ${mealMinutes} minutos atingido (${colab?.shift || tarefa.shift || 'Turno'}). Colaborador disponível.`,
+          undefined,
+          undefined,
+          customEndTime
+        );
+
+        if (soundEnabled) {
+          playFactoryChime('finish');
+        }
+      }
+    }
+  }, [secondsTick, allActiveLogs, collaborators, onFinishActivity, soundEnabled]);
+
   // Handlers
   const handleOpenStartModal = () => {
     setSelectedColab(null);
@@ -365,7 +438,13 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
   // Ao clicar na atividade, abre a pergunta obrigatória: "DESCREVA EM POUCAS PALAVRAS O QUE VAI EXECUTAR AGORA ?"
   const handleSelectActivityToStart = (activity: ActivityItem) => {
     setSelectedActivity(activity);
-    setStartDescription('');
+    const isMeal = isMealActivity(activity.name, activity.category);
+    if (isMeal) {
+      const mealMins = selectedColab ? obterTempoRefeicaoPorTurno(selectedColab.shift) : 90;
+      setStartDescription(`Intervalo de Refeição (${mealMins} min)`);
+    } else {
+      setStartDescription('');
+    }
     setStartDescError(false);
     setCurrentScreen('pergunta_inicio');
   };
@@ -396,7 +475,11 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     setCurrentScreen('painel');
   };
 
-  const handleInitiateChangeoverDirectly = (log: ProductionLog) => {
+  const proceedInitiateChangeoverDirectly = (log: ProductionLog) => {
+    if (isMedirPecasNaoConforme(log.activity)) {
+      proceedCardClick(log);
+      return;
+    }
     const initTime = formatarHoraPtBr(new Date());
     setLogToFinish(log);
     setFinishObs(log.observation || '');
@@ -416,38 +499,125 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
     }
   };
 
-  const handleCardClick = (log: ProductionLog) => {
+  const handleInitiateChangeoverDirectly = (log: ProductionLog) => {
+    if (isMealActivity(log.activity, log.category) && !isLeaderUnlocked) {
+      setMealPinModalTarget({ log, action: 'changeover' });
+      setMealPinInput('');
+      setMealPinError(false);
+      return;
+    }
+    proceedInitiateChangeoverDirectly(log);
+  };
+
+  const proceedCardClick = (log: ProductionLog) => {
     const initTime = formatarHoraPtBr(new Date());
     setLogToFinish(log);
     setFinishObs(log.observation || '');
     // Preenche as notas livres com o que foi digitado no início ou salvo no log
     setFinishNotes(log.notes || log.initialDescription || '');
-    setPartsProduced('');
-    setScrapCount('');
+    setPartsProduced(log.partsProduced !== undefined ? String(log.partsProduced) : '');
+    setScrapCount(log.scrapCount !== undefined ? String(log.scrapCount) : '');
     setChangeoverInitiatedTime(initTime);
+    setPncPartModel(log.partModel || '');
+    setPncGoodParts(log.partsProduced !== undefined ? String(log.partsProduced) : '');
+    setPncBadParts(log.scrapCount !== undefined ? String(log.scrapCount) : '');
+    setPncError('');
     setCurrentScreen('fechamento');
+  };
+
+  const handleCardClick = (log: ProductionLog) => {
+    if (isMealActivity(log.activity, log.category) && !isLeaderUnlocked) {
+      setMealPinModalTarget({ log, action: 'cardClick' });
+      setMealPinInput('');
+      setMealPinError(false);
+      return;
+    }
+    proceedCardClick(log);
+  };
+
+  const handleMealPinSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!mealPinModalTarget) return;
+
+    const success = onUnlockLeader ? onUnlockLeader(mealPinInput) : (leaderPin ? mealPinInput === leaderPin : true);
+    if (success) {
+      const target = mealPinModalTarget;
+      setMealPinModalTarget(null);
+      setMealPinInput('');
+      setMealPinError(false);
+      if (target.action === 'changeover') {
+        proceedInitiateChangeoverDirectly(target.log);
+      } else {
+        proceedCardClick(target.log);
+      }
+    } else {
+      setMealPinError(true);
+    }
+  };
+
+  const validatePncIfRequired = (): boolean => {
+    if (!logToFinish) return true;
+    if (isMedirPecasNaoConforme(logToFinish.activity)) {
+      if (!pncPartModel.trim()) {
+        setPncError('Por favor, informe obrigatoriamente o Modelo da Peça.');
+        return false;
+      }
+      if (pncGoodParts.trim() === '' || isNaN(Number(pncGoodParts)) || Number(pncGoodParts) < 0) {
+        setPncError('Por favor, informe obrigatoriamente a Quantidade de Peças Boas (0 ou mais).');
+        return false;
+      }
+      if (pncBadParts.trim() === '' || isNaN(Number(pncBadParts)) || Number(pncBadParts) < 0) {
+        setPncError('Por favor, informe obrigatoriamente a Quantidade de Peças Ruins (0 ou mais).');
+        return false;
+      }
+    }
+    return true;
   };
 
   const handleConfirmFinish = () => {
     if (!logToFinish) return;
+    if (!validatePncIfRequired()) return;
+
     const targetId = logToFinish.id;
-    const noteText = finishNotes.trim();
+    const isPnc = isMedirPecasNaoConforme(logToFinish.activity);
+
+    let finalObs = finishObs || 'Operação Concluída com Sucesso';
+    let finalNotes = finishNotes.trim();
+    let finalGoodParts = partsProduced ? parseInt(partsProduced, 10) : undefined;
+    let finalBadParts = scrapCount ? parseInt(scrapCount, 10) : undefined;
+
+    if (isPnc) {
+      const boas = parseInt(pncGoodParts, 10) || 0;
+      const ruins = parseInt(pncBadParts, 10) || 0;
+      const totalPecas = boas + ruins;
+      const pncSummary = `Modelo: ${pncPartModel.trim()} | Boas: ${boas} | Ruins: ${ruins}`;
+      finalObs = pncSummary;
+      finalNotes = finalNotes && finalNotes !== pncSummary ? `${pncSummary} • ${finalNotes}` : pncSummary;
+      finalGoodParts = totalPecas; // Total de peças processadas = boas + ruins
+      finalBadParts = ruins;
+    }
+
     const finishEndTime = changeoverInitiatedTime || undefined;
+    const modelToSave = isPnc ? pncPartModel.trim() : undefined;
     setLogToFinish(null);
     setChangeoverInitiatedTime('');
     onFinishActivity(
       targetId,
-      finishObs || noteText || 'Operação Concluída com Sucesso',
-      noteText,
-      partsProduced ? parseInt(partsProduced, 10) : undefined,
-      scrapCount ? parseInt(scrapCount, 10) : undefined,
-      finishEndTime
+      finalObs,
+      finalNotes,
+      finalGoodParts,
+      finalBadParts,
+      finishEndTime,
+      false,
+      modelToSave
     );
     setCurrentScreen('painel');
   };
 
   const handleOpenChangeover = () => {
     if (!logToFinish) return;
+    if (!validatePncIfRequired()) return;
+
     const colab = collaborators.find(
       c => c.name.trim().toLowerCase() === logToFinish.collaboratorName.trim().toLowerCase()
     );
@@ -479,14 +649,35 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
       return;
     }
 
+    const isPnc = isMedirPecasNaoConforme(logToFinish.activity);
+    let previousLogObs = finishNotes.trim() || 'Troca Rápida de Setup / Nova Atividade';
+    let goodParts = partsProduced ? parseInt(partsProduced, 10) : undefined;
+    let badParts = scrapCount ? parseInt(scrapCount, 10) : undefined;
+
+    if (isPnc) {
+      const boas = parseInt(pncGoodParts, 10) || 0;
+      const ruins = parseInt(pncBadParts, 10) || 0;
+      const totalPecas = boas + ruins;
+      const pncSummary = `Modelo: ${pncPartModel.trim()} | Boas: ${boas} | Ruins: ${ruins}`;
+      previousLogObs = finishNotes.trim() && finishNotes.trim() !== pncSummary ? `${pncSummary} • ${finishNotes.trim()}` : pncSummary;
+      goodParts = totalPecas; // Total de peças processadas = boas + ruins
+      badParts = ruins;
+    }
+
+    const modelToSave = isPnc ? pncPartModel.trim() : undefined;
+
     onQuickChangeover(
       logToFinish.id,
-      finishNotes.trim() || 'Troca Rápida de Setup / Nova Atividade',
+      previousLogObs,
       changeoverActivity.name,
       changeoverActivity.category,
       undefined,
       changeoverDescription.trim(),
-      changeoverInitiatedTime || undefined
+      changeoverInitiatedTime || undefined,
+      goodParts,
+      badParts,
+      previousLogObs,
+      modelToSave
     );
     setChangeoverInitiatedTime('');
     setCurrentScreen('painel');
@@ -557,13 +748,23 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                 const corTextoHead = definirCorTextoHeader(corBase);
                 const flashing = isCardFlashing(tarefa);
                 const elapsedSeconds = getElapsedSeconds(tarefa.startTime);
+                const isMeal = isMealActivity(tarefa.activity, tarefa.category);
+                const colab = collaborators.find(
+                  c => c.name.trim().toLowerCase() === tarefa.collaboratorName.trim().toLowerCase()
+                );
+                const mealMinutes = obterTempoRefeicaoPorTurno(colab?.shift || tarefa.shift);
+                const mealTotalSeconds = mealMinutes * 60;
+                const remainingSeconds = Math.max(0, mealTotalSeconds - elapsedSeconds);
+                const progressPct = Math.min(100, Math.round((elapsedSeconds / mealTotalSeconds) * 100));
 
                 return (
                   <div
                     key={tarefa.id}
                     onClick={() => handleCardClick(tarefa)}
                     className={`card bg-[#141414] border rounded-xl overflow-hidden cursor-pointer flex flex-col transition-all hover:scale-[1.02] hover:border-[#666666] active:scale-[0.98] shadow-lg select-none min-h-[160px] ${
-                      flashing
+                      isMeal
+                        ? 'border-[#FF9800]/60 hover:border-[#FFA726] shadow-[#FF9800]/10'
+                        : flashing
                         ? 'card-piscar border-[#FF3D00]'
                         : 'border-[#2D2D2D]'
                     }`}
@@ -606,21 +807,52 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
                         )}
                       </div>
 
-                      <div>
-                        <div className="timer text-xl sm:text-2xl font-black text-[#00E676] font-mono tracking-wider tabular-nums">
-                          {formatarTempoSegundos(elapsedSeconds)}
-                        </div>
-                        <div className="text-[10px] text-[#777777] font-mono mt-0.5 flex items-center justify-center gap-1">
-                          <Clock className="w-3 h-3 text-[#555555]" />
-                          <span>Início: {tarefa.startTime}</span>
-                        </div>
-                        {flashing && (
-                          <div className="mt-1 text-[10px] font-bold text-[#FF3D00] flex items-center justify-center gap-1">
-                            <AlertTriangle className="w-3 h-3" />
-                            <span>Fim de Turno!</span>
+                      {isMeal ? (
+                        <div className="w-full pt-1">
+                          <div className="flex items-center justify-center gap-1 mb-1">
+                            <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded-full bg-[#FF9800]/25 text-[#FFA726] border border-[#FF9800]/50 flex items-center gap-1 shadow-xs">
+                              <span>🍽️</span>
+                              <span>Regressiva {mealMinutes}m</span>
+                            </span>
                           </div>
-                        )}
-                      </div>
+
+                          <div className="timer text-xl sm:text-2xl font-black text-[#FFA726] font-mono tracking-wider tabular-nums animate-pulse">
+                            {formatarTempoSegundos(remainingSeconds)}
+                          </div>
+
+                          {/* Barra de Progresso visual da refeição */}
+                          <div className="w-full bg-[#222222] h-1.5 rounded-full overflow-hidden mt-1.5 border border-[#333333]" title={`Progresso: ${progressPct}%`}>
+                            <div
+                              className="h-full bg-gradient-to-r from-[#FF9800] to-[#00E676] transition-all duration-300"
+                              style={{ width: `${progressPct}%` }}
+                            />
+                          </div>
+
+                          <div className="text-[10px] text-[#FFA726]/80 font-mono mt-1 flex items-center justify-center gap-1">
+                            <span>🔒 Parar: Senha Líder</span>
+                          </div>
+                          <div className="text-[9px] text-[#666666] font-mono mt-0.5 flex items-center justify-center gap-1">
+                            <Clock className="w-2.5 h-2.5 text-[#555555]" />
+                            <span>Início: {tarefa.startTime} ({colab?.shift || tarefa.shift || 'Turno'})</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="timer text-xl sm:text-2xl font-black text-[#00E676] font-mono tracking-wider tabular-nums">
+                            {formatarTempoSegundos(elapsedSeconds)}
+                          </div>
+                          <div className="text-[10px] text-[#777777] font-mono mt-0.5 flex items-center justify-center gap-1">
+                            <Clock className="w-3 h-3 text-[#555555]" />
+                            <span>Início: {tarefa.startTime}</span>
+                          </div>
+                          {flashing && (
+                            <div className="mt-1 text-[10px] font-bold text-[#FF3D00] flex items-center justify-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              <span>Fim de Turno!</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1054,6 +1286,27 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
             </div>
           </div>
 
+          {/* Aviso especial quando for refeição (Turno 1: 90 min, Turno 2: 60 min) */}
+          {isMealActivity(selectedActivity.name, selectedActivity.category) && (
+            <div className="p-3.5 bg-[#2B1B08] border border-[#FF9800]/50 rounded-xl space-y-1.5 text-xs text-[#FFE082]">
+              <div className="flex items-center justify-between font-bold text-[#FFA726]">
+                <span className="flex items-center gap-1.5 text-sm">
+                  <span>🍽️</span> Contagem Regressiva Obrigatória: {obterTempoRefeicaoPorTurno(selectedColab.shift)} minutos
+                </span>
+                <span className="px-2 py-0.5 rounded bg-[#FF9800]/25 text-white font-mono font-bold text-[11px]">
+                  {selectedColab.shift}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#FFD54F] leading-relaxed">
+                • O painel iniciará uma contagem regressiva de <b>{obterTempoRefeicaoPorTurno(selectedColab.shift)} minutos</b> ({selectedColab.shift === 'Turno 2' ? '60 min' : '90 min'}).
+                <br />
+                • <b>Parada antecipada:</b> permitida somente com a <b>Senha do Líder</b>.
+                <br />
+                • Ao término dos {obterTempoRefeicaoPorTurno(selectedColab.shift)} min, a refeição finaliza sozinha e o colaborador fica disponível (iniciando a contagem de gap até nova atividade).
+              </p>
+            </div>
+          )}
+
           <form onSubmit={handleConfirmStartWithDescription} className="space-y-4">
             <div>
               <textarea
@@ -1091,13 +1344,19 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               id="btn-iniciar-contagem"
               disabled={!startDescription.trim()}
               className={`w-full py-4 sm:py-5 font-black text-base sm:text-lg rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer min-h-[58px] ${
-                startDescription.trim()
-                  ? 'bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black border border-[#00c853] active:scale-[0.99]'
-                  : 'bg-[#2A2A2A] text-[#777777] border border-[#3A3A3A] cursor-not-allowed opacity-75'
+                !startDescription.trim()
+                  ? 'bg-[#2A2A2A] text-[#777777] border border-[#3A3A3A] cursor-not-allowed opacity-75'
+                  : isMealActivity(selectedActivity.name, selectedActivity.category)
+                  ? 'bg-[#FF9800] hover:bg-[#F57C00] active:bg-[#E65100] text-black border border-[#FFA726] active:scale-[0.99]'
+                  : 'bg-[#00E676] hover:bg-[#00c853] active:bg-[#00b248] text-black border border-[#00c853] active:scale-[0.99]'
               }`}
             >
               <Play className="w-6 h-6 fill-current" />
-              <span>INICIAR ATIVIDADE & CONTAGEM</span>
+              <span>
+                {isMealActivity(selectedActivity.name, selectedActivity.category)
+                  ? `INICIAR REFEIÇÃO (${obterTempoRefeicaoPorTurno(selectedColab.shift)} MIN REGRESSIVA)`
+                  : 'INICIAR ATIVIDADE & CONTAGEM'}
+              </span>
             </button>
 
             <button
@@ -1173,13 +1432,97 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               </label>
               <textarea
                 id="texto-notas"
-                rows={3}
+                rows={2}
                 placeholder="Digite uma anotação extra se necessário..."
                 value={finishNotes}
                 onChange={(e) => setFinishNotes(e.target.value)}
                 className="w-full p-3 bg-[#222222] text-white border border-[#555555] rounded-xl text-sm focus:outline-none focus:border-[#007BFF] resize-none"
               />
             </div>
+
+            {/* CAMPOS OBRIGATÓRIOS PARA MEDIR PEÇAS NA AREA DE PRODUTO NÃO CONFORME */}
+            {isMedirPecasNaoConforme(logToFinish.activity) && (
+              <div className="p-4 bg-[#1E1610] border-2 border-[#FF9800] rounded-xl space-y-3.5 shadow-lg animate-in fade-in duration-200">
+                <div className="flex items-start gap-2.5 text-[#FFA726] border-b border-[#FF9800]/30 pb-2.5">
+                  <ClipboardCheck className="w-5 h-5 text-[#FF9800] shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-black text-sm text-white uppercase tracking-wide">
+                      Apontamento Obrigatório de Inspeção (PNC)
+                    </h4>
+                    <p className="text-xs text-[#FFE082] mt-0.5">
+                      Para finalizar esta atividade, preencha o <b>Modelo da Peça</b>, <b>Peças Boas</b> e <b>Peças Ruins</b>:
+                    </p>
+                  </div>
+                </div>
+
+                {/* 1. Modelo da Peça */}
+                <div>
+                  <label className="block text-xs font-bold text-white mb-1.5 flex items-center justify-between">
+                    <span>1. Modelo da Peça:</span>
+                    <span className="text-[10px] text-[#FF5252] font-mono uppercase bg-red-950/60 px-1.5 py-0.5 rounded border border-red-800/50">Obrigatório</span>
+                  </label>
+                  <input
+                    type="text"
+                    id="input-modelo-peca-pnc"
+                    placeholder="Ex: TC-20, Flange 45, Pino Guia, etc."
+                    value={pncPartModel}
+                    onChange={(e) => {
+                      setPncPartModel(e.target.value);
+                      setPncError('');
+                    }}
+                    className="w-full p-3 bg-[#111111] text-white font-medium border border-[#666666] focus:border-[#FF9800] rounded-xl text-sm focus:outline-none shadow-inner"
+                  />
+                </div>
+
+                {/* 2. Qtde Peças Boas e 3. Qtde Peças Ruins */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-[#00E676] mb-1.5 flex items-center justify-between">
+                      <span>2. Peças Boas (Aprovadas):</span>
+                      <span className="text-[10px] text-[#00E676] font-mono uppercase bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800/50">Obrigatório</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      id="input-pecas-boas-pnc"
+                      placeholder="0"
+                      value={pncGoodParts}
+                      onChange={(e) => {
+                        setPncGoodParts(e.target.value);
+                        setPncError('');
+                      }}
+                      className="w-full p-3 bg-[#111111] text-white font-mono font-black text-lg border border-[#666666] focus:border-[#00E676] rounded-xl focus:outline-none shadow-inner"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#FF5252] mb-1.5 flex items-center justify-between">
+                      <span>3. Peças Ruins (Reprovadas):</span>
+                      <span className="text-[10px] text-[#FF5252] font-mono uppercase bg-red-950/60 px-1.5 py-0.5 rounded border border-red-800/50">Obrigatório</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      id="input-pecas-ruins-pnc"
+                      placeholder="0"
+                      value={pncBadParts}
+                      onChange={(e) => {
+                        setPncBadParts(e.target.value);
+                        setPncError('');
+                      }}
+                      className="w-full p-3 bg-[#111111] text-white font-mono font-black text-lg border border-[#666666] focus:border-[#FF5252] rounded-xl focus:outline-none shadow-inner"
+                    />
+                  </div>
+                </div>
+
+                {pncError && (
+                  <div className="p-3 bg-[#331111] border border-[#FF5252] rounded-xl text-xs font-bold text-[#FF8A80] flex items-center gap-2 animate-in fade-in">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-[#FF5252]" />
+                    <span>{pncError}</span>
+                  </div>
+                )}
+              </div>
+            )}
 
 
 
@@ -1335,6 +1678,95 @@ export const ProductionFloorView: React.FC<ProductionFloorViewProps> = ({
               Voltar
             </button>
           </form>
+        </div>
+      )}
+
+      {/* MODAL DE SENHA DO LÍDER PARA INTERROMPER INTERVALO DE REFEIÇÃO */}
+      {mealPinModalTarget && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-[#181818] border border-[#FF9800]/50 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3 border-b border-[#333333] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-[#FF9800]/20 text-[#FFA726] border border-[#FF9800]/40">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">🔒 Senha do Líder Obrigatória</h3>
+                  <p className="text-xs text-[#FFA726]">Interrupção antecipada de intervalo de refeição</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setMealPinModalTarget(null);
+                  setMealPinInput('');
+                  setMealPinError(false);
+                }}
+                className="p-1 rounded-lg text-[#888888] hover:text-white hover:bg-[#282828] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-[#241A0E] border border-[#FF9800]/30 rounded-xl space-y-1.5 text-xs text-[#FFE082]">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-white text-sm">{mealPinModalTarget.log.collaboratorName}</span>
+                <span className="px-2 py-0.5 rounded bg-[#FF9800]/30 text-white font-mono font-bold text-[10px]">
+                  {mealPinModalTarget.log.shift || 'Turno 1'}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#FFD54F] leading-relaxed">
+                O colaborador está em contagem regressiva de refeição ({obterTempoRefeicaoPorTurno(mealPinModalTarget.log.shift)} min).
+                Para finalizar ou trocar a atividade antes do término automático, digite a <b>Senha do Líder</b>.
+              </p>
+            </div>
+
+            <form onSubmit={handleMealPinSubmit} className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-[#AAAAAA] mb-1.5">
+                  Digite a Senha do Líder (4 dígitos):
+                </label>
+                <input
+                  type="password"
+                  maxLength={6}
+                  autoFocus
+                  value={mealPinInput}
+                  onChange={(e) => {
+                    setMealPinInput(e.target.value);
+                    setMealPinError(false);
+                  }}
+                  placeholder="••••"
+                  className="w-full text-center text-2xl tracking-widest font-mono py-2.5 bg-[#111111] text-white border border-[#444444] rounded-xl focus:outline-none focus:border-[#FF9800]"
+                />
+                {mealPinError && (
+                  <p className="text-xs text-[#FF5252] font-bold mt-1.5 text-center">
+                    Senha incorreta. Apenas o líder pode interromper o almoço/refeição.
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMealPinModalTarget(null);
+                    setMealPinInput('');
+                    setMealPinError(false);
+                  }}
+                  className="flex-1 py-2.5 bg-[#2A2A2A] hover:bg-[#333333] text-white font-bold text-xs rounded-xl transition cursor-pointer min-h-[42px]"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!mealPinInput.trim()}
+                  className="flex-1 py-2.5 bg-[#FF9800] hover:bg-[#F57C00] text-black font-black text-xs rounded-xl transition cursor-pointer disabled:opacity-50 min-h-[42px]"
+                >
+                  Confirmar e Liberar
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

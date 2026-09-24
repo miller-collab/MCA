@@ -232,6 +232,8 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
         motivoAlerta: op.motivoAlerta,
         tempoOciosoAtualMinutos: op.tempoOciosoAtualMinutos,
         isLivreAgora: op.isLivreAgora,
+        refeicaoDebitadaMinutos: op.refeicaoDebitadaMinutos,
+        motivoDebitoRefeicao: op.motivoDebitoRefeicao,
         effColor,
         shiftColor,
       };
@@ -801,6 +803,12 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                               <span className="text-[#00E676]">Tempo Ocupado:</span>
                               <span className="font-bold text-white font-mono">{data.trabalhadoHoras || '0h 00m'}</span>
                             </div>
+                            {data.refeicaoDebitadaMinutos && data.refeicaoDebitadaMinutos > 0 ? (
+                              <div className="text-[10px] text-[#FFA726] bg-[#FFA726]/10 border border-[#FFA726]/20 px-1.5 py-0.5 rounded flex items-center justify-between gap-2">
+                                <span>🍽️ Refeição não lançada:</span>
+                                <span className="font-mono font-bold">-{data.refeicaoDebitadaMinutos}m debitados</span>
+                              </div>
+                            ) : null}
                             <div className="flex items-center justify-between gap-4">
                               <span className="text-[#E91E63]">Sem Apontar:</span>
                               <span className="font-bold text-white font-mono">{data.semApontarHoras || '0h 00m'}</span>
@@ -959,6 +967,11 @@ export const EfficiencyView: React.FC<EfficiencyViewProps> = ({
                           <div className="text-[#00E676] font-bold text-xs font-mono">
                             {formatarHorasMinutos(d.trabalhadoMinutos)}
                           </div>
+                          {d.refeicaoDebitadaMinutos && d.refeicaoDebitadaMinutos > 0 ? (
+                            <div className="text-[9px] text-[#FFA726] font-medium font-mono mt-0.5" title="Refeição não lançada deduzida da jornada">
+                              (-{d.refeicaoDebitadaMinutos}m ref.)
+                            </div>
+                          ) : null}
                         </div>
                         <div>
                           <div className="text-[10px] text-[#888888] font-semibold mb-0.5">Sem Apontar</div>

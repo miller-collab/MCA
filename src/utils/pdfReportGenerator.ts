@@ -1,7 +1,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { ProductionLog } from '../types';
-import { formatarHorasMinutos, calcularDiferencaMinutos } from './factoryCalculations';
+import { formatarHorasMinutos, calcularDiferencaMinutos, isMedirPecasNaoConforme } from './factoryCalculations';
 
 export interface ReportPDFOptions {
   collaboratorName: string;
@@ -58,11 +58,12 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 10;
 
-  // 1. CABEÇALHO DO RELATÓRIO
-  doc.setFillColor(24, 24, 24);
-  doc.rect(margin, margin, pageWidth - margin * 2, 14, 'F');
+  // 1. CABEÇALHO DO RELATÓRIO (Cinza claro para impressão limpa e econômica)
+  doc.setFillColor(232, 235, 238);
+  doc.setDrawColor(180, 185, 190);
+  doc.rect(margin, margin, pageWidth - margin * 2, 14, 'FD');
 
-  doc.setTextColor(255, 255, 255);
+  doc.setTextColor(20, 20, 20);
   doc.setFontSize(12);
   doc.setFont('helvetica', 'bold');
   doc.text('MCA • HISTÓRICO E AUDITORIA DE APONTAMENTOS DA FÁBRICA', margin + 4, margin + 9);
@@ -70,6 +71,7 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
   const dataHoraEmissao = new Date().toLocaleString('pt-BR');
   doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
+  doc.setTextColor(80, 80, 80);
   doc.text(`Emissão: ${dataHoraEmissao}`, pageWidth - margin - 4, margin + 9, { align: 'right' });
 
   // 2. QUADRO DE FILTROS APLICADOS
@@ -161,24 +163,39 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
           : 0;
 
       const observacoesArray: string[] = [];
-      if (log.initialDescription && log.initialDescription.trim()) {
-        observacoesArray.push(`Início: "${log.initialDescription.trim()}"`);
-      }
-      if (
+      const initDesc = log.initialDescription?.trim() || '';
+      const obs =
         log.observation &&
         log.observation.trim() &&
         log.observation.trim() !== 'Operação Concluída com Sucesso'
-      ) {
-        observacoesArray.push(`Fechamento: "${log.observation.trim()}"`);
+          ? log.observation.trim()
+          : '';
+      const notes = log.notes?.trim() || '';
+
+      if (initDesc) {
+        observacoesArray.push(`Início: "${initDesc}"`);
       }
-      if (log.notes && log.notes.trim()) {
-        observacoesArray.push(`Notas: "${log.notes.trim()}"`);
+      if (obs && obs !== initDesc) {
+        observacoesArray.push(`Fechamento: "${obs}"`);
       }
-      if (log.machineId) {
-        observacoesArray.push(`Máq: ${log.machineId}`);
+      if (notes && notes !== initDesc && notes !== obs) {
+        observacoesArray.push(`Notas: "${notes}"`);
       }
+      // Máquina (TORNO-01) removida a pedido para não poluir o campo de observações
       if (typeof log.partsProduced === 'number' && log.partsProduced > 0) {
-        observacoesArray.push(`Peças: ${log.partsProduced}`);
+        let totalPecas = log.partsProduced;
+        if (isMedirPecasNaoConforme(log.activity)) {
+          const matchBoas = (log.observation || log.notes || '').match(/Boas:\s*(\d+)/i);
+          const matchRuins = (log.observation || log.notes || '').match(/Ruins:\s*(\d+)/i);
+          if (matchBoas && matchRuins) {
+            const b = parseInt(matchBoas[1], 10);
+            const r = parseInt(matchRuins[1], 10);
+            totalPecas = b + r;
+          } else if (typeof log.scrapCount === 'number' && log.scrapCount > 0) {
+            totalPecas = log.partsProduced + log.scrapCount;
+          }
+        }
+        observacoesArray.push(`Peças: ${totalPecas}`);
       }
       if (typeof log.scrapCount === 'number' && log.scrapCount > 0) {
         observacoesArray.push(`Refugos: ${log.scrapCount}`);
@@ -247,11 +264,13 @@ export function generateAndDownloadReportPDF(options: ReportPDFOptions): void {
       valign: 'middle',
     },
     headStyles: {
-      fillColor: [40, 40, 40],
-      textColor: [255, 255, 255],
+      fillColor: [225, 228, 233],
+      textColor: [20, 20, 20],
       fontStyle: 'bold',
       fontSize: 7.5,
       halign: 'center',
+      lineColor: [170, 170, 170],
+      lineWidth: 0.3,
     },
     alternateRowStyles: {
       fillColor: [248, 248, 248],

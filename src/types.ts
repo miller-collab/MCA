@@ -59,6 +59,7 @@ export interface ProductionLog {
   machineId?: string;
   partsProduced?: number;
   scrapCount?: number;
+  partModel?: string;
   autoClosed?: boolean;
   autoClosedAtShiftEnd?: boolean;
   pendingNextShiftResume?: boolean;
@@ -119,6 +120,8 @@ export interface OperatorEfficiency {
   motivoAlerta?: string;
   isLivreAgora?: boolean;
   ultimaAtividadeFim?: string;
+  refeicaoDebitadaMinutos?: number;
+  motivoDebitoRefeicao?: string;
   operacoes: {
     nome: string;
     tempoMinutos: number;

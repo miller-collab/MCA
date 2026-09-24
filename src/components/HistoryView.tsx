@@ -16,7 +16,9 @@ import {
   calcularEficienciaEquipePeriodo,
   ShiftGapEntry,
   timeToSecondsOfDay,
-  timeToShiftRelativeSeconds
+  timeToShiftRelativeSeconds,
+  formatarDataIsoPtBr,
+  obterDataHojeIsoPtBr
 } from '../utils/factoryCalculations';
 import { generateAndDownloadReportPDF } from '../utils/pdfReportGenerator';
 
@@ -212,6 +214,76 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     setShowGaps(true);
   };
 
+  // Atalhos rápidos para filtros de data (Hoje, Ontem, 7 Dias, 30 Dias, Mês, Limpar)
+  const handleApplyPreset = (preset: 'hoje' | 'ontem' | 'ultimos7' | 'ultimos30' | 'esteMes' | 'limpar') => {
+    if (preset === 'limpar') {
+      setStartDate('');
+      setEndDate('');
+      return;
+    }
+
+    const todayIso = obterDataHojeIsoPtBr();
+    const [y, m] = todayIso.split('-');
+
+    if (preset === 'hoje') {
+      setStartDate(todayIso);
+      setEndDate(todayIso);
+    } else if (preset === 'ontem') {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yIso = formatarDataIsoPtBr(yesterday);
+      setStartDate(yIso);
+      setEndDate(yIso);
+    } else if (preset === 'ultimos7') {
+      const d7 = new Date();
+      d7.setDate(d7.getDate() - 6);
+      setStartDate(formatarDataIsoPtBr(d7));
+      setEndDate(todayIso);
+    } else if (preset === 'ultimos30') {
+      const d30 = new Date();
+      d30.setDate(d30.getDate() - 29);
+      setStartDate(formatarDataIsoPtBr(d30));
+      setEndDate(todayIso);
+    } else if (preset === 'esteMes') {
+      const firstDay = `${y}-${m}-01`;
+      setStartDate(firstDay);
+      setEndDate(todayIso);
+    }
+  };
+
+  const isPresetActive = (preset: 'hoje' | 'ontem' | 'ultimos7' | 'ultimos30' | 'esteMes') => {
+    if (!startDate || !endDate) return false;
+    const todayIso = obterDataHojeIsoPtBr();
+    const [y, m] = todayIso.split('-');
+
+    if (preset === 'hoje') {
+      return startDate === todayIso && endDate === todayIso;
+    }
+    if (preset === 'ontem') {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yIso = formatarDataIsoPtBr(yesterday);
+      return startDate === yIso && endDate === yIso;
+    }
+    if (preset === 'ultimos7') {
+      const d7 = new Date();
+      d7.setDate(d7.getDate() - 6);
+      const d7Iso = formatarDataIsoPtBr(d7);
+      return startDate === d7Iso && endDate === todayIso;
+    }
+    if (preset === 'ultimos30') {
+      const d30 = new Date();
+      d30.setDate(d30.getDate() - 29);
+      const d30Iso = formatarDataIsoPtBr(d30);
+      return startDate === d30Iso && endDate === todayIso;
+    }
+    if (preset === 'esteMes') {
+      const firstDay = `${y}-${m}-01`;
+      return startDate === firstDay && endDate === todayIso;
+    }
+    return false;
+  };
+
   // Calcula todos os GAPs de jornada para os logs
   const allGaps = useMemo(() => {
     return calcularGapsJornadaColaboradores(logs, collaborators, shifts);
@@ -344,16 +416,13 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
   }, [filteredTimeline]);
 
   const filteredRealGapsCount = useMemo(() => {
-    return filteredTimeline.filter(
-      (i) => i.type === 'gap' && !i.data.isMealInterval && i.data.status !== 'Refeição'
-    ).length;
+    return filteredTimeline.filter((i) => i.type === 'gap').length;
   }, [filteredTimeline]);
 
   // Cálculos para o Card de Conciliação e Auditoria da Jornada
   // Respeita com precisão absoluta o histórico dos registros e lacunas visíveis na tela
   const conciliationMetrics = useMemo(() => {
     let totalProdutivoMin = 0;
-    let totalRefeicaoMin = 0;
     let totalGapsReaisMin = 0;
 
     filteredTimeline.forEach((item) => {
@@ -367,11 +436,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         totalProdutivoMin += Math.max(0, dur);
       } else {
         const gap = item.data;
-        if (gap.isMealInterval || gap.status === 'Refeição') {
-          totalRefeicaoMin += gap.durationMinutes || 0;
-        } else {
-          totalGapsReaisMin += gap.durationMinutes || 0;
-        }
+        totalGapsReaisMin += gap.durationMinutes || 0;
       }
     });
 
@@ -383,9 +448,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     return {
       totalProdutivoMin,
       totalGapsMin: totalGapsReaisMin,
-      totalRefeicaoMin,
+      totalRefeicaoMin: 0,
       totalJornadaMin,
-      totalJornadaComRefeicaoMin: totalJornadaMin + totalRefeicaoMin,
+      totalJornadaComRefeicaoMin: totalJornadaMin,
       aderenciaPct,
       gapsCount: filteredRealGapsCount,
       hasFilteredItems: filteredTimeline.length > 0,
@@ -809,7 +874,95 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           />
         </div>
 
-        {/* Linha 2: Filtros de Data, Colaborador, Atividade, Turno, Status e Refeição */}
+        {/* Atalhos Rápidos de Seleção de Data (Foto 1 / Foto 2: Preenchimento automático com 1 toque) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 p-2 bg-[#141414] border border-[#2D2D2D] rounded-xl">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] font-bold text-[#AAAAAA] flex items-center gap-1.5 uppercase tracking-wide mr-1">
+              <Calendar className="w-3.5 h-3.5 text-[#007BFF]" />
+              <span>Atalhos Rápidos de Período:</span>
+            </span>
+            <button
+              type="button"
+              id="btn-atalho-filtro-hoje"
+              onClick={() => handleApplyPreset('hoje')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[32px] ${
+                isPresetActive('hoje')
+                  ? 'bg-[#007BFF] text-white shadow-sm'
+                  : 'bg-[#222222] text-[#CCCCCC] hover:text-white hover:bg-[#333333] border border-[#444444]'
+              }`}
+              title="Filtrar apontamentos de Hoje"
+            >
+              Hoje
+            </button>
+            <button
+              type="button"
+              id="btn-atalho-filtro-ontem"
+              onClick={() => handleApplyPreset('ontem')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[32px] ${
+                isPresetActive('ontem')
+                  ? 'bg-[#007BFF] text-white shadow-sm'
+                  : 'bg-[#222222] text-[#CCCCCC] hover:text-white hover:bg-[#333333] border border-[#444444]'
+              }`}
+              title="Filtrar apontamentos de Ontem"
+            >
+              Ontem
+            </button>
+            <button
+              type="button"
+              id="btn-atalho-filtro-7dias"
+              onClick={() => handleApplyPreset('ultimos7')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[32px] ${
+                isPresetActive('ultimos7')
+                  ? 'bg-[#007BFF] text-white shadow-sm'
+                  : 'bg-[#222222] text-[#CCCCCC] hover:text-white hover:bg-[#333333] border border-[#444444]'
+              }`}
+              title="Filtrar últimos 7 dias"
+            >
+              Últimos 7 Dias
+            </button>
+            <button
+              type="button"
+              id="btn-atalho-filtro-30dias"
+              onClick={() => handleApplyPreset('ultimos30')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[32px] ${
+                isPresetActive('ultimos30')
+                  ? 'bg-[#007BFF] text-white shadow-sm'
+                  : 'bg-[#222222] text-[#CCCCCC] hover:text-white hover:bg-[#333333] border border-[#444444]'
+              }`}
+              title="Filtrar últimos 30 dias"
+            >
+              30 Dias
+            </button>
+            <button
+              type="button"
+              id="btn-atalho-filtro-mes"
+              onClick={() => handleApplyPreset('esteMes')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer min-h-[32px] ${
+                isPresetActive('esteMes')
+                  ? 'bg-[#007BFF] text-white shadow-sm'
+                  : 'bg-[#222222] text-[#CCCCCC] hover:text-white hover:bg-[#333333] border border-[#444444]'
+              }`}
+              title="Filtrar todo este mês"
+            >
+              Este Mês
+            </button>
+          </div>
+
+          {(startDate || endDate) && (
+            <button
+              type="button"
+              id="btn-limpar-datas"
+              onClick={() => handleApplyPreset('limpar')}
+              className="text-xs text-[#FF8A80] hover:text-white px-2.5 py-1.5 bg-[#2A1515] border border-[#FF5252]/30 rounded-lg flex items-center gap-1 transition cursor-pointer hover:bg-[#381C1C] min-h-[32px]"
+              title="Limpar filtro de datas e ver todos os registros"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Limpar Datas</span>
+            </button>
+          )}
+        </div>
+
+        {/* Linha 2: Filtros de Data, Colaborador, Atividade, Turno e Status */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2.5">
           {/* Data Inicial */}
           <div className="space-y-1">
@@ -926,9 +1079,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           </div>
         </div>
 
-        {/* Linha 3: Toggle de GAPs de Turno e Resumo */}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#2a2a2a] text-xs text-[#888888]">
-          <div className="flex items-center gap-3">
+        {/* Linha 3: Toggle de GAPs de Turno, Resumo e Atalhos Rápidos de Data */}
+        <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2.5 border-t border-[#2a2a2a] text-xs text-[#888888]">
+          <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
             <label className="flex items-center gap-2 cursor-pointer select-none text-white hover:text-[#007BFF] transition">
               <input
                 type="checkbox"
@@ -953,6 +1106,62 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <span className="text-[#00E676] font-mono">{filteredLogsCount}</span> logs +{' '}
               <span className="text-[#FF8A80] font-mono">{showGaps ? filteredGapsCount : 0}</span> gaps)
             </div>
+
+            {/* Atalhos Rápidos de Data (Hoje, Ontem, 7 Dias, Mês) */}
+            <div className="flex items-center gap-1.5 ml-1 sm:ml-2">
+              <button
+                type="button"
+                id="btn-atalho-data-hoje"
+                onClick={() => handleApplyPreset('hoje')}
+                className={`px-2.5 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
+                  isPresetActive('hoje')
+                    ? 'bg-[#007BFF] text-white shadow-sm'
+                    : 'bg-[#222222] text-[#AAAAAA] hover:text-white hover:bg-[#333333] border border-[#444444]'
+                }`}
+                title="Filtrar apontamentos de Hoje"
+              >
+                Hoje
+              </button>
+              <button
+                type="button"
+                id="btn-atalho-data-ontem"
+                onClick={() => handleApplyPreset('ontem')}
+                className={`px-2.5 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
+                  isPresetActive('ontem')
+                    ? 'bg-[#007BFF] text-white shadow-sm'
+                    : 'bg-[#222222] text-[#AAAAAA] hover:text-white hover:bg-[#333333] border border-[#444444]'
+                }`}
+                title="Filtrar apontamentos de Ontem"
+              >
+                Ontem
+              </button>
+              <button
+                type="button"
+                id="btn-atalho-data-7dias"
+                onClick={() => handleApplyPreset('ultimos7')}
+                className={`px-2.5 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
+                  isPresetActive('ultimos7')
+                    ? 'bg-[#007BFF] text-white shadow-sm'
+                    : 'bg-[#222222] text-[#AAAAAA] hover:text-white hover:bg-[#333333] border border-[#444444]'
+                }`}
+                title="Filtrar apontamentos dos últimos 7 dias"
+              >
+                7 Dias
+              </button>
+              <button
+                type="button"
+                id="btn-atalho-data-mes"
+                onClick={() => handleApplyPreset('esteMes')}
+                className={`px-2.5 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
+                  isPresetActive('esteMes')
+                    ? 'bg-[#007BFF] text-white shadow-sm'
+                    : 'bg-[#222222] text-[#AAAAAA] hover:text-white hover:bg-[#333333] border border-[#444444]'
+                }`}
+                title="Filtrar apontamentos deste mês"
+              >
+                Mês
+              </button>
+            </div>
           </div>
 
           {hasActiveFilters && (
@@ -975,12 +1184,12 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <th className="p-3 border-b border-[#333333]">Data</th>
               <th className="p-3 border-b border-[#333333]">Operador</th>
               <th className="p-3 border-b border-[#333333]">Turno</th>
-              <th className="p-3 border-b border-[#333333]">Atividade / Período</th>
+              <th className="p-3 border-b border-[#333333] min-w-[170px]">Atividade / Período</th>
               <th className="p-3 border-b border-[#333333]">Início</th>
               <th className="p-3 border-b border-[#333333]">Fim</th>
               <th className="p-3 border-b border-[#333333]">Tempo</th>
               <th className="p-3 border-b border-[#333333]">Status</th>
-              <th className="p-3 border-b border-[#333333]">Observações</th>
+              <th className="p-3 border-b border-[#333333] min-w-[300px]">Observações & O Que Foi Feito</th>
               {/* Coluna Ações com Sticky Right para nunca ser cortada */}
               <th className="p-3 border-b border-[#333333] text-right sticky right-0 bg-[#222222] z-20 shadow-[-6px_0_10px_rgba(0,0,0,0.6)] min-w-[110px]">
                 Ações
@@ -1022,7 +1231,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                       <td className="p-3 text-[#007BFF] font-mono text-xs whitespace-nowrap font-semibold">
                         {shiftLabel}
                       </td>
-                      <td className="p-3 text-[#DDDDDD] font-medium min-w-[160px]">{log.activity}</td>
+                      <td className="p-3 text-white font-bold text-xs sm:text-sm min-w-[170px] max-w-[240px] whitespace-normal break-words [overflow-wrap:anywhere] leading-snug">
+                        {log.activity}
+                      </td>
                       <td className="p-3 text-[#AAAAAA] font-mono whitespace-nowrap">{log.startTime}</td>
                       <td className="p-3 text-[#AAAAAA] font-mono whitespace-nowrap">{log.endTime || '-'}</td>
                       <td className="p-3 font-mono text-white whitespace-nowrap">
@@ -1036,9 +1247,27 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                           {isAuto ? 'Auto (Fim Turno)' : log.status}
                         </span>
                       </td>
-                      <td className="p-3 text-[#888888] text-xs max-w-[220px] truncate" title={log.observation || ''}>
-                        {log.observation || '-'}
-                        {log.notes && <span className="text-[#AAAAAA] ml-1">| Nota: {log.notes}</span>}
+                      <td className="p-3 text-xs min-w-[300px] max-w-[450px] whitespace-normal break-words [overflow-wrap:anywhere] leading-relaxed">
+                        <div className="flex flex-col gap-1.5">
+                          {log.observation && (
+                            <span className={isAuto ? 'text-[#FFB74D] font-bold text-xs' : 'text-white font-medium text-xs'}>
+                              {log.observation}
+                            </span>
+                          )}
+                          {(log.initialDescription || log.notes) && (
+                            <div className="p-2 bg-[#1C1810] border border-[#FFD700]/50 rounded-lg text-xs leading-relaxed shadow-xs">
+                              <span className="text-[#FFD700] text-[10px] uppercase tracking-wider font-mono font-bold block mb-0.5">
+                                Executando / Descrição:
+                              </span>
+                              <span className="font-semibold text-white break-words [overflow-wrap:anywhere] select-text">
+                                "{log.initialDescription || log.notes}"
+                              </span>
+                            </div>
+                          )}
+                          {!log.observation && !log.initialDescription && !log.notes && (
+                            <span className="text-[#666666]">-</span>
+                          )}
+                        </div>
                       </td>
                       {/* Botões de Ação Protegidos pelo PIN do Líder */}
                       <td className="p-3 text-right sticky right-0 bg-[#111111] group-hover:bg-[#1A1A1A] transition-colors z-10 shadow-[-6px_0_10px_rgba(0,0,0,0.6)] whitespace-nowrap">
@@ -1096,8 +1325,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
                           <span>Sem Registro</span>
                         </span>
                       </td>
-                      <td className="p-3 text-[#FFAB91] text-xs max-w-[220px] truncate" title={gap.observation}>
-                        {gap.observation}
+                      <td className="p-3 text-xs min-w-[300px] max-w-[450px] whitespace-normal break-words [overflow-wrap:anywhere] leading-relaxed">
+                        <div className="p-2 bg-[#331515] border border-[#FF5252]/40 rounded-lg text-xs text-[#FFCDD2] font-medium leading-relaxed select-text shadow-xs">
+                          {gap.observation}
+                        </div>
                       </td>
                       {/* Botão de Preencher Apontamento no GAP */}
                       <td className="p-3 text-right sticky right-0 bg-[#241212] group-hover:bg-[#2F1717] transition-colors z-10 shadow-[-6px_0_10px_rgba(0,0,0,0.6)] whitespace-nowrap">
