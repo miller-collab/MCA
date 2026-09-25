@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Search, Download, Trash2, Edit3, X, Check, Filter, Lock, KeyRound, 
   AlertTriangle, RotateCcw, Calendar, Clock, ShieldCheck, PlusCircle, 
-  Activity, User, Layers, Printer, Plus
+  Activity, User, Layers, Printer, Plus, CheckSquare, Square, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { ProductionLog, Collaborator, ShiftConfig, ActivityCategory, ActivityItem } from '../types';
 import { 
@@ -85,9 +85,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     }
     return '';
   });
-  const [selectedActivity, setSelectedActivity] = useState('TODOS');
+  // Filtro de Atividades (Multi-seleção com Ticar / Desticar)
+  const [selectedActivities, setSelectedActivities] = useState<string[] | null>(null);
+  const [isActivityDropdownOpen, setIsActivityDropdownOpen] = useState(false);
+  const [activitySearchQuery, setActivitySearchQuery] = useState('');
+  const activityDropdownRef = useRef<HTMLDivElement>(null);
   const [selectedShift, setSelectedShift] = useState('TODOS');
   const [filterStatus, setFilterStatus] = useState('TODOS');
+  const [minDurationFilter, setMinDurationFilter] = useState('');
   const [showGaps, setShowGaps] = useState(true); // Exibir lacunas sem apontamento por padrão
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
@@ -137,6 +142,79 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     });
     return Array.from(nomesSet).sort((a, b) => a.localeCompare(b));
   }, [activities, logs]);
+
+  // Contagem de registros por atividade para enriquecer a lista de seleção
+  const logCountsByActivity = useMemo(() => {
+    const counts: Record<string, number> = {};
+    (logs || []).forEach((l) => {
+      if (l && l.activity && l.activity.trim()) {
+        const actName = l.activity.trim();
+        counts[actName] = (counts[actName] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [logs]);
+
+  // Lista de atividades filtradas pela busca interna do dropdown
+  const filteredActivityOptions = useMemo(() => {
+    if (!activitySearchQuery.trim()) return listaAtividadesFiltro;
+    const q = activitySearchQuery.toLowerCase().trim();
+    return listaAtividadesFiltro.filter((act) => act.toLowerCase().includes(q));
+  }, [listaAtividadesFiltro, activitySearchQuery]);
+
+  // Funções de controle de multi-seleção de atividades: Ticar, Desticar e Alternar
+  const handleToggleActivity = (activityName: string) => {
+    if (selectedActivities === null) {
+      // Se estava em "todas ticadas", ao desmarcar uma, mantém todas as outras ticadas
+      setSelectedActivities(listaAtividadesFiltro.filter((a) => a !== activityName));
+    } else if (selectedActivities.includes(activityName)) {
+      // Já ticada -> desmarca
+      setSelectedActivities(selectedActivities.filter((a) => a !== activityName));
+    } else {
+      // Não ticada -> marca
+      const next = [...selectedActivities, activityName];
+      if (next.length === listaAtividadesFiltro.length) {
+        setSelectedActivities(null); // Todas selecionadas volta ao padrão null
+      } else {
+        setSelectedActivities(next);
+      }
+    }
+  };
+
+  const handleSelectAllActivities = () => {
+    setSelectedActivities(null);
+  };
+
+  const handleDeselectAllActivities = () => {
+    setSelectedActivities([]);
+  };
+
+  const isActivityFilterActive = useMemo(() => {
+    if (selectedActivities === null) return false;
+    return selectedActivities.length !== listaAtividadesFiltro.length;
+  }, [selectedActivities, listaAtividadesFiltro]);
+
+  // Fecha o popover ao clicar fora ou pressionar ESC
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (activityDropdownRef.current && !activityDropdownRef.current.contains(event.target as Node)) {
+        setIsActivityDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsActivityDropdownOpen(false);
+      }
+    };
+    if (isActivityDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isActivityDropdownOpen]);
   
   // Leader Password Protection for Edit/Delete/Fill Gap / Manual Add
   const [authModal, setAuthModal] = useState<{
@@ -197,9 +275,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     startDate || 
     endDate || 
     selectedCollaborator !== 'TODOS' ||
-    selectedActivity !== 'TODOS' ||
+    isActivityFilterActive ||
     selectedShift !== 'TODOS' || 
     filterStatus !== 'TODOS' || 
+    minDurationFilter ||
     !showGaps
   );
 
@@ -208,9 +287,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
     setStartDate('');
     setEndDate('');
     setSelectedCollaborator('TODOS');
-    setSelectedActivity('TODOS');
+    setSelectedActivities(null);
+    setActivitySearchQuery('');
     setSelectedShift('TODOS');
     setFilterStatus('TODOS');
+    setMinDurationFilter('');
     setShowGaps(true);
   };
 
@@ -335,9 +416,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           selectedCollaborator === 'TODOS' ||
           log.collaboratorName.trim().toLowerCase() === selectedCollaborator.trim().toLowerCase();
 
+        const logAct = (log.activity || '').trim().toLowerCase();
         const matchActivity =
-          selectedActivity === 'TODOS' ||
-          log.activity.trim().toLowerCase() === selectedActivity.trim().toLowerCase();
+          selectedActivities === null ||
+          selectedActivities.some((act) => act.trim().toLowerCase() === logAct);
 
         const matchShift =
           selectedShift === 'TODOS' ||
@@ -347,7 +429,15 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           filterStatus === 'TODOS' || 
           (filterStatus === 'SEM_APONTAMENTO' ? false : log.status === filterStatus);
 
-        return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus;
+        const durLog = log.durationMinutes !== undefined 
+          ? log.durationMinutes 
+          : log.endTime 
+          ? calcularDiferencaMinutos(log.startTime, log.endTime) 
+          : 0;
+        const minDurVal = minDurationFilter ? parseFloat(minDurationFilter) : null;
+        const matchDuration = minDurVal === null || isNaN(minDurVal) || durLog >= minDurVal;
+
+        return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus && matchDuration;
       } else {
         // É um GAP (Sem Apontamento)
         const gap = item.data;
@@ -368,9 +458,10 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           selectedCollaborator === 'TODOS' ||
           gap.collaboratorName.trim().toLowerCase() === selectedCollaborator.trim().toLowerCase();
 
+        const gapAct = (gap.activity || '').trim().toLowerCase();
         const matchActivity =
-          selectedActivity === 'TODOS' ||
-          gap.activity.trim().toLowerCase() === selectedActivity.trim().toLowerCase();
+          selectedActivities === null ||
+          selectedActivities.some((act) => act.trim().toLowerCase() === gapAct);
 
         const matchShift =
           selectedShift === 'TODOS' ||
@@ -380,7 +471,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           filterStatus === 'TODOS' || 
           filterStatus === 'SEM_APONTAMENTO';
 
-        return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus;
+        const durGap = gap.durationMinutes || 0;
+        const minDurVal = minDurationFilter ? parseFloat(minDurationFilter) : null;
+        const matchDuration = minDurVal === null || isNaN(minDurVal) || durGap >= minDurVal;
+
+        return matchTerm && matchDatePeriod && matchColab && matchActivity && matchShift && matchStatus && matchDuration;
       }
     }).sort((a, b) => {
       // Ordenação: primeiro por data decrescente (ISO), depois por colaborador, depois por horário do turno
@@ -404,7 +499,7 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
       const startB = b.type === 'log' ? b.data.startTime : b.data.startTime;
       return timeToShiftRelativeSeconds(startA, entradaA, isOvernightA) - timeToShiftRelativeSeconds(startB, entradaA, isOvernightA);
     });
-  }, [combinedTimeline, searchTerm, startDate, endDate, selectedCollaborator, selectedActivity, selectedShift, filterStatus, collaborators, shifts]);
+  }, [combinedTimeline, searchTerm, startDate, endDate, selectedCollaborator, selectedActivities, selectedShift, filterStatus, minDurationFilter, collaborators, shifts]);
 
   // Contadores precisos baseados na lista filtrada atualmente na tela
   const filteredLogsCount = useMemo(() => {
@@ -727,12 +822,18 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
           ? `Filtro: "${searchTerm}"`
           : 'Todos os Colaboradores';
 
+      const filterStatusComTempo = [
+        filterStatus !== 'TODOS' ? filterStatus : 'Todos Status',
+        minDurationFilter ? `Tempo ≥ ${minDurationFilter} min` : '',
+        isActivityFilterActive ? `Atividades: ${selectedActivities ? selectedActivities.length : 0} selecionada(s)` : ''
+      ].filter(Boolean).join(' • ');
+
       generateAndDownloadReportPDF({
         collaboratorName: colabNome,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         selectedShift: selectedShift !== 'TODOS' ? selectedShift : 'Todos os Turnos',
-        filterStatus: filterStatus !== 'TODOS' ? filterStatus : 'Todos Status',
+        filterStatus: filterStatusComTempo,
         conciliationMetrics,
         timelineItems: filteredTimeline,
         gapsCount: allGaps.length,
@@ -1017,25 +1118,188 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             </select>
           </div>
 
-          {/* Filtro por Atividade */}
-          <div className="space-y-1">
-            <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center gap-1">
-              <Layers className="w-3 h-3 text-[#2979FF]" />
-              <span>Atividade</span>
-            </label>
-            <select
+          {/* Filtro por Atividades (Multi-seleção com Checkboxes / Ticar e Desticar) */}
+          <div className="space-y-1 relative" ref={activityDropdownRef}>
+            <div className="flex items-center justify-between">
+              <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center gap-1">
+                <Layers className="w-3 h-3 text-[#2979FF]" />
+                <span>Atividades</span>
+              </label>
+              {isActivityFilterActive && (
+                <button
+                  type="button"
+                  onClick={handleSelectAllActivities}
+                  className="text-[10px] text-[#60A5FA] hover:underline cursor-pointer"
+                  title="Restaurar e ticar todas as atividades"
+                >
+                  Todas
+                </button>
+              )}
+            </div>
+
+            <button
+              type="button"
               id="filtro-atividade"
-              value={selectedActivity}
-              onChange={(e) => setSelectedActivity(e.target.value)}
-              className="w-full py-2 px-2.5 bg-[#222222] text-white border border-[#555555] rounded-lg text-xs font-medium focus:outline-none focus:border-[#007BFF]"
+              onClick={() => setIsActivityDropdownOpen((prev) => !prev)}
+              className={`w-full py-2 px-2.5 bg-[#222222] border rounded-lg text-xs font-medium focus:outline-none flex items-center justify-between gap-1.5 transition cursor-pointer text-left ${
+                isActivityDropdownOpen
+                  ? 'border-[#007BFF] ring-1 ring-[#007BFF]'
+                  : isActivityFilterActive
+                  ? 'border-[#2979FF] text-white bg-[#142238]'
+                  : 'border-[#555555] text-white hover:border-[#888888]'
+              }`}
+              title="Clique para selecionar/ticar as atividades desejadas"
             >
-              <option value="TODOS">Todas Atividades</option>
-              {listaAtividadesFiltro.map((act) => (
-                <option key={act} value={act}>
-                  {act}
-                </option>
-              ))}
-            </select>
+              <span className="truncate">
+                {selectedActivities === null
+                  ? 'Todas Atividades'
+                  : selectedActivities.length === 0
+                  ? '⚠️ Nenhuma (0)'
+                  : selectedActivities.length === 1
+                  ? selectedActivities[0]
+                  : `${selectedActivities.length} ativ. selecionadas`}
+              </span>
+              <div className="flex items-center gap-1 shrink-0">
+                {isActivityFilterActive && (
+                  <span className="px-1.5 py-0.2 bg-[#007BFF]/25 text-[#60A5FA] border border-[#007BFF]/40 rounded text-[10px] font-mono font-bold">
+                    {selectedActivities ? selectedActivities.length : 0}
+                  </span>
+                )}
+                {isActivityDropdownOpen ? (
+                  <ChevronUp className="w-3.5 h-3.5 text-[#888888]" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5 text-[#888888]" />
+                )}
+              </div>
+            </button>
+
+            {/* Painel Suspenso de Seleção de Atividades (Popover com Ticar / Desticar / Checkboxes) */}
+            {isActivityDropdownOpen && (
+              <div className="absolute z-50 top-full mt-1.5 left-0 sm:-left-16 md:left-0 w-80 sm:w-96 max-w-[calc(100vw-32px)] bg-[#1A1A1A] border border-[#444444] rounded-xl shadow-2xl p-3 space-y-2.5 text-xs animate-in fade-in zoom-in-95 duration-150">
+                {/* Cabeçalho do Popover */}
+                <div className="flex items-center justify-between border-b border-[#2C2C2C] pb-2">
+                  <div className="flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-[#2979FF]" />
+                    <span className="font-bold text-white uppercase text-[11px] tracking-wide">
+                      Filtrar Atividades
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#242424] text-[#AAAAAA] border border-[#3A3A3A]">
+                    {selectedActivities === null ? listaAtividadesFiltro.length : selectedActivities.length} de {listaAtividadesFiltro.length} ticadas
+                  </span>
+                </div>
+
+                {/* Botões Cirúrgicos Solicitados: Ticar Todas e Desticar Todas */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    id="btn-ticar-todas-atividades"
+                    onClick={handleSelectAllActivities}
+                    className="w-full py-1.5 px-2 bg-[#007BFF]/15 hover:bg-[#007BFF]/25 text-[#60A5FA] hover:text-white border border-[#007BFF]/40 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    title="Marcar/ticar todas as atividades"
+                  >
+                    <CheckSquare className="w-3.5 h-3.5 text-[#60A5FA]" />
+                    <span>Ticar Todas</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    id="btn-desticar-todas-atividades"
+                    onClick={handleDeselectAllActivities}
+                    className="w-full py-1.5 px-2 bg-[#2A1515] hover:bg-[#381C1C] text-[#FF8A80] hover:text-white border border-[#FF5252]/30 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    title="Desmarcar/desticar todas as atividades para escolher só as que deseja"
+                  >
+                    <Square className="w-3.5 h-3.5 text-[#FF8A80]" />
+                    <span>Desticar Todas</span>
+                  </button>
+                </div>
+
+                {/* Campo de Busca Rápida de Atividades na Lista */}
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#777777]" />
+                  <input
+                    type="text"
+                    placeholder="Buscar atividade na lista..."
+                    value={activitySearchQuery}
+                    onChange={(e) => setActivitySearchQuery(e.target.value)}
+                    className="w-full pl-8 pr-7 py-1.5 bg-[#242424] text-white placeholder-[#666666] border border-[#444444] rounded-lg text-xs focus:outline-none focus:border-[#007BFF]"
+                  />
+                  {activitySearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setActivitySearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[#888888] hover:text-white"
+                      title="Limpar busca"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Lista Rolável de Checkboxes de Atividades */}
+                <div className="max-h-56 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                  {filteredActivityOptions.length === 0 ? (
+                    <div className="p-4 text-center text-[#888888] text-xs">
+                      Nenhuma atividade encontrada com o termo "{activitySearchQuery}".
+                    </div>
+                  ) : (
+                    filteredActivityOptions.map((act) => {
+                      const isChecked = selectedActivities === null || selectedActivities.includes(act);
+                      const count = logCountsByActivity[act] || 0;
+
+                      return (
+                        <label
+                          key={act}
+                          className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer transition select-none ${
+                            isChecked
+                              ? 'bg-[#007BFF]/10 text-white hover:bg-[#007BFF]/20 border border-[#007BFF]/25'
+                              : 'text-[#AAAAAA] hover:bg-[#252525] hover:text-white border border-transparent'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleActivity(act)}
+                              className="w-4 h-4 rounded bg-[#2A2A2A] border-[#555555] text-[#007BFF] focus:ring-0 cursor-pointer accent-[#007BFF]"
+                            />
+                            <span className="truncate text-xs font-medium" title={act}>
+                              {act}
+                            </span>
+                          </div>
+                          {count > 0 && (
+                            <span 
+                              className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#222222] text-[#888888] border border-[#333333] shrink-0"
+                              title={`${count} registro(s) encontrado(s)`}
+                            >
+                              {count}
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Rodapé do Popover */}
+                <div className="flex items-center justify-between pt-2 border-t border-[#2C2C2C]">
+                  <span className="text-[11px] text-[#777777]">
+                    {selectedActivities === null
+                      ? 'Exibindo todas'
+                      : selectedActivities.length === 0
+                      ? 'Nenhuma selecionada'
+                      : `${selectedActivities.length} selecionada(s)`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsActivityDropdownOpen(false)}
+                    className="px-3 py-1 bg-[#007BFF] hover:bg-[#0056b3] text-white rounded-lg text-xs font-bold transition cursor-pointer"
+                  >
+                    Pronto
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Filtro por Turno */}
@@ -1076,6 +1340,53 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <option value="Concluída">Concluída</option>
               <option value="SEM_APONTAMENTO">⚠️ Sem Apontamento (GAPs)</option>
             </select>
+          </div>
+
+          {/* Filtro por Tempo Mínimo (minutos) */}
+          <div className="space-y-1">
+            <label className="block text-[11px] font-bold text-[#AAAAAA] uppercase tracking-wider flex items-center justify-between">
+              <span className="flex items-center gap-1">
+                <Clock className="w-3 h-3 text-[#FFD700]" />
+                <span>Tempo Mín. (min)</span>
+              </span>
+              {minDurationFilter && (
+                <button
+                  type="button"
+                  onClick={() => setMinDurationFilter('')}
+                  className="text-[10px] text-[#FF8A80] hover:underline cursor-pointer"
+                  title="Limpar filtro de tempo"
+                >
+                  Limpar
+                </button>
+              )}
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                id="filtro-tempo-minimo"
+                min="0"
+                step="1"
+                placeholder="Ex: 30"
+                value={minDurationFilter}
+                onChange={(e) => setMinDurationFilter(e.target.value)}
+                title="Filtrar apontamentos com tempo igual ou superior a este valor em minutos"
+                className="w-full py-2 pl-2.5 pr-8 bg-[#222222] text-white placeholder-[#666666] border border-[#555555] rounded-lg text-xs font-mono focus:outline-none focus:border-[#007BFF] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              {minDurationFilter ? (
+                <button
+                  type="button"
+                  onClick={() => setMinDurationFilter('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[#888888] hover:text-white text-xs cursor-pointer p-0.5"
+                  title="Limpar filtro de tempo"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              ) : (
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-mono text-[#666666] pointer-events-none">
+                  min
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1184,10 +1495,67 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
               <th className="p-3 border-b border-[#333333]">Data</th>
               <th className="p-3 border-b border-[#333333]">Operador</th>
               <th className="p-3 border-b border-[#333333]">Turno</th>
-              <th className="p-3 border-b border-[#333333] min-w-[170px]">Atividade / Período</th>
+              <th 
+                className="p-3 border-b border-[#333333] min-w-[170px] cursor-pointer hover:text-white transition-colors"
+                onClick={() => setIsActivityDropdownOpen((prev) => !prev)}
+                title="Clique para abrir e filtrar atividades"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span>Atividade / Período</span>
+                  {isActivityFilterActive && (
+                    <span 
+                      className="px-1.5 py-0.5 bg-[#007BFF]/20 text-[#60A5FA] border border-[#007BFF]/40 rounded text-[10px] font-mono font-normal normal-case flex items-center gap-1"
+                      title={selectedActivities ? `${selectedActivities.length} atividade(s) selecionada(s)` : '0 selecionadas'}
+                    >
+                      <span>{selectedActivities ? `${selectedActivities.length} ativ.` : '0'}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSelectAllActivities();
+                        }}
+                        className="hover:text-white cursor-pointer ml-0.5"
+                        title="Restaurar todas as atividades"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )}
+                </div>
+              </th>
               <th className="p-3 border-b border-[#333333]">Início</th>
               <th className="p-3 border-b border-[#333333]">Fim</th>
-              <th className="p-3 border-b border-[#333333]">Tempo</th>
+              <th 
+                className="p-3 border-b border-[#333333] cursor-pointer hover:text-white transition-colors"
+                onClick={() => {
+                  const el = document.getElementById('filtro-tempo-minimo');
+                  el?.focus();
+                }}
+                title="Filtrar por tempo mínimo"
+              >
+                <div className="flex items-center gap-1.5">
+                  <span>Tempo</span>
+                  {minDurationFilter && (
+                    <span 
+                      className="px-1.5 py-0.5 bg-[#FFD700]/15 text-[#FFD700] border border-[#FFD700]/30 rounded text-[10px] font-mono font-normal normal-case flex items-center gap-1"
+                      title={`Filtrado: apenas apontamentos com tempo ≥ ${minDurationFilter} min`}
+                    >
+                      <span>≥{minDurationFilter}m</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMinDurationFilter('');
+                        }}
+                        className="hover:text-white cursor-pointer ml-0.5"
+                        title="Remover filtro de tempo"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )}
+                </div>
+              </th>
               <th className="p-3 border-b border-[#333333]">Status</th>
               <th className="p-3 border-b border-[#333333] min-w-[300px]">Observações & O Que Foi Feito</th>
               {/* Coluna Ações com Sticky Right para nunca ser cortada */}
@@ -1200,7 +1568,27 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
             {filteredTimeline.length === 0 ? (
               <tr>
                 <td colSpan={10} className="p-8 text-center text-[#888888]">
-                  Nenhum registro encontrado para os filtros selecionados.
+                  {selectedActivities !== null && selectedActivities.length === 0 ? (
+                    <div className="max-w-md mx-auto space-y-2.5 py-2">
+                      <p className="text-[#FFB74D] font-bold text-sm flex items-center justify-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4 text-[#FFB74D]" />
+                        <span>Nenhuma atividade selecionada no filtro</span>
+                      </p>
+                      <p className="text-xs text-[#888888]">
+                        Você desticou todas as atividades. Abra o seletor de <strong className="text-white">Atividades</strong> acima e tique as que deseja visualizar, ou clique no botão abaixo para ticar todas:
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleSelectAllActivities}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#007BFF] hover:bg-[#0056b3] text-white rounded-lg text-xs font-bold transition cursor-pointer shadow-sm"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5" />
+                        <span>Ticar Todas as Atividades</span>
+                      </button>
+                    </div>
+                  ) : (
+                    'Nenhum registro encontrado para os filtros selecionados.'
+                  )}
                 </td>
               </tr>
             ) : (
