@@ -8,6 +8,7 @@ let db: ReturnType<typeof getFirestore>;
 try {
   // Use persistent local cache for instant multi-tab and offline stability on factory tablets
   db = initializeFirestore(app, {
+    experimentalAutoDetectLongPolling: true,
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager(),
     }),

@@ -1,3 +1,26 @@
+/**
+ * CENTRAL SYNC (VERSÃO FIRESTORE)
+ * --------------------------------
+ * Antes: os dados ficavam num arquivo JSON dentro do servidor (Cloud Run), que é apagado
+ * quando o servidor reinicia, e o app ainda gravava em mais dois lugares ao mesmo tempo.
+ * Agora: o Firestore (nuvem do Google) é a ÚNICA fonte de dados. Cada tablet escuta o
+ * Firestore em tempo real e grava só o item que mudou (um documento por item).
+ *
+ * A interface pública (nomes dos métodos) é a mesma de antes, então o App.tsx continua igual.
+ */
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  getDoc,
+  getDocs,
+  getDocFromServer,
+  getDocsFromServer,
+  onSnapshot,
+  writeBatch,
+} from 'firebase/firestore';
+import { db } from './firebaseClient';
 import { ActivityItem, Collaborator, ProductionLog, ShiftConfig } from '../types';
 
 export interface CentralSyncState {
@@ -16,350 +39,485 @@ export interface CentralSyncState {
   serverTime: string;
 }
 
-type SyncListener<T> = (data: T) => void;
+type Listener<T> = (data: T) => void;
+type ListKind = 'colabs' | 'shifts' | 'acts' | 'notifs';
+
+const COLS = {
+  logs: 'logs',
+  colabs: 'mca_collaborators',
+  shifts: 'mca_shifts',
+  acts: 'mca_activities',
+  notifs: 'autoclose_notifs',
+} as const;
+
+const CONFIG_PATH: [string, string] = ['mca_config', 'factory'];
+const META_PATH: [string, string] = ['mca_meta', 'seeded_v1'];
+
+// ---------- utilitários ----------
+function clean<T>(v: T): T {
+  // Firestore não aceita "undefined"; isso remove esses campos.
+  return JSON.parse(JSON.stringify(v));
+}
+
+function stable(v: any): string {
+  // JSON com chaves em ordem fixa, para comparar objetos sem falso "mudou".
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+  return '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+}
+
+function keyOf(item: any): string {
+  const k = item && (item.id ?? item.name);
+  return k === undefined || k === null ? '' : String(k).replace(/\//g, '_');
+}
+
+function stripOrder<T = any>(item: any): T {
+  const { __order, ...rest } = item || {};
+  return rest as T;
+}
+
+function isOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+/** Aguarda a gravação quando há internet; sem internet, deixa na fila do Firestore e segue. */
+async function settle(p: Promise<any>): Promise<void> {
+  if (isOffline()) {
+    p.catch(() => {});
+    return;
+  }
+  try {
+    await p;
+  } catch (err) {
+    console.warn('Falha ao gravar no Firestore:', err);
+  }
+}
 
 class CentralSyncService {
-  private logListeners: Set<SyncListener<ProductionLog[]>> = new Set();
-  private singleLogListeners: Set<SyncListener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>> = new Set();
-  private collaboratorListeners: Set<SyncListener<Collaborator[]>> = new Set();
-  private shiftListeners: Set<SyncListener<ShiftConfig[]>> = new Set();
-  private activityListeners: Set<SyncListener<ActivityItem[]>> = new Set();
-  private configListeners: Set<SyncListener<any>> = new Set();
-  private notifListeners: Set<SyncListener<any[]>> = new Set();
-  private notifDeleteListeners: Set<SyncListener<string>> = new Set();
-  private eventSource: EventSource | null = null;
-  private reconnectTimeout: any = null;
-  private isConnecting = false;
+  private known: Record<'logs' | ListKind, Map<string, any>> = {
+    logs: new Map(),
+    colabs: new Map(),
+    shifts: new Map(),
+    acts: new Map(),
+    notifs: new Map(),
+  };
+  private config: any = null;
+  private ready: Record<string, boolean> = {};
+
+  private logListeners = new Set<Listener<ProductionLog[]>>();
+  private singleLogListeners = new Set<Listener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>>();
+  private listListeners: Record<ListKind, Set<Listener<any[]>>> = {
+    colabs: new Set(),
+    shifts: new Set(),
+    acts: new Set(),
+    notifs: new Set(),
+  };
+  private configListeners = new Set<Listener<any>>();
+  private masterListeners = new Set<Listener<CentralSyncState>>();
+  private notifClearedListeners = new Set<Listener<any[]>>();
+  private notifDeletedListeners = new Set<Listener<string>>();
+  private masterTimer: any = null;
+  private seeding: Promise<void> | null = null;
 
   constructor() {
-    this.initSSE();
+    if (typeof window !== 'undefined') this.start();
   }
 
-  private initSSE() {
-    if (typeof window === 'undefined' || !window.EventSource) return;
-    if (this.eventSource) {
-      try {
-        this.eventSource.close();
-      } catch {
-        // Ignore
-      }
-    }
+  // ---------- escuta em tempo real ----------
+  private start() {
+    this.watchLogs();
+    this.watchList('colabs');
+    this.watchList('shifts');
+    this.watchList('acts');
+    this.watchList('notifs');
+    this.watchConfig();
+  }
 
-    try {
-      this.isConnecting = true;
-      this.eventSource = new EventSource('/api/events');
-
-      this.eventSource.addEventListener('connected', () => {
-        // SSE connection established
-        this.isConnecting = false;
-      });
-
-      this.eventSource.addEventListener('log_saved', (e) => {
-        try {
-          const log: ProductionLog = JSON.parse(e.data);
-          this.singleLogListeners.forEach((fn) => fn({ action: 'save', log }));
-        } catch (err) {
-          console.error('Failed to parse SSE log_saved event', err);
-        }
-      });
-
-      this.eventSource.addEventListener('log_deleted', (e) => {
-        try {
-          const { id } = JSON.parse(e.data);
-          this.singleLogListeners.forEach((fn) => fn({ action: 'delete', id }));
-        } catch (err) {
-          console.error('Failed to parse SSE log_deleted event', err);
-        }
-      });
-
-      this.eventSource.addEventListener('collaborators_updated', (e) => {
-        try {
-          const colabs: Collaborator[] = JSON.parse(e.data);
-          this.collaboratorListeners.forEach((fn) => fn(colabs));
-        } catch (err) {
-          console.error('Failed to parse SSE collaborators_updated', err);
-        }
-      });
-
-      this.eventSource.addEventListener('shifts_updated', (e) => {
-        try {
-          const shifts: ShiftConfig[] = JSON.parse(e.data);
-          this.shiftListeners.forEach((fn) => fn(shifts));
-        } catch (err) {
-          console.error('Failed to parse SSE shifts_updated', err);
-        }
-      });
-
-      this.eventSource.addEventListener('activities_updated', (e) => {
-        try {
-          const activities: ActivityItem[] = JSON.parse(e.data);
-          this.activityListeners.forEach((fn) => fn(activities));
-        } catch (err) {
-          console.error('Failed to parse SSE activities_updated', err);
-        }
-      });
-
-      this.eventSource.addEventListener('config_updated', (e) => {
-        try {
-          const config = JSON.parse(e.data);
-          this.configListeners.forEach((fn) => fn(config));
-        } catch (err) {
-          console.error('Failed to parse SSE config_updated', err);
-        }
-      });
-
-      this.eventSource.addEventListener('logs_reset', () => {
-        this.fetchFullSync().then((state) => {
-          if (state) this.logListeners.forEach((fn) => fn(state.logs));
+  private watchLogs() {
+    onSnapshot(
+      collection(db, COLS.logs),
+      (snap) => {
+        const first = !this.ready.logs;
+        this.ready.logs = true;
+        snap.docChanges().forEach((ch) => {
+          const id = ch.doc.id;
+          if (ch.type === 'removed') {
+            this.known.logs.delete(id);
+            if (!first) this.singleLogListeners.forEach((fn) => fn({ action: 'delete', id }));
+          } else {
+            const raw = ch.doc.data() as any;
+            const log = { ...raw, id: raw.id ?? id } as ProductionLog;
+            this.known.logs.set(id, log);
+            if (!first) this.singleLogListeners.forEach((fn) => fn({ action: 'save', log }));
+          }
         });
-      });
-
-      this.eventSource.addEventListener('logs_restored', (e) => {
-        try {
-          const logs: ProductionLog[] = JSON.parse(e.data);
-          this.logListeners.forEach((fn) => fn(logs));
-        } catch (err) {
-          console.error('Failed to parse SSE logs_restored', err);
-        }
-      });
-
-      this.eventSource.addEventListener('notifs_cleared', () => {
-        try {
-          this.notifListeners.forEach((fn) => fn([]));
-        } catch (err) {
-          console.error('Failed to handle SSE notifs_cleared', err);
-        }
-      });
-
-      this.eventSource.addEventListener('notif_deleted', (e) => {
-        try {
-          const { id } = JSON.parse(e.data);
-          this.notifDeleteListeners.forEach((fn) => fn(id));
-        } catch (err) {
-          console.error('Failed to handle SSE notif_deleted', err);
-        }
-      });
-
-      this.eventSource.onerror = () => {
-        if (this.eventSource) {
-          this.eventSource.close();
-          this.eventSource = null;
-        }
-        if (!this.reconnectTimeout) {
-          this.reconnectTimeout = setTimeout(() => {
-            this.reconnectTimeout = null;
-            this.initSSE();
-          }, 4000);
-        }
-      };
-    } catch (err) {
-      console.warn('Central SSE setup notice:', err);
-    }
+        const all = Array.from(this.known.logs.values());
+        this.logListeners.forEach((fn) => fn(all));
+      },
+      (err) => console.warn('Erro ao escutar logs:', err.message)
+    );
   }
 
-  // API Call to fetch complete initial database state
+  private watchList(kind: ListKind) {
+    onSnapshot(
+      collection(db, COLS[kind]),
+      (snap) => {
+        this.ready[kind] = true;
+        const prev = this.known[kind];
+        const next = new Map<string, any>();
+        snap.docs.forEach((d) => next.set(d.id, d.data()));
+        this.known[kind] = next;
+
+        if (kind === 'notifs') {
+          prev.forEach((_v, id) => {
+            if (!next.has(id)) this.notifDeletedListeners.forEach((fn) => fn(id));
+          });
+          if (prev.size > 0 && next.size === 0) this.notifClearedListeners.forEach((fn) => fn([]));
+        }
+
+        const list = this.list(kind);
+        this.listListeners[kind].forEach((fn) => fn(list));
+        this.scheduleMaster();
+      },
+      (err) => console.warn('Erro ao escutar ' + kind + ':', err.message)
+    );
+  }
+
+  private watchConfig() {
+    onSnapshot(
+      doc(db, CONFIG_PATH[0], CONFIG_PATH[1]),
+      (snap) => {
+        this.ready.config = true;
+        if (snap.exists()) {
+          const { updatedAt, ...cfg } = snap.data() as any;
+          this.config = cfg;
+          this.configListeners.forEach((fn) => fn(cfg));
+          this.scheduleMaster();
+        }
+      },
+      (err) => console.warn('Erro ao escutar config:', err.message)
+    );
+  }
+
+  /** Lista na ordem original (campo __order), sem o campo interno. */
+  private list(kind: ListKind): any[] {
+    const items = Array.from(this.known[kind].values());
+    items.sort((a, b) => {
+      const ao = typeof a.__order === 'number' ? a.__order : 1e9;
+      const bo = typeof b.__order === 'number' ? b.__order : 1e9;
+      return ao - bo;
+    });
+    return items.map(stripOrder);
+  }
+
+  private buildState(): CentralSyncState {
+    return {
+      collaborators: this.list('colabs'),
+      shifts: this.list('shifts'),
+      activities: this.list('acts'),
+      factoryConfig: this.config || ({} as any),
+      logs: Array.from(this.known.logs.values()),
+      autocloseNotifs: this.list('notifs'),
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  /** Avisa quem escuta o "estado completo". Não dispara a cada log, só em colaboradores/turnos/atividades/config/avisos. */
+  private scheduleMaster() {
+    if (this.masterListeners.size === 0) return;
+    if (!(this.ready.colabs && this.ready.shifts && this.ready.acts)) return;
+    if (this.masterTimer) clearTimeout(this.masterTimer);
+    this.masterTimer = setTimeout(() => {
+      this.masterTimer = null;
+      const state = this.buildState();
+      this.masterListeners.forEach((fn) => fn(state));
+    }, 500);
+  }
+
+  // ---------- leitura completa (consulta direta) ----------
   async fetchFullSync(): Promise<CentralSyncState | null> {
     try {
-      const res = await fetch('/api/sync', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-      const data: CentralSyncState = await res.json();
-      return data;
+      const [logs, colabs, shifts, acts, notifs, cfg] = await Promise.all([
+        getDocs(collection(db, COLS.logs)),
+        getDocs(collection(db, COLS.colabs)),
+        getDocs(collection(db, COLS.shifts)),
+        getDocs(collection(db, COLS.acts)),
+        getDocs(collection(db, COLS.notifs)),
+        getDoc(doc(db, CONFIG_PATH[0], CONFIG_PATH[1])),
+      ]);
+      const ordered = (snap: any) =>
+        snap.docs
+          .map((d: any) => d.data())
+          .sort((a: any, b: any) => (a.__order ?? 1e9) - (b.__order ?? 1e9))
+          .map(stripOrder);
+      let factoryConfig: any = {};
+      if (cfg.exists()) {
+        const { updatedAt, ...rest } = cfg.data() as any;
+        factoryConfig = rest;
+      }
+      return {
+        collaborators: ordered(colabs),
+        shifts: ordered(shifts),
+        activities: ordered(acts),
+        factoryConfig,
+        logs: logs.docs.map((d) => ({ ...(d.data() as any), id: (d.data() as any).id ?? d.id })),
+        autocloseNotifs: notifs.docs.map((d) => d.data()),
+        serverTime: new Date().toISOString(),
+      };
     } catch (err) {
-      console.warn('Failed to fetch full sync from Cloud Run:', err);
+      console.warn('Falha ao ler dados do Firestore:', err);
       return null;
     }
   }
 
-  // Mutators
-  async saveLog(log: ProductionLog): Promise<void> {
-    try {
-      await fetch('/api/logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(log),
-      });
-    } catch (err) {
-      console.warn('Failed to save log to Cloud Run:', err);
+  // ---------- gravação ----------
+  private async commit(ops: Array<(b: ReturnType<typeof writeBatch>) => void>) {
+    for (let i = 0; i < ops.length; i += 400) {
+      const b = writeBatch(db);
+      ops.slice(i, i + 400).forEach((op) => op(b));
+      await settle(b.commit());
     }
+  }
+
+  /**
+   * Grava uma lista inteira, mas só mexe no que mudou:
+   *  - grava os itens novos/alterados;
+   *  - apaga apenas o que ESTE tablet já conhecia e agora não está mais na lista.
+   * Assim, dois tablets editando itens diferentes não se sobrescrevem.
+   */
+  private async saveList(kind: ListKind, list: any[]) {
+    const col = COLS[kind];
+    const known = this.known[kind];
+    const next = new Map<string, any>();
+    (list || []).forEach((item, i) => {
+      const k = keyOf(item);
+      if (k) next.set(k, { ...clean(item), __order: i });
+    });
+    const ops: Array<(b: ReturnType<typeof writeBatch>) => void> = [];
+    next.forEach((item, k) => {
+      const old = known.get(k);
+      if (!old || stable(old) !== stable(item)) ops.push((b) => b.set(doc(db, col, k), item));
+    });
+    known.forEach((_v, k) => {
+      if (!next.has(k)) ops.push((b) => b.delete(doc(db, col, k)));
+    });
+    if (ops.length) await this.commit(ops);
+  }
+
+  async saveLog(log: ProductionLog): Promise<void> {
+    const k = keyOf(log);
+    if (!k) return;
+    await settle(setDoc(doc(db, COLS.logs, k), { ...clean(log), updatedAt: new Date().toISOString() }));
   }
 
   async deleteLog(id: string): Promise<void> {
-    try {
-      await fetch(`/api/logs/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
-    } catch (err) {
-      console.warn('Failed to delete log from Cloud Run:', err);
-    }
+    if (!id) return;
+    await settle(deleteDoc(doc(db, COLS.logs, String(id).replace(/\//g, '_'))));
   }
 
-  async saveCollaborators(colabs: Collaborator[]): Promise<void> {
-    try {
-      await fetch('/api/collaborators', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(colabs),
-      });
-    } catch (err) {
-      console.warn('Failed to save collaborators to Cloud Run:', err);
-    }
-  }
-
-  async saveShifts(shifts: ShiftConfig[]): Promise<void> {
-    try {
-      await fetch('/api/shifts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(shifts),
-      });
-    } catch (err) {
-      console.warn('Failed to save shifts to Cloud Run:', err);
-    }
-  }
-
-  async saveActivities(activities: ActivityItem[]): Promise<void> {
-    try {
-      await fetch('/api/activities', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(activities),
-      });
-    } catch (err) {
-      console.warn('Failed to save activities to Cloud Run:', err);
-    }
-  }
+  saveCollaborators(colabs: Collaborator[]) { return this.saveList('colabs', colabs); }
+  saveShifts(shifts: ShiftConfig[]) { return this.saveList('shifts', shifts); }
+  saveActivities(acts: ActivityItem[]) { return this.saveList('acts', acts); }
 
   async saveFactoryConfig(config: any): Promise<void> {
+    if (!config) return;
+    const data = clean({ ...config, updatedAt: new Date().toISOString() });
+    // mergeFields: troca por inteiro só os campos enviados (não mistura mapas antigos com novos)
+    await settle(setDoc(doc(db, CONFIG_PATH[0], CONFIG_PATH[1]), data, { mergeFields: Object.keys(data) }));
+  }
+
+  async saveAutoCloseNotif(notif: any): Promise<void> {
+    const k = keyOf(notif);
+    if (!k) return;
+    await settle(setDoc(doc(db, COLS.notifs, k), clean(notif), { merge: true }));
+  }
+
+  async deleteAutoCloseNotif(id: string): Promise<void> {
+    if (!id) return;
+    await settle(deleteDoc(doc(db, COLS.notifs, String(id).replace(/\//g, '_'))));
+  }
+
+  async clearAutoCloseNotifs(): Promise<void> {
     try {
-      await fetch('/api/factory-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
+      const snap = await getDocs(collection(db, COLS.notifs));
+      await this.commit(snap.docs.map((d) => (b: ReturnType<typeof writeBatch>) => b.delete(d.ref)));
     } catch (err) {
-      console.warn('Failed to save factory config to Cloud Run:', err);
+      console.warn('Falha ao limpar avisos:', err);
     }
   }
 
   async resetLogs(): Promise<void> {
     try {
-      await fetch('/api/reset-logs', { method: 'POST' });
+      const snap = await getDocs(collection(db, COLS.logs));
+      await this.commit(snap.docs.map((d) => (b: ReturnType<typeof writeBatch>) => b.delete(d.ref)));
     } catch (err) {
-      console.warn('Failed to reset logs on Cloud Run:', err);
+      console.warn('Falha ao zerar logs:', err);
     }
   }
 
   async restoreLogs(logs?: ProductionLog[]): Promise<void> {
-    try {
-      await fetch('/api/restore-logs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logs }),
-      });
-    } catch (err) {
-      console.warn('Failed to restore logs on Cloud Run:', err);
-    }
+    const ops = (logs || [])
+      .filter((l) => l && keyOf(l))
+      .map((l) => (b: ReturnType<typeof writeBatch>) => b.set(doc(db, COLS.logs, keyOf(l)), clean(l)));
+    if (ops.length) await this.commit(ops);
   }
 
-  async restoreFullBackup(fullBackupPayload: any): Promise<boolean> {
+  async restoreFullBackup(payload: any): Promise<boolean> {
     try {
-      const res = await fetch('/api/restore-full-backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(fullBackupPayload),
-      });
-      return res.ok;
+      if (!payload || typeof payload !== 'object') return false;
+      if (Array.isArray(payload.collaborators) && payload.collaborators.length) await this.saveList('colabs', payload.collaborators);
+      if (Array.isArray(payload.shifts) && payload.shifts.length) await this.saveList('shifts', payload.shifts);
+      if (Array.isArray(payload.activities) && payload.activities.length) await this.saveList('acts', payload.activities);
+      if (Array.isArray(payload.logs)) await this.restoreLogs(payload.logs);
+      if (payload.factoryConfig && Object.keys(payload.factoryConfig).length) await this.saveFactoryConfig(payload.factoryConfig);
+      return true;
     } catch (err) {
-      console.warn('Failed to restore full backup on Cloud Run:', err);
+      console.warn('Falha ao restaurar backup:', err);
       return false;
     }
   }
 
-  async saveMasterSnapshot(payload: any): Promise<boolean> {
-    try {
-      const res = await fetch('/api/master-snapshot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      return res.ok;
-    } catch (err) {
-      console.warn('Failed to save master snapshot to server:', err);
-      return false;
+  // O "snapshot mestre" antigo era a principal causa de conflito entre tablets (um documento gigante
+  // reescrito por todos). Agora cada item é gravado separadamente, então isto não grava mais nada.
+  async saveMasterSnapshot(_payload: any): Promise<boolean> {
+    return true;
+  }
+
+  // ---------- migração única dos dados antigos + dados iniciais ----------
+  /**
+   * Roda uma vez só (marcada em mca_meta/seeded_v1). Copia os dados antigos
+   * (master_snapshot do Firestore e/ou servidor) para a nova estrutura. Se não houver
+   * nada antigo, grava os dados iniciais do app.
+   */
+  migrateAndSeed(initial: { colabs?: any[]; acts?: any[]; shifts?: any[]; observations?: string[] }): Promise<void> {
+    if (this.seeding) return this.seeding;
+    this.seeding = (async () => {
+      try {
+        const metaRef = doc(db, META_PATH[0], META_PATH[1]);
+        const meta = await getDocFromServer(metaRef);
+        if (meta.exists()) return;
+
+        const legacyCurrent = await getDocFromServer(doc(db, 'master_snapshot', 'current'))
+          .then((s) => (s.exists() ? (s.data() as any) : null))
+          .catch(() => null);
+        const legacyList = (name: string) =>
+          getDocFromServer(doc(db, 'master_snapshot', name))
+            .then((s) => (s.exists() && Array.isArray((s.data() as any).list) ? (s.data() as any).list : null))
+            .catch(() => null);
+        const legacyConfig = await getDocFromServer(doc(db, 'master_snapshot', 'config'))
+          .then((s) => (s.exists() ? (s.data() as any) : null))
+          .catch(() => null);
+        const server: any = await fetch('/api/sync', { cache: 'no-store' })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null);
+
+        const firstFilled = (...opts: any[]) => opts.find((o) => Array.isArray(o) && o.length > 0) || [];
+
+        const targets: Array<[ListKind, any[]]> = [
+          ['colabs', firstFilled(await legacyList('collaborators'), legacyCurrent?.collaborators, server?.collaborators, initial.colabs)],
+          ['shifts', firstFilled(await legacyList('shifts'), legacyCurrent?.shifts, server?.shifts, initial.shifts)],
+          ['acts', firstFilled(await legacyList('activities'), legacyCurrent?.activities, server?.activities, initial.acts)],
+        ];
+        for (const [kind, items] of targets) {
+          const existing = await getDocsFromServer(collection(db, COLS[kind]));
+          if (existing.empty && items.length) {
+            const ops: Array<(b: ReturnType<typeof writeBatch>) => void> = [];
+            items.forEach((item, i) => {
+              const k = keyOf(item);
+              if (k) ops.push((b) => b.set(doc(db, COLS[kind], k), { ...clean(item), __order: i }));
+            });
+            await this.commit(ops);
+          }
+        }
+
+        // logs antigos que só existiam no snapshot mestre ou no servidor
+        const existingLogs = await getDocsFromServer(collection(db, COLS.logs));
+        const have = new Set(existingLogs.docs.map((d) => d.id));
+        const oldLogs: any[] = [...(legacyCurrent?.logs || []), ...(server?.logs || [])];
+        const seen = new Set<string>();
+        const logOps: Array<(b: ReturnType<typeof writeBatch>) => void> = [];
+        oldLogs.forEach((l) => {
+          const k = keyOf(l);
+          if (k && !have.has(k) && !seen.has(k)) {
+            seen.add(k);
+            logOps.push((b) => b.set(doc(db, COLS.logs, k), clean(l)));
+          }
+        });
+        if (logOps.length) await this.commit(logOps);
+
+        // configuração
+        const cfgSnap = await getDocFromServer(doc(db, CONFIG_PATH[0], CONFIG_PATH[1]));
+        if (!cfgSnap.exists()) {
+          const oldCfg = legacyConfig || legacyCurrent?.factoryConfig || server?.factoryConfig || {};
+          const { updatedAt, ...rest } = oldCfg;
+          const cfg = { toleranceMinutes: 60, observations: initial.observations || [], ...rest };
+          await this.saveFactoryConfig(cfg);
+        }
+
+        await setDoc(metaRef, { migratedAt: new Date().toISOString() });
+      } catch (err) {
+        console.warn('Migração/dados iniciais adiada (sem internet?):', err);
+        this.seeding = null; // tenta de novo na próxima abertura
+      }
+    })();
+    return this.seeding;
+  }
+
+  // ---------- assinaturas ----------
+  private subscribeList(kind: ListKind, fn: Listener<any[]>): () => void {
+    this.listListeners[kind].add(fn);
+    if (this.ready[kind]) {
+      const current = this.list(kind);
+      queueMicrotask(() => fn(current));
     }
+    return () => this.listListeners[kind].delete(fn);
   }
 
-  async saveAutoCloseNotif(notif: any): Promise<void> {
-    try {
-      await fetch('/api/autoclose-notif', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(notif),
-      });
-    } catch (err) {
-      console.warn('Failed to save autoclose notif to Cloud Run:', err);
-    }
-  }
+  onCollaborators(fn: Listener<Collaborator[]>) { return this.subscribeList('colabs', fn); }
+  onShifts(fn: Listener<ShiftConfig[]>) { return this.subscribeList('shifts', fn); }
+  onActivities(fn: Listener<ActivityItem[]>) { return this.subscribeList('acts', fn); }
 
-  async clearAutoCloseNotifs(): Promise<void> {
-    try {
-      await fetch('/api/clear-autoclose-notifs', { method: 'POST' });
-    } catch (err) {
-      console.warn('Failed to clear autoclose notifs on Cloud Run:', err);
-    }
-  }
-
-  async deleteAutoCloseNotif(id: string): Promise<void> {
-    try {
-      await fetch(`/api/autoclose-notif/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    } catch (err) {
-      console.warn('Failed to delete autoclose notif on Cloud Run:', err);
-    }
-  }
-
-  // Subscriptions
-  onNotifsCleared(fn: SyncListener<any[]>): () => void {
-    this.notifListeners.add(fn);
-    return () => this.notifListeners.delete(fn);
-  }
-
-  onNotifDeleted(fn: SyncListener<string>): () => void {
-    this.notifDeleteListeners.add(fn);
-    return () => this.notifDeleteListeners.delete(fn);
-  }
-
-  onCollaborators(fn: SyncListener<Collaborator[]>): () => void {
-    this.collaboratorListeners.add(fn);
-    return () => this.collaboratorListeners.delete(fn);
-  }
-
-  onShifts(fn: SyncListener<ShiftConfig[]>): () => void {
-    this.shiftListeners.add(fn);
-    return () => this.shiftListeners.delete(fn);
-  }
-
-  onActivities(fn: SyncListener<ActivityItem[]>): () => void {
-    this.activityListeners.add(fn);
-    return () => this.activityListeners.delete(fn);
-  }
-
-  onConfig(fn: SyncListener<any>): () => void {
+  onConfig(fn: Listener<any>): () => void {
     this.configListeners.add(fn);
+    if (this.ready.config && this.config) {
+      const cfg = this.config;
+      queueMicrotask(() => fn(cfg));
+    }
     return () => this.configListeners.delete(fn);
   }
 
-  onLogs(fn: SyncListener<ProductionLog[]>): () => void {
+  onLogs(fn: Listener<ProductionLog[]>): () => void {
     this.logListeners.add(fn);
+    if (this.ready.logs) {
+      const all = Array.from(this.known.logs.values());
+      queueMicrotask(() => fn(all));
+    }
     return () => this.logListeners.delete(fn);
   }
 
-  onSingleLogChange(fn: SyncListener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>): () => void {
+  onSingleLogChange(fn: Listener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>): () => void {
     this.singleLogListeners.add(fn);
     return () => this.singleLogListeners.delete(fn);
   }
 
-  onSingleLog(fn: SyncListener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>): () => void {
+  onSingleLog(fn: Listener<{ action: 'save' | 'delete'; log?: ProductionLog; id?: string }>): () => void {
     return this.onSingleLogChange(fn);
+  }
+
+  onMaster(fn: Listener<CentralSyncState>): () => void {
+    this.masterListeners.add(fn);
+    this.scheduleMaster();
+    return () => this.masterListeners.delete(fn);
+  }
+
+  onNotifsCleared(fn: Listener<any[]>): () => void {
+    this.notifClearedListeners.add(fn);
+    return () => this.notifClearedListeners.delete(fn);
+  }
+
+  onNotifDeleted(fn: Listener<string>): () => void {
+    this.notifDeletedListeners.add(fn);
+    return () => this.notifDeletedListeners.delete(fn);
   }
 }
 

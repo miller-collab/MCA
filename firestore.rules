@@ -1,9 +1,20 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Production floor operations, activities, collaborators, shifts and configurations
-    match /{document=**} {
-      allow read, write: if true;
-    }
+
+    // Coleções que o app MCA usa (tablets leem e gravam)
+    match /logs/{id}              { allow read, write: if true; }
+    match /mca_collaborators/{id} { allow read, write: if true; }
+    match /mca_shifts/{id}        { allow read, write: if true; }
+    match /mca_activities/{id}    { allow read, write: if true; }
+    match /mca_config/{id}        { allow read, write: if true; }
+    match /mca_meta/{id}          { allow read, write: if true; }
+    match /autoclose_notifs/{id}  { allow read, write: if true; }
+
+    // Estrutura antiga: só leitura (usada uma única vez para migrar os dados)
+    match /master_snapshot/{id}   { allow read: if true; allow write: if false; }
+
+    // Qualquer outra coisa fica bloqueada
+    match /{document=**} { allow read, write: if false; }
   }
 }

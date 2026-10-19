@@ -311,16 +311,12 @@ export function App() {
 
       // 1. Colaboradores: mesclagem segura
       if (data.collaborators && Array.isArray(data.collaborators) && data.collaborators.length > 0) {
-        setCollaborators((prev) => {
+        // A nuvem (Firestore) é a fonte única: já inclui as gravações pendentes deste tablet,
+        // então não misturamos com a lista local (isso fazia colaboradores excluídos "voltarem").
+        setCollaborators(() => {
           const colabMap = new Map<string, Collaborator>();
           for (const c of data.collaborators!) {
             if (c && (c.id || c.name)) colabMap.set(c.id || c.name, c);
-          }
-          for (const localC of prev) {
-            const key = localC.id || localC.name;
-            if (key && !colabMap.has(key)) {
-              colabMap.set(key, localC);
-            }
           }
           const merged = Array.from(colabMap.values());
           try { localStorage.setItem('mca_colabs_v3', JSON.stringify(merged)); } catch {}
