@@ -74,7 +74,12 @@ export function subscribeToFactoryConfig(
   return centralSync.onConfig(onUpdate);
 }
 
-export const subscribeToAutoCloseNotifs = (_fn?: any) => () => {};
+export function subscribeToAutoCloseNotifs(
+  onUpdate: (notifs: AutoCloseNotification[]) => void,
+  _onError?: (err: Error) => void
+) {
+  return centralSync.onNotifs(onUpdate);
+}
 
 // ---------------- GRAVAÇÃO ----------------
 export async function saveLogToDatabase(log: ProductionLog): Promise<void> {

@@ -476,6 +476,7 @@ class CentralSyncService {
   onCollaborators(fn: Listener<Collaborator[]>) { return this.subscribeList('colabs', fn); }
   onShifts(fn: Listener<ShiftConfig[]>) { return this.subscribeList('shifts', fn); }
   onActivities(fn: Listener<ActivityItem[]>) { return this.subscribeList('acts', fn); }
+  onNotifs(fn: Listener<any[]>) { return this.subscribeList('notifs', fn); }
 
   onConfig(fn: Listener<any>): () => void {
     this.configListeners.add(fn);

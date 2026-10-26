@@ -528,8 +528,16 @@ export function App() {
     let unsubShiftsFirestore = () => {};
     let unsubActsFirestore = () => {};
     let unsubConfigFirestore = () => {};
+    let unsubNotifsFirestore = () => {};
 
     try {
+      unsubNotifsFirestore = subscribeToAutoCloseNotifs((cloudNotifs) => {
+        setAutoCloseNotifs(cloudNotifs || []);
+        try {
+          localStorage.setItem('mca_autoclose_notifs_v3', JSON.stringify(cloudNotifs || []));
+        } catch {}
+      });
+
       unsubMasterJsonFirestore = subscribeToMasterJsonSnapshot((masterSnap) => {
         applyMasterSnapshotData(masterSnap);
       });
@@ -670,6 +678,7 @@ export function App() {
         unsubShiftsFirestore();
         unsubActsFirestore();
         unsubConfigFirestore();
+        unsubNotifsFirestore();
       } catch {}
       window.removeEventListener('focus', handleFocusOrOnline);
       window.removeEventListener('online', handleFocusOrOnline);

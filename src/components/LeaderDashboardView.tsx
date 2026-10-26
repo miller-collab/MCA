@@ -27,6 +27,7 @@ import {
   obterDataHojeIsoPtBr
 } from '../utils/factoryCalculations';
 import { FactoryConfigManager } from './FactoryConfigManager';
+import { LeaderSmartQueryAssistant } from './LeaderSmartQueryAssistant';
 
 interface LeaderDashboardViewProps {
   logs: ProductionLog[];
@@ -890,98 +891,14 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
       {/* RENDERIZAÇÃO: SEÇÃO 2 - INDICADORES OPERACIONAIS */}
       {leaderSection === 'indicadores' && (
         <div className="space-y-6">
-          {/* CARTÃO EM DESTAQUE: LINK OFICIAL DE ACESSO PARA TABLETS E COMPUTADORES (FOTO 1) */}
-          <div
-            id="tablet-connection-card"
-            className="p-4 sm:p-5 rounded-2xl bg-[#0F172A] border-2 border-[#38BDF8]/50 shadow-2xl space-y-3"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#334155]/60 pb-3">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-[#38BDF8]/20 text-[#38BDF8] border border-[#38BDF8]/40">
-                  <Tablet className="w-6 h-6" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-sm sm:text-base font-black text-white tracking-wide">
-                      LINK DE ACESSO PARA OS TABLETS E COMPUTADORES DA FÁBRICA
-                    </h3>
-                    <span className="px-2 py-0.5 rounded-full bg-[#00E676]/20 border border-[#00E676]/40 text-[#00E676] text-[10px] font-bold flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#00E676] animate-pulse"></span>
-                      Sincronização Ativa em Tempo Real
-                    </span>
-                  </div>
-                  <p className="text-xs text-[#94A3B8] mt-0.5">
-                    Abra este endereço no Google Chrome de qualquer tablet nos postos e no computador dos líderes. Não necessita de login ou senha!
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    setShowDailyBackupsModal(true);
-                    fetchDailyBackups();
-                  }}
-                  className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-[#38BDF8] border border-[#38BDF8]/40 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition shadow"
-                >
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span>Pontos Diários ({dailyBackups.length})</span>
-                </button>
-                <button
-                  onClick={handleCreateInstantDailyBackup}
-                  disabled={creatingBackup}
-                  className="px-3 py-1.5 bg-[#00E676]/20 hover:bg-[#00E676]/30 text-[#00E676] border border-[#00E676]/40 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition disabled:opacity-50"
-                  title="Salvar ponto de restauração diário agora no servidor"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>{creatingBackup ? 'Salvando...' : 'Salvar Ponto Hoje'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Input com o Link Oficial Copiável */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
-              <div className="flex-1 bg-[#090D16] border border-[#334155] rounded-xl px-3.5 py-2.5 flex items-center gap-2 min-w-0">
-                <span className="text-xs text-[#64748B] font-mono select-none">LINK:</span>
-                <input
-                  type="text"
-                  readOnly
-                  value={tabletShareUrl}
-                  onClick={(e) => (e.target as HTMLInputElement).select()}
-                  className="w-full bg-transparent text-[#38BDF8] font-mono text-xs sm:text-sm font-bold tracking-wide focus:outline-none select-all truncate"
-                />
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(tabletShareUrl);
-                    setCopiedLeaderLink(true);
-                    setTimeout(() => setCopiedLeaderLink(false), 3000);
-                  }}
-                  className={`px-4 py-2.5 rounded-xl font-black text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-md ${
-                    copiedLeaderLink
-                      ? 'bg-[#00E676] text-black ring-2 ring-[#00E676]/50'
-                      : 'bg-[#0284C7] hover:bg-[#0369A1] text-white'
-                  }`}
-                >
-                  {copiedLeaderLink ? <CheckCircle2 className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                  <span>{copiedLeaderLink ? 'LINK COPIADO!' : 'COPIAR LINK'}</span>
-                </button>
-
-                <a
-                  href={tabletShareUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-3.5 py-2.5 bg-[#1E293B] hover:bg-[#334155] text-[#CBD5E1] hover:text-white border border-[#475569] rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition"
-                  title="Abrir o link do sistema em uma nova aba do navegador"
-                >
-                  <ExternalLink className="w-4 h-4 text-[#38BDF8]" />
-                  <span className="hidden sm:inline">Abrir em Nova Aba</span>
-                </a>
-              </div>
-            </div>
-          </div>
+          {/* ASSISTENTE INTELIGENTE DE DÚVIDAS DO LÍDER (FOTO 1 - ITEM 3) */}
+          <LeaderSmartQueryAssistant
+            logs={logs}
+            collaborators={collaborators}
+            activities={activities}
+            shifts={shifts}
+            onNavigateToHistory={onNavigateToHistory}
+          />
           {/* PAINEL DE AUDITORIA DE ENCERRAMENTO AUTOMÁTICO DE TURNO PARA O LÍDER */}
           {autoCloseNotifs.length > 0 && (
             <div className="bg-[#1C1400] border border-[#FF9800] rounded-xl p-4 sm:p-5 shadow-xl space-y-3">
