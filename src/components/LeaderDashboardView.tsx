@@ -897,6 +897,7 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
             collaborators={collaborators}
             activities={activities}
             shifts={shifts}
+            autoCloseNotifs={autoCloseNotifs}
             onNavigateToHistory={onNavigateToHistory}
           />
           {/* PAINEL DE AUDITORIA DE ENCERRAMENTO AUTOMÁTICO DE TURNO PARA O LÍDER */}

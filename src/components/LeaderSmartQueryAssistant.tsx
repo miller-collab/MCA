@@ -3,9 +3,9 @@ import {
   Sparkles, Search, Clock, Hash, Calendar, User, Layers, 
   TrendingUp, CheckCircle2, AlertTriangle, ArrowRight, X, 
   RotateCcw, Copy, ExternalLink, ChevronDown, ChevronUp, Zap, HelpCircle,
-  Trophy, Award, Flame, BarChart3
+  Trophy, Award, Flame, BarChart3, UtensilsCrossed, ShieldAlert, AlertOctagon
 } from 'lucide-react';
-import { ProductionLog, Collaborator, ShiftConfig, ActivityItem } from '../types';
+import { ProductionLog, Collaborator, ShiftConfig, ActivityItem, AutoCloseNotification } from '../types';
 import { 
   formatarHorasMinutos, 
   calcularDiferencaMinutos, 
@@ -22,11 +22,35 @@ function formatarDataIsoOuPtBr(dStr: string): string {
   return dStr;
 }
 
+/**
+ * Identifica se uma atividade corresponde a intervalo ou refeição estatutária
+ * (almoço, janta, lanche, refeição, intervalo), a qual não deve contar como
+ * tempo produtivo ou atraso de processo fabril no ranking de demora.
+ */
+export function isMealActivity(activityNameOrCategory?: string, code?: string): boolean {
+  if (!activityNameOrCategory) return false;
+  const lower = activityNameOrCategory.toLowerCase();
+  if (code && (code.toLowerCase() === 'p2.5' || code.toLowerCase().startsWith('p2.5'))) return true;
+  return (
+    lower.includes('refeiç') ||
+    lower.includes('refeicao') ||
+    lower.includes('almoço') ||
+    lower.includes('almoco') ||
+    lower.includes('janta') ||
+    lower.includes('jantar') ||
+    lower.includes('lanche') ||
+    lower.includes('intervalo') ||
+    lower === 'refeição' ||
+    lower === 'refeicao'
+  );
+}
+
 interface LeaderSmartQueryAssistantProps {
   logs: ProductionLog[];
   collaborators: Collaborator[];
   activities: ActivityItem[];
   shifts: ShiftConfig[];
+  autoCloseNotifs?: AutoCloseNotification[];
   onNavigateToHistory?: (filterName?: string) => void;
 }
 
@@ -39,7 +63,8 @@ type MetricFocus =
   | 'CONTAGEM' 
   | 'TEMPO_MEDIO' 
   | 'TEMPO_TOTAL' 
-  | 'MEDIA_DIARIA';
+  | 'MEDIA_DIARIA'
+  | 'ESQUECIDAS_ENCERRAR';
 
 interface EnrichedActivityOption {
   code: string; // "P1", "P2", "P2.5", etc.
@@ -55,6 +80,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   collaborators,
   activities,
   shifts,
+  autoCloseNotifs = [],
   onNavigateToHistory,
 }) => {
   // 1. Estado da consulta livre e construtor guiado
@@ -69,6 +95,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   const [specificDate, setSpecificDate] = useState(() => obterDataHojeIsoPtBr());
   const [metricFocus, setMetricFocus] = useState<MetricFocus>('TODOS');
   const [rankingSortBy, setRankingSortBy] = useState<'TEMPO' | 'DIARIO' | 'MEDIA' | 'CONTAGEM'>('TEMPO');
+  const [excludeMeals, setExcludeMeals] = useState<boolean>(true); // Refeição não conta nos tempos produtivos por padrão
   const [copiedAnswer, setCopiedAnswer] = useState(false);
   const [showLogsDetails, setShowLogsDetails] = useState(false);
   const activityDropdownRef = useRef<HTMLDivElement>(null);
@@ -174,7 +201,24 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
 
     const lower = queryText.toLowerCase();
 
-    // 1. Detectar Operador
+    // 1. Detectar se a pergunta é sobre esquecimento ou não encerramento de atividades
+    // Ex: "qual colaborador mais esqueci de encerrar atividades", "quem mais esquece de fechar atividade", "atividades em aberto"
+    const isAskingForgottenToClose =
+      /esquec/i.test(lower) || // esqueci, esquece, esquecem, esqueceram, esquecida, esquecimento
+      /n[aã]o\s+(encerrou|fechou|finalizou|encerrar)/i.test(lower) ||
+      /sem\s+(encerrar|fechar|finalizar)/i.test(lower) ||
+      /em\s+aberto/i.test(lower) ||
+      /deixou\s+abert/i.test(lower) ||
+      /auto[- ]?encerrad/i.test(lower) ||
+      /auto[- ]?fechad/i.test(lower) ||
+      /fim\s+de\s+turno/i.test(lower);
+
+    const isAskingWhichCollaborator =
+      /qual(\s+o)?\s+(colaborador|operador|funcion[aá]rio)/i.test(lower) ||
+      /quais(\s+os)?\s+(colaboradores|operadores)/i.test(lower) ||
+      /\bquem\b/i.test(lower);
+
+    // 2. Detectar Operador citado
     let foundColab = 'TODOS';
     for (const op of availableOperators) {
       const opLower = op.name.toLowerCase();
@@ -185,9 +229,15 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         break;
       }
     }
-    setSelectedColab(foundColab);
 
-    // 2. Detectar se é uma pergunta comparativa de "QUAL ATIVIDADE..."
+    // Se perguntou "qual colaborador...", deve analisar todos para poder ranquear quem mais esquece/faz
+    if (isAskingWhichCollaborator && foundColab === 'TODOS') {
+      setSelectedColab('TODOS');
+    } else {
+      setSelectedColab(foundColab);
+    }
+
+    // 3. Detectar se é uma pergunta comparativa de "QUAL ATIVIDADE..."
     const isAskingWhichActivity = 
       /qual(\s+a)?\s+atividade/i.test(lower) ||
       /quais(\s+as)?\s+atividades/i.test(lower) ||
@@ -220,11 +270,19 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       /menor\s+tempo/i.test(lower) ||
       /mais\s+curta/i.test(lower);
 
-    // 3. Detectar Atividade (Código ex: P2, P1, P3, P2.5 ou palavras-chave no nome)
+    // 4. Detecção de Refeição explícita
+    const isExplicitMealQuery = lower.includes('refeiç') || lower.includes('almoço') || lower.includes('p2.5');
+    if (isExplicitMealQuery) {
+      setExcludeMeals(false); // Usuário pediu especificamente refeição
+    } else {
+      setExcludeMeals(true); // Refeição não conta nos tempos e rankings de atividades por padrão
+    }
+
+    // 5. Detectar Atividade (Código ex: P2, P1, P3, P2.5 ou palavras-chave no nome)
     let foundAct = 'TODOS';
     
-    // Se a pergunta for "qual atividade...", NÃO fixa uma atividade específica (deixa TODOS para ranquear e comparar)
-    if (!isAskingWhichActivity) {
+    // Se a pergunta for "qual atividade..." ou pergunta sobre esquecer de encerrar, NÃO fixa uma atividade específica
+    if (!isAskingWhichActivity && !isAskingForgottenToClose) {
       // Testa primeiro código exato de prioridade (ex: P2, P1, P3, P2.5)
       const priorityMatch = lower.match(/\bp\s*([0-9]+(\.[0-9]+)?)\b/);
       if (priorityMatch) {
@@ -265,7 +323,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     }
     setSelectedActivityName(foundAct);
 
-    // 4. Detectar Período
+    // 6. Detectar Período
     if (lower.includes('hoje')) {
       setPeriodPreset('HOJE');
     } else if (lower.includes('ontem')) {
@@ -289,8 +347,10 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       }
     }
 
-    // 5. Detectar Métrica / Foco da Resposta
-    if (isAskingFastest) {
+    // 7. Detectar Métrica / Foco da Resposta
+    if (isAskingForgottenToClose) {
+      setMetricFocus('ESQUECIDAS_ENCERRAR');
+    } else if (isAskingFastest) {
       setMetricFocus('ATIVIDADES_MAIS_RAPIDAS');
       setRankingSortBy('MEDIA');
     } else if (isAskingMostCount) {
@@ -493,7 +553,11 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       activityMap.set(actName, existing);
     });
 
-    const activitiesRank = Array.from(activityMap.values()).map((act) => {
+    // Filtro de refeição: Se excludeMeals for true e a atividade não foi selecionada manualmente como refeição
+    const isTargetExplicitMeal = selectedActivityName !== 'TODOS' && isMealActivity(selectedActivityName);
+    const shouldFilterOutMeals = excludeMeals && !isTargetExplicitMeal;
+
+    const allActivitiesRank = Array.from(activityMap.values()).map((act) => {
       const avgRun = act.durations.length > 0 ? Math.round(act.totalMinutes / act.durations.length) : 0;
       const daysCount = act.distinctDaysSet.size || 1;
       const avgDay = Math.round(act.totalMinutes / daysCount);
@@ -517,6 +581,12 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         category: act.item?.category || 'Operação',
         role: act.item?.role || 'Geral',
       };
+    });
+
+    // Se excludeMeals estiver ativo, não conta refeição no ranking de demora produtiva
+    const activitiesRank = allActivitiesRank.filter((act) => {
+      if (!shouldFilterOutMeals) return true;
+      return !isMealActivity(act.name, act.code);
     });
 
     // 1. Mais Demoradas por Tempo Total Acumulado
@@ -564,6 +634,95 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       };
     }).sort((a, b) => b.count - a.count);
 
+    // -------------------------------------------------------------
+    // AUDITORIA / RANKING DE ATIVIDADES ESQUECIDAS DE ENCERRAR
+    // (Auto-encerradas no fim de turno ou em aberto)
+    // -------------------------------------------------------------
+    const unclosedMap = new Map<string, {
+      name: string;
+      role: string;
+      totalUnclosed: number;
+      autoClosedCount: number;
+      currentlyOpenCount: number;
+      activitiesList: Array<{ activity: string; date: string; time?: string; type: 'auto-fechada' | 'em-execucao' }>;
+    }>();
+
+    const getOrInitUnclosed = (colabName: string, defaultRole = 'Operador') => {
+      const norm = colabName.trim();
+      let item = unclosedMap.get(norm);
+      if (!item) {
+        const found = (collaborators || []).find((c) => c.name.toLowerCase() === norm.toLowerCase());
+        item = {
+          name: norm,
+          role: found?.role || defaultRole,
+          totalUnclosed: 0,
+          autoClosedCount: 0,
+          currentlyOpenCount: 0,
+          activitiesList: [],
+        };
+        unclosedMap.set(norm, item);
+      }
+      return item;
+    };
+
+    const accountedLogIds = new Set<string>();
+
+    matchedLogs.forEach((l) => {
+      const isAutoClosed = Boolean(l.autoClosed || l.autoClosedAtShiftEnd);
+      const isOpen = l.status === 'Em Execução';
+
+      if (isAutoClosed || isOpen) {
+        if (l.id) accountedLogIds.add(l.id);
+        const entry = getOrInitUnclosed(l.collaboratorName, l.role);
+        entry.totalUnclosed += 1;
+        if (isAutoClosed) entry.autoClosedCount += 1;
+        if (isOpen) entry.currentlyOpenCount += 1;
+        entry.activitiesList.push({
+          activity: l.activity || 'Sem Atividade',
+          date: l.date,
+          time: l.startTime,
+          type: isAutoClosed ? 'auto-fechada' : 'em-execucao',
+        });
+      }
+    });
+
+    // Também contabilizar autoCloseNotifs recebidas da fábrica
+    (autoCloseNotifs || []).forEach((notif) => {
+      if (!notif || !notif.collaboratorName) return;
+      if (notif.logId && accountedLogIds.has(notif.logId)) return;
+
+      // Filtrar pelo colaborador se selecionado
+      if (targetColabNorm && notif.collaboratorName.trim().toLowerCase() !== targetColabNorm) {
+        return;
+      }
+
+      // Validar data se dentro do período
+      let notifDateIso = notif.date || '';
+      if (notifDateIso.includes('/')) {
+        const parts = notifDateIso.split('/');
+        if (parts.length === 3) {
+          notifDateIso = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+        }
+      }
+      const notifNum = parseInt(notifDateIso.replace(/-/g, ''), 10);
+      if (!isNaN(notifNum) && (notifNum < startNum || notifNum > endNum)) {
+        return;
+      }
+
+      const entry = getOrInitUnclosed(notif.collaboratorName, notif.role || 'Operador');
+      entry.totalUnclosed += 1;
+      entry.autoClosedCount += 1;
+      entry.activitiesList.push({
+        activity: notif.activity || 'Sem Atividade',
+        date: notif.date,
+        type: 'auto-fechada',
+      });
+    });
+
+    const unclosedRanking = Array.from(unclosedMap.values())
+      .filter((u) => u.totalUnclosed > 0)
+      .sort((a, b) => b.totalUnclosed - a.totalUnclosed || b.autoClosedCount - a.autoClosedCount);
+
     return {
       matchedLogs,
       totalCount,
@@ -579,14 +738,17 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       standardDiff,
       targetActItem,
       operatorRank,
+      allActivitiesRank,
       activitiesRank,
       activitiesRankByTime,
       activitiesRankByDaily,
       activitiesRankByCount,
       activitiesRankByFastest,
       activitiesRankByAvg,
+      unclosedRanking,
+      shouldFilterOutMeals,
     };
-  }, [logs, periodDates, selectedColab, selectedActivityName, enrichedActivitiesList]);
+  }, [logs, periodDates, selectedColab, selectedActivityName, enrichedActivitiesList, excludeMeals, autoCloseNotifs, collaborators]);
 
   // 6. Geração da Frase Síntese em Linguagem Natural Clara e Cirúrgica
   const summaryAnswerText = useMemo(() => {
@@ -601,11 +763,50 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       targetActItem,
       activitiesRankByTime,
       activitiesRankByCount,
-      activitiesRankByFastest
+      activitiesRankByFastest,
+      unclosedRanking,
+      shouldFilterOutMeals,
     } = analyzedData;
 
     const opText = selectedColab === 'TODOS' ? 'A equipe da fábrica' : `O operador ${selectedColab.toUpperCase()}`;
     const periodLabel = periodDates.label.toLowerCase();
+
+    // -------------------------------------------------------------------------------------------------
+    // CASO ESPECÍFICO: "QUAL COLABORADOR MAIS ESQUECE DE ENCERRAR ATIVIDADES" / ATIVIDADES EM ABERTO
+    // -------------------------------------------------------------------------------------------------
+    if (metricFocus === 'ESQUECIDAS_ENCERRAR') {
+      if (unclosedRanking.length === 0) {
+        return `Nenhum colaborador possui atividades esquecidas de encerrar ou em aberto no período ${periodLabel}. Todos os apontamentos foram devidamente finalizados! ✅`;
+      }
+
+      if (selectedColab === 'TODOS') {
+        const top1 = unclosedRanking[0];
+        const top2 = unclosedRanking[1];
+        const top3 = unclosedRanking[2];
+
+        const top1Acts = Array.from(new Set(top1.activitiesList.map((a) => a.activity))).slice(0, 3).join(', ');
+
+        let resp = `O colaborador que mais esquece (ou possui pendências) de encerrar atividades em ${periodLabel} é ${top1.name.toUpperCase()} (${top1.role}), somando ${top1.totalUnclosed} atividade(s) não encerradas (${top1.autoClosedCount} auto-encerrada(s) no fim de turno e ${top1.currentlyOpenCount} ainda em aberto/execução).`;
+
+        if (top1Acts) {
+          resp += ` Principais atividades esquecidas: "${top1Acts}".`;
+        }
+        if (top2) {
+          resp += ` Em 2º lugar: ${top2.name.toUpperCase()} com ${top2.totalUnclosed} ocorrência(s) (${top2.autoClosedCount} no fim de turno, ${top2.currentlyOpenCount} em aberto).`;
+        }
+        if (top3) {
+          resp += ` Em 3º lugar: ${top3.name.toUpperCase()} (${top3.totalUnclosed}x).`;
+        }
+        return resp;
+      } else {
+        const targetData = unclosedRanking.find((u) => u.name.toLowerCase() === selectedColab.toLowerCase());
+        if (!targetData || targetData.totalUnclosed === 0) {
+          return `O operador ${selectedColab.toUpperCase()} NÃO possui nenhuma atividade esquecida de encerrar no período ${periodLabel}. Todos os seus apontamentos foram concluídos corretamente! ✅`;
+        }
+        const colabActs = Array.from(new Set(targetData.activitiesList.map((a) => a.activity))).slice(0, 3).join(', ');
+        return `O operador ${selectedColab.toUpperCase()} possui ${targetData.totalUnclosed} atividade(s) não encerradas em ${periodLabel}: sendo ${targetData.autoClosedCount} encerrada(s) automaticamente no encerramento de turno e ${targetData.currentlyOpenCount} ainda em execução. Atividades: "${colabActs}".`;
+      }
+    }
 
     if (totalCount === 0) {
       const actLabel = targetActItem ? `${targetActItem.code} - ${targetActItem.name}` : (selectedActivityName === 'TODOS' ? 'atividades' : selectedActivityName);
@@ -657,7 +858,9 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         ? `, com média de ${formatarHorasMinutos(top1.avgMinutesPerDay)} por dia em ${top1.distinctDaysCount} dias trabalhados`
         : `, total diário de ${formatarHorasMinutos(top1.avgMinutesPerDay)}`;
 
-      let resp = `A atividade em que ${opText.toLowerCase()} mais leva tempo (demora) diariamente é "${top1.fullName}", acumulando ${formatarHorasMinutos(top1.totalMinutes)} (${top1.totalMinutes} min) no total em ${periodLabel}${dailyPartTop1}. Foi realizada ${top1.count} vez${top1.count > 1 ? 'es' : ''} (média de ${top1.avgMinutesPerExecution} min por execução, consumindo ${top1.percentageOfTotal}% de todo o tempo registrado).`;
+      const mealClarification = shouldFilterOutMeals ? ' (desconsiderando refeição/pausas)' : '';
+
+      let resp = `A atividade em que ${opText.toLowerCase()} mais leva tempo (demora) diariamente${mealClarification} é "${top1.fullName}", acumulando ${formatarHorasMinutos(top1.totalMinutes)} (${top1.totalMinutes} min) no total em ${periodLabel}${dailyPartTop1}. Foi realizada ${top1.count} vez${top1.count > 1 ? 'es' : ''} (média de ${top1.avgMinutesPerExecution} min por execução, consumindo ${top1.percentageOfTotal}% de todo o tempo registrado).`;
 
       if (top2) {
         resp += ` Em 2º lugar mais demorada: "${top2.fullName}" (${formatarHorasMinutos(top2.totalMinutes)}, ${top2.count}x, média ${top2.avgMinutesPerExecution} min/vez).`;
@@ -807,6 +1010,14 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
             <Zap className="w-3 h-3 text-[#F59E0B]" />
             <span>Exemplos:</span>
           </span>
+          <button
+            type="button"
+            onClick={() => handleQuickQuestion('qual colaborador mais esqueci de encerrar atividades')}
+            className="px-2.5 py-1 rounded-full bg-[#EF4444]/20 hover:bg-[#EF4444]/35 text-[#FCA5A5] hover:text-white border border-[#EF4444]/50 shrink-0 cursor-pointer transition font-bold flex items-center gap-1 shadow-sm"
+          >
+            <ShieldAlert className="w-3 h-3 text-[#EF4444]" />
+            <span>Quem mais esquece de encerrar atividades?</span>
+          </button>
           <button
             type="button"
             onClick={() => handleQuickQuestion('Em qual atividade que meu colaborador wanderson mais leva tempo ou seja demora diariamente')}
@@ -1021,6 +1232,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
             className="w-full py-1.5 px-2.5 bg-[#1E293B] text-white border border-[#475569] rounded-lg text-xs font-medium focus:outline-none focus:border-[#38BDF8]"
           >
             <option value="TODOS">Visão Completa (Tudo)</option>
+            <option value="ESQUECIDAS_ENCERRAR">⚠️ Quem Mais Esquece de Encerrar (Fim de Turno & Abertas)</option>
             <option value="TOP_ATIVIDADES_TEMPO">🏆 Atividade que Mais Demora (Tempo Total/Diário)</option>
             <option value="TOP_ATIVIDADES_CONTAGEM">📊 Atividade Mais Realizada (Frequência)</option>
             <option value="ATIVIDADES_MAIS_RAPIDAS">⚡ Atividade Mais Rápida (Menor Duração)</option>
@@ -1163,8 +1375,141 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
           </div>
         </div>
 
+        {/* 4.5. RANKING DE COLABORADORES: QUEM MAIS ESQUECE / DEIXA ATIVIDADES SEM ENCERRAR */}
+        {(metricFocus === 'ESQUECIDAS_ENCERRAR' || (selectedColab === 'TODOS' && analyzedData.unclosedRanking.length > 0)) && (
+          <div className="space-y-3 pt-3 border-t border-[#334155]/60">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-[#EF4444]/20 text-[#EF4444] border border-[#EF4444]/40">
+                  <ShieldAlert className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
+                    <span>Ranking de Colaboradores: Quem Mais Esquece de Encerrar Atividades</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#EF4444]/20 text-[#FCA5A5] font-mono">
+                      {analyzedData.unclosedRanking.length} colaborador(es) com pendências
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-[#94A3B8]">
+                    Auditoria unificada: encerramentos automáticos no fim de turno e tarefas em andamento/aberto
+                  </p>
+                </div>
+              </div>
+
+              {metricFocus !== 'ESQUECIDAS_ENCERRAR' && (
+                <button
+                  type="button"
+                  onClick={() => setMetricFocus('ESQUECIDAS_ENCERRAR')}
+                  className="px-2.5 py-1 rounded-lg bg-[#EF4444]/20 hover:bg-[#EF4444]/30 text-[#FCA5A5] text-[10px] font-bold border border-[#EF4444]/40 transition cursor-pointer"
+                >
+                  Focar nesta Auditoria
+                </button>
+              )}
+            </div>
+
+            {analyzedData.unclosedRanking.length === 0 ? (
+              <div className="p-4 rounded-xl bg-[#090D16] border border-[#334155] text-center text-xs text-[#94A3B8]">
+                Nenhum colaborador com pendências de encerramento neste período. Todos os apontamentos foram devidamente finalizados! ✅
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {analyzedData.unclosedRanking.map((colab, idx) => {
+                  const isTop = idx === 0;
+                  const actsSummary = Array.from(new Set(colab.activitiesList.map((a) => a.activity))).slice(0, 4).join(', ');
+
+                  return (
+                    <div
+                      key={colab.name}
+                      onClick={() => {
+                        setSelectedColab(colab.name);
+                        setMetricFocus('ESQUECIDAS_ENCERRAR');
+                      }}
+                      className={`p-3 rounded-xl border transition cursor-pointer relative overflow-hidden group ${
+                        isTop
+                          ? 'bg-gradient-to-r from-[#EF4444]/15 via-[#0F172A] to-[#EF4444]/10 border-[#EF4444]/60 shadow-lg'
+                          : 'bg-[#090D16] hover:bg-[#1E293B]/80 border-[#334155] hover:border-[#EF4444]/50'
+                      }`}
+                      title={`Clique para auditar apontamentos de ${colab.name}`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {/* Badge de Posição */}
+                          <div
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center font-black text-xs shrink-0 ${
+                              isTop
+                                ? 'bg-[#EF4444] text-white shadow-md'
+                                : idx === 1
+                                ? 'bg-[#F97316] text-white'
+                                : idx === 2
+                                ? 'bg-[#FBBF24] text-black'
+                                : 'bg-[#1E293B] text-[#94A3B8] border border-[#334155]'
+                            }`}
+                          >
+                            {isTop ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}
+                          </div>
+
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <strong className="text-white text-xs sm:text-sm truncate">
+                                {colab.name}
+                              </strong>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#1E293B] text-[#94A3B8] border border-[#334155]">
+                                {colab.role}
+                              </span>
+                              {isTop && (
+                                <span className="text-[10px] font-bold text-[#EF4444] bg-[#EF4444]/20 border border-[#EF4444]/40 px-2 py-0.2 rounded-full uppercase tracking-wider">
+                                  Mais Esquece de Encerrar
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-[#94A3B8] mt-0.5 flex items-center gap-2 flex-wrap">
+                              {actsSummary && (
+                                <span className="truncate max-w-md">
+                                  Atividades esquecidas: <strong className="text-[#CBD5E1]">{actsSummary}</strong>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Indicadores de Contagem à Direita */}
+                        <div className="flex items-center gap-2.5 sm:gap-4 shrink-0 text-right">
+                          <div className="text-right">
+                            <div className="text-[10px] uppercase font-bold text-[#94A3B8]">Detalhes</div>
+                            <div className="text-[10.5px] text-[#94A3B8]">
+                              <span className="text-[#EF4444] font-bold">{colab.autoClosedCount}</span> auto-fechada(s)
+                              {colab.currentlyOpenCount > 0 && (
+                                <> • <span className="text-[#FBBF24] font-bold">{colab.currentlyOpenCount}</span> em aberto</>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="border-l border-[#334155]/60 pl-3">
+                            <div className="text-[10px] uppercase font-bold text-[#94A3B8]">Total Esquecidas</div>
+                            <div className="text-base sm:text-lg font-black text-[#EF4444]">
+                              {colab.totalUnclosed} <span className="text-xs font-normal text-[#94A3B8]">vezes</span>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#EF4444]/20 hover:bg-[#EF4444] text-[#FCA5A5] hover:text-white border border-[#EF4444]/40 text-xs font-bold transition cursor-pointer"
+                          >
+                            <span>Auditar</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 5. RANKING DE ATIVIDADES: ONDE O COLABORADOR MAIS DEMORA / GASTA TEMPO */}
-        {selectedActivityName === 'TODOS' && analyzedData.activitiesRank.length > 0 && (
+        {selectedActivityName === 'TODOS' && analyzedData.activitiesRank.length > 0 && metricFocus !== 'ESQUECIDAS_ENCERRAR' && (
           <div className="space-y-3 pt-3 border-t border-[#334155]/60">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -1184,52 +1529,70 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
                 </div>
               </div>
 
-              {/* Botões de Ordenação do Ranking */}
-              <div className="flex items-center gap-1 bg-[#090D16] p-1 rounded-lg border border-[#334155] text-[10px]">
+              {/* Controles do Ranking: Toggle Refeição e Ordenação */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Botão de Toggle: Ignorar Refeição no ranking de demora */}
                 <button
                   type="button"
-                  onClick={() => setRankingSortBy('TEMPO')}
-                  className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
-                    rankingSortBy === 'TEMPO'
-                      ? 'bg-[#0284C7] text-white shadow'
-                      : 'text-[#94A3B8] hover:text-white'
+                  onClick={() => setExcludeMeals((prev) => !prev)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition border cursor-pointer ${
+                    excludeMeals
+                      ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]/40 hover:bg-[#00E676]/25'
+                      : 'bg-[#1E293B] text-[#94A3B8] border-[#334155] hover:text-white'
                   }`}
+                  title="Refeição não conta no ranking de atividades industriais demoradas"
                 >
-                  Tempo Total
+                  <UtensilsCrossed className="w-3 h-3" />
+                  <span>{excludeMeals ? '✓ Ignorando Refeição (P2.5)' : 'Incluir Refeição'}</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setRankingSortBy('DIARIO')}
-                  className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
-                    rankingSortBy === 'DIARIO'
-                      ? 'bg-[#0284C7] text-white shadow'
-                      : 'text-[#94A3B8] hover:text-white'
-                  }`}
-                >
-                  Média por Dia
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRankingSortBy('MEDIA')}
-                  className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
-                    rankingSortBy === 'MEDIA'
-                      ? 'bg-[#0284C7] text-white shadow'
-                      : 'text-[#94A3B8] hover:text-white'
-                  }`}
-                >
-                  Média / Vez
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRankingSortBy('CONTAGEM')}
-                  className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
-                    rankingSortBy === 'CONTAGEM'
-                      ? 'bg-[#0284C7] text-white shadow'
-                      : 'text-[#94A3B8] hover:text-white'
-                  }`}
-                >
-                  Mais Feitas (Vezes)
-                </button>
+
+                {/* Botões de Ordenação do Ranking */}
+                <div className="flex items-center gap-1 bg-[#090D16] p-1 rounded-lg border border-[#334155] text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setRankingSortBy('TEMPO')}
+                    className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
+                      rankingSortBy === 'TEMPO'
+                        ? 'bg-[#0284C7] text-white shadow'
+                        : 'text-[#94A3B8] hover:text-white'
+                    }`}
+                  >
+                    Tempo Total
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRankingSortBy('DIARIO')}
+                    className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
+                      rankingSortBy === 'DIARIO'
+                        ? 'bg-[#0284C7] text-white shadow'
+                        : 'text-[#94A3B8] hover:text-white'
+                    }`}
+                  >
+                    Média por Dia
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRankingSortBy('MEDIA')}
+                    className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
+                      rankingSortBy === 'MEDIA'
+                        ? 'bg-[#0284C7] text-white shadow'
+                        : 'text-[#94A3B8] hover:text-white'
+                    }`}
+                  >
+                    Média / Vez
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRankingSortBy('CONTAGEM')}
+                    className={`px-2 py-1 rounded font-bold cursor-pointer transition ${
+                      rankingSortBy === 'CONTAGEM'
+                        ? 'bg-[#0284C7] text-white shadow'
+                        : 'text-[#94A3B8] hover:text-white'
+                    }`}
+                  >
+                    Mais Feitas (Vezes)
+                  </button>
+                </div>
               </div>
             </div>
 
