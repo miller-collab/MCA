@@ -3,7 +3,8 @@ import {
   Sparkles, Search, Clock, Hash, Calendar, User, Layers, 
   TrendingUp, CheckCircle2, AlertTriangle, ArrowRight, X, 
   RotateCcw, Copy, ExternalLink, ChevronDown, ChevronUp, Zap, HelpCircle,
-  Trophy, Award, Flame, BarChart3, UtensilsCrossed, ShieldAlert, AlertOctagon
+  Trophy, Award, Flame, BarChart3, UtensilsCrossed, ShieldAlert, AlertOctagon,
+  CheckSquare, Square, Check
 } from 'lucide-react';
 import { ProductionLog, Collaborator, ShiftConfig, ActivityItem, AutoCloseNotification } from '../types';
 import { 
@@ -86,7 +87,10 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   // 1. Estado da consulta livre e construtor guiado
   const [naturalQuery, setNaturalQuery] = useState('');
   const [selectedColab, setSelectedColab] = useState<string>('TODOS');
-  const [selectedActivityName, setSelectedActivityName] = useState<string>('TODOS');
+  // Multi-seleção de atividades: ['TODOS'] indica todas as atividades.
+  // Pode conter múltiplas atividades ticadas pelo líder (ex: ['SETUP DE MAQUINA', 'AFIAR FERRAMENTAS']).
+  // Se for array vazio [], significa que o líder desticou todas.
+  const [selectedActivities, setSelectedActivities] = useState<string[]>(['TODOS']);
   const [activitySearchInput, setActivitySearchInput] = useState('');
   const [isActivityDropdownOpen, setIsActivityDropdownOpen] = useState(false);
   const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('HOJE');
@@ -99,6 +103,48 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   const [copiedAnswer, setCopiedAnswer] = useState(false);
   const [showLogsDetails, setShowLogsDetails] = useState(false);
   const activityDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Nome derivado para retrocompatibilidade quando 1 única atividade está ativa ou 'TODOS'
+  const selectedActivityName = useMemo(() => {
+    if (selectedActivities.includes('TODOS')) return 'TODOS';
+    if (selectedActivities.length === 1) return selectedActivities[0];
+    if (selectedActivities.length === 0) return 'NENHUMA';
+    return 'MULTIPLAS';
+  }, [selectedActivities]);
+
+  // Setter compatível para o parser em linguagem natural e chips de 1 clique
+  const setSelectedActivityName = (actName: string) => {
+    if (!actName || actName === 'TODOS') {
+      setSelectedActivities(['TODOS']);
+    } else {
+      setSelectedActivities([actName]);
+    }
+  };
+
+  // Funções de controle de multi-seleção de atividades: Ticar, Desticar e Alternar
+  const toggleActivitySelection = (actName: string) => {
+    setSelectedActivities((prev) => {
+      // Se estava em "todas as atividades", ao ticar uma individual, foca apenas nela
+      if (prev.includes('TODOS')) {
+        return [actName];
+      }
+      const isAlreadyChecked = prev.some((a) => a.toLowerCase() === actName.toLowerCase());
+      if (isAlreadyChecked) {
+        const remaining = prev.filter((a) => a.toLowerCase() !== actName.toLowerCase());
+        return remaining;
+      } else {
+        return [...prev, actName];
+      }
+    });
+  };
+
+  const handleSelectAllActivities = () => {
+    setSelectedActivities(['TODOS']);
+  };
+
+  const handleDeselectAllActivities = () => {
+    setSelectedActivities([]);
+  };
 
   // 2. Mapeamento enriquecido de todas as atividades com suas prioridades (Ex: P2 - CORREÇÕES DE FERRAMENTAS)
   const enrichedActivitiesList = useMemo<EnrichedActivityOption[]>(() => {
@@ -429,7 +475,8 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     const endNum = parseInt(end.replace(/-/g, ''), 10);
 
     const targetColabNorm = selectedColab !== 'TODOS' ? selectedColab.trim().toLowerCase() : null;
-    const targetActNorm = selectedActivityName !== 'TODOS' ? selectedActivityName.trim().toLowerCase() : null;
+    const isAllActivities = selectedActivities.includes('TODOS');
+    const targetActsSet = !isAllActivities ? new Set(selectedActivities.map((a) => a.trim().toLowerCase())) : null;
 
     const matchedLogs = (logs || []).filter((l) => {
       if (!l || !l.date) return false;
@@ -450,9 +497,14 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         return false;
       }
 
-      // Filtro por atividade
-      if (targetActNorm && l.activity.trim().toLowerCase() !== targetActNorm) {
-        return false;
+      // Filtro por atividade(s) ticada(s)
+      if (!isAllActivities) {
+        if (!targetActsSet || targetActsSet.size === 0) {
+          return false; // Líder desticou todas as atividades
+        }
+        if (!targetActsSet.has((l.activity || '').trim().toLowerCase())) {
+          return false;
+        }
       }
 
       return true;
@@ -490,10 +542,11 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     const minMinutes = durations.length > 0 ? Math.min(...durations) : 0;
     const maxMinutes = durations.length > 0 ? Math.max(...durations) : 0;
 
-    // Tempo Padrão da Atividade Selecionada (se houver)
-    const targetActItem = enrichedActivitiesList.find(
-      (a) => a.name.toLowerCase() === (selectedActivityName || '').toLowerCase()
-    );
+    // Tempo Padrão da Atividade Selecionada (se houver apenas 1 selecionada)
+    const singleSelectedName = (selectedActivities.length === 1 && !selectedActivities.includes('TODOS')) ? selectedActivities[0] : null;
+    const targetActItem = singleSelectedName
+      ? enrichedActivitiesList.find((a) => a.name.toLowerCase() === singleSelectedName.toLowerCase())
+      : undefined;
     const standardMinutes = targetActItem?.standardMinutes;
 
     // Comparativo com padrão
@@ -554,7 +607,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     });
 
     // Filtro de refeição: Se excludeMeals for true e a atividade não foi selecionada manualmente como refeição
-    const isTargetExplicitMeal = selectedActivityName !== 'TODOS' && isMealActivity(selectedActivityName);
+    const isTargetExplicitMeal = !isAllActivities && selectedActivities.some((act) => isMealActivity(act));
     const shouldFilterOutMeals = excludeMeals && !isTargetExplicitMeal;
 
     const allActivitiesRank = Array.from(activityMap.values()).map((act) => {
@@ -748,7 +801,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       unclosedRanking,
       shouldFilterOutMeals,
     };
-  }, [logs, periodDates, selectedColab, selectedActivityName, enrichedActivitiesList, excludeMeals, autoCloseNotifs, collaborators]);
+  }, [logs, periodDates, selectedColab, selectedActivities, enrichedActivitiesList, excludeMeals, autoCloseNotifs, collaborators]);
 
   // 6. Geração da Frase Síntese em Linguagem Natural Clara e Cirúrgica
   const summaryAnswerText = useMemo(() => {
@@ -808,9 +861,46 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       }
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // CASO DE SELEÇÃO: TODAS DESTICADAS
+    // -------------------------------------------------------------------------------------------------
+    if (!selectedActivities.includes('TODOS') && selectedActivities.length === 0) {
+      return `Você desticou todas as atividades. Abra o seletor "Atividade (Foto 2)" acima e tique as atividades desejadas para puxar os dados e análises.`;
+    }
+
     if (totalCount === 0) {
+      if (selectedActivities.length > 1 && !selectedActivities.includes('TODOS')) {
+        const preview = selectedActivities.slice(0, 3).map((a) => `"${a}"`).join(', ');
+        return `${opText} NÃO possui nenhum registro nas ${selectedActivities.length} atividades selecionadas (${preview}) no período ${periodLabel}.`;
+      }
       const actLabel = targetActItem ? `${targetActItem.code} - ${targetActItem.name}` : (selectedActivityName === 'TODOS' ? 'atividades' : selectedActivityName);
       return `${opText} NÃO possui nenhum registro da atividade "${actLabel}" no período ${periodLabel}.`;
+    }
+
+    // -------------------------------------------------------------------------------------------------
+    // CASO MULTI-ATIVIDADES TICADAS (GRUPO DE 2 OU MAIS ATIVIDADES SELECIONADAS)
+    // -------------------------------------------------------------------------------------------------
+    if (selectedActivities.length > 1 && !selectedActivities.includes('TODOS')) {
+      const selectedCount = selectedActivities.length;
+      const actsPreview = selectedActivities.map((a) => `"${a}"`).slice(0, 3).join(', ') + (selectedActivities.length > 3 ? ` e mais ${selectedActivities.length - 3}` : '');
+      
+      let resp = `Para as ${selectedCount} atividades selecionadas (${actsPreview}), ${opText.toLowerCase()} realizou ${totalCount} apontamento${totalCount > 1 ? 's' : ''} em ${periodLabel}, somando ${formatarHorasMinutos(totalMinutes)} (${totalMinutes} min).`;
+      
+      if (distinctDaysCount > 1 && avgMinutesPerDay > 0) {
+        resp += ` Média combinada de ${formatarHorasMinutos(avgMinutesPerDay)} por dia em ${distinctDaysCount} dias trabalhados.`;
+      } else if (avgMinutesPerDay > 0) {
+        resp += ` Total diário combinado de ${formatarHorasMinutos(avgMinutesPerDay)}.`;
+      }
+
+      if (activitiesRankByTime.length > 0) {
+        const top1 = activitiesRankByTime[0];
+        const top2 = activitiesRankByTime[1];
+        resp += ` Entre as atividades selecionadas, a que mais consumiu tempo foi "${top1.fullName}" com ${formatarHorasMinutos(top1.totalMinutes)} (${top1.count}x, média de ${top1.avgMinutesPerExecution} min por execução, consumindo ${top1.percentageOfTotal}% do tempo desse grupo).`;
+        if (top2) {
+          resp += ` Em seguida mais demorada: "${top2.fullName}" com ${formatarHorasMinutos(top2.totalMinutes)} (${top2.count}x, média de ${top2.avgMinutesPerExecution} min/vez).`;
+        }
+      }
+      return resp;
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -903,7 +993,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     }
 
     return `${countPart}${totalTimePart}${avgPart}${standardPart}${dailyPart}`;
-  }, [analyzedData, selectedColab, selectedActivityName, periodDates, metricFocus]);
+  }, [analyzedData, selectedColab, selectedActivities, selectedActivityName, periodDates, metricFocus]);
 
   // Copiar resposta para a área de transferência
   const handleCopyAnswer = () => {
@@ -954,7 +1044,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         </div>
 
         <div className="flex items-center gap-2">
-          {(selectedColab !== 'TODOS' || selectedActivityName !== 'TODOS' || naturalQuery || periodPreset !== 'HOJE') && (
+          {(selectedColab !== 'TODOS' || !selectedActivities.includes('TODOS') || naturalQuery || periodPreset !== 'HOJE') && (
             <button
               onClick={handleResetQuery}
               className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-[#94A3B8] hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-[#334155]"
@@ -1079,23 +1169,21 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
           </select>
         </div>
 
-        {/* Filtro Atividade com Busca Preditiva de Prioridades (P1, P2, P3...) */}
+        {/* Filtro Atividade com Busca Preditiva de Prioridades (P1, P2, P3...) e Multi-Seleção (Ticar) */}
         <div className="space-y-1 relative" ref={activityDropdownRef}>
           <label className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8] flex items-center justify-between">
             <span className="flex items-center gap-1">
               <Layers className="w-3 h-3 text-[#38BDF8]" />
               <span>Atividade (Foto 2)</span>
             </span>
-            {selectedActivityName !== 'TODOS' && (
+            {!selectedActivities.includes('TODOS') && (
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedActivityName('TODOS');
-                  setActivitySearchInput('');
-                }}
-                className="text-[10px] text-[#38BDF8] hover:underline"
+                onClick={handleSelectAllActivities}
+                className="text-[10px] text-[#38BDF8] hover:underline cursor-pointer font-bold"
+                title="Voltar para todas as atividades"
               >
-                Limpar
+                Todas
               </button>
             )}
           </label>
@@ -1103,23 +1191,84 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
           <button
             type="button"
             onClick={() => setIsActivityDropdownOpen((prev) => !prev)}
-            className="w-full py-1.5 px-2.5 bg-[#1E293B] text-white border border-[#475569] hover:border-[#38BDF8] rounded-lg text-xs font-medium focus:outline-none flex items-center justify-between gap-1 text-left"
+            className="w-full py-1.5 px-2.5 bg-[#1E293B] text-white border border-[#475569] hover:border-[#38BDF8] rounded-lg text-xs font-medium focus:outline-none flex items-center justify-between gap-1 text-left cursor-pointer transition shadow-sm"
           >
-            <span className="truncate">
-              {selectedActivityName === 'TODOS'
-                ? 'Todas as Atividades'
-                : enrichedActivitiesList.find((a) => a.name.toLowerCase() === selectedActivityName.toLowerCase())?.fullName || selectedActivityName}
-            </span>
+            <div className="flex items-center gap-1.5 min-w-0">
+              {selectedActivities.includes('TODOS') ? (
+                <>
+                  <span className="truncate">Todas as Atividades</span>
+                  <span className="px-1.5 py-0.2 rounded bg-[#0284C7]/20 text-[#38BDF8] text-[9px] font-mono font-bold shrink-0">
+                    Todas
+                  </span>
+                </>
+              ) : selectedActivities.length === 0 ? (
+                <>
+                  <span className="truncate text-[#EF4444] font-bold">Nenhuma (Desticadas)</span>
+                  <span className="px-1.5 py-0.2 rounded bg-[#EF4444]/20 text-[#EF4444] text-[9px] font-mono shrink-0">
+                    0
+                  </span>
+                </>
+              ) : selectedActivities.length === 1 ? (
+                <span className="truncate font-semibold text-[#38BDF8]">
+                  {enrichedActivitiesList.find((a) => a.name.toLowerCase() === selectedActivities[0].toLowerCase())?.fullName || selectedActivities[0]}
+                </span>
+              ) : (
+                <>
+                  <span className="px-1.5 py-0.5 rounded bg-[#38BDF8]/20 text-[#38BDF8] border border-[#38BDF8]/40 text-[10px] font-bold shrink-0">
+                    {selectedActivities.length} Atividades Ticadas
+                  </span>
+                  <span className="truncate text-[#94A3B8] text-[11px]">
+                    {selectedActivities.slice(0, 2).join(', ')}{selectedActivities.length > 2 ? '...' : ''}
+                  </span>
+                </>
+              )}
+            </div>
             {isActivityDropdownOpen ? (
-              <ChevronUp className="w-3.5 h-3.5 text-[#94A3B8] shrink-0" />
+              <ChevronUp className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" />
             ) : (
               <ChevronDown className="w-3.5 h-3.5 text-[#94A3B8] shrink-0" />
             )}
           </button>
 
-          {/* Dropdown com Busca Instantânea por P1, P2, P3 ou Nome */}
+          {/* Dropdown com Busca Instantânea por P1, P2, P3 ou Nome e Opção de Ticar Múltiplas */}
           {isActivityDropdownOpen && (
-            <div className="absolute z-50 top-full mt-1 left-0 w-80 sm:w-96 max-w-[calc(100vw-32px)] bg-[#182234] border border-[#38BDF8]/50 rounded-xl shadow-2xl p-2.5 space-y-2 text-xs">
+            <div className="absolute z-50 top-full mt-1 left-0 w-84 sm:w-96 max-w-[calc(100vw-32px)] bg-[#182234] border border-[#38BDF8]/50 rounded-xl shadow-2xl p-2.5 space-y-2.5 text-xs">
+              {/* Cabeçalho do Popover com Contador e Botões Rápidos */}
+              <div className="flex items-center justify-between border-b border-[#334155] pb-2">
+                <div className="flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-[#38BDF8]" />
+                  <span className="font-bold text-white uppercase text-[11px] tracking-wide">
+                    Ticar Atividades
+                  </span>
+                </div>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#0F172A] text-[#38BDF8] border border-[#38BDF8]/30">
+                  {selectedActivities.includes('TODOS') ? enrichedActivitiesList.length : selectedActivities.length} de {enrichedActivitiesList.length} ticadas
+                </span>
+              </div>
+
+              {/* Botões Cirúrgicos Solicitados: Ticar Todas e Desticar Todas */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleSelectAllActivities}
+                  className="w-full py-1.5 px-2 bg-[#0284C7]/20 hover:bg-[#0284C7]/35 text-[#38BDF8] hover:text-white border border-[#0284C7]/40 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  title="Marcar e ticar todas as atividades"
+                >
+                  <CheckSquare className="w-3.5 h-3.5 text-[#38BDF8]" />
+                  <span>Ticar Todas</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeselectAllActivities}
+                  className="w-full py-1.5 px-2 bg-[#EF4444]/15 hover:bg-[#EF4444]/25 text-[#FCA5A5] hover:text-white border border-[#EF4444]/30 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  title="Desmarcar todas para escolher só as que você quer"
+                >
+                  <Square className="w-3.5 h-3.5 text-[#FCA5A5]" />
+                  <span>Desticar Todas</span>
+                </button>
+              </div>
+
+              {/* Campo de Busca Rápida de Atividades na Lista */}
               <div className="relative">
                 <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#94A3B8]" />
                 <input
@@ -1141,43 +1290,58 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
                 )}
               </div>
 
-              <div className="max-h-56 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+              {/* Lista Scrollável de Atividades com Checkbox para Ticar */}
+              <div className="max-h-60 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                {/* Opção Todas as Atividades */}
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedActivityName('TODOS');
-                    setIsActivityDropdownOpen(false);
-                  }}
-                  className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-between ${
-                    selectedActivityName === 'TODOS'
-                      ? 'bg-[#0284C7] text-white'
+                  onClick={handleSelectAllActivities}
+                  className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center justify-between transition cursor-pointer ${
+                    selectedActivities.includes('TODOS')
+                      ? 'bg-[#0284C7] text-white shadow-sm'
                       : 'text-[#CBD5E1] hover:bg-[#1E293B]'
                   }`}
                 >
-                  <span>Todas as Atividades</span>
+                  <div className="flex items-center gap-2">
+                    {selectedActivities.includes('TODOS') ? (
+                      <CheckSquare className="w-4 h-4 text-white shrink-0" />
+                    ) : (
+                      <Square className="w-4 h-4 text-[#64748B] shrink-0" />
+                    )}
+                    <span>Todas as Atividades</span>
+                  </div>
+                  <span className="text-[10px] opacity-80 font-mono">Total ({enrichedActivitiesList.length})</span>
                 </button>
 
                 {filteredActivityOptions.map((act) => {
-                  const isSelected = selectedActivityName.toLowerCase() === act.name.toLowerCase();
+                  const isChecked = selectedActivities.includes('TODOS') || selectedActivities.some((a) => a.toLowerCase() === act.name.toLowerCase());
+                  const isExplicitlyChecked = !selectedActivities.includes('TODOS') && isChecked;
+
                   return (
                     <button
                       key={`${act.code}-${act.name}`}
                       type="button"
-                      onClick={() => {
-                        setSelectedActivityName(act.name);
-                        setIsActivityDropdownOpen(false);
-                      }}
+                      onClick={() => toggleActivitySelection(act.name)}
                       className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center justify-between gap-2 transition cursor-pointer ${
-                        isSelected
-                          ? 'bg-[#0284C7] text-white'
-                          : 'text-[#CBD5E1] hover:bg-[#1E293B]'
+                        isExplicitlyChecked
+                          ? 'bg-[#0284C7]/30 text-white border border-[#38BDF8]/60 shadow-sm'
+                          : selectedActivities.includes('TODOS')
+                          ? 'text-[#CBD5E1] hover:bg-[#1E293B]'
+                          : 'text-[#94A3B8] hover:bg-[#1E293B] hover:text-white'
                       }`}
                     >
                       <div className="flex items-center gap-2 min-w-0">
+                        {isChecked ? (
+                          <CheckSquare className={`w-4 h-4 shrink-0 ${isExplicitlyChecked ? 'text-[#38BDF8]' : 'text-[#60A5FA]'}`} />
+                        ) : (
+                          <Square className="w-4 h-4 text-[#64748B] shrink-0" />
+                        )}
                         <span className="px-1.5 py-0.5 rounded bg-[#0F172A] text-[#38BDF8] font-mono text-[10px] font-bold border border-[#38BDF8]/30 shrink-0">
                           {act.code}
                         </span>
-                        <span className="truncate">{act.name}</span>
+                        <span className={`truncate ${isExplicitlyChecked ? 'font-bold text-white' : ''}`}>
+                          {act.name}
+                        </span>
                       </div>
                       <div className="flex items-center gap-1 shrink-0 text-[10px] text-[#94A3B8]">
                         {act.standardMinutes && (
@@ -1188,6 +1352,23 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
                     </button>
                   );
                 })}
+              </div>
+
+              {/* Rodapé do Popover com Concluir / Fechar */}
+              <div className="pt-2 border-t border-[#334155] flex items-center justify-between">
+                <span className="text-[10px] text-[#94A3B8]">
+                  {selectedActivities.includes('TODOS')
+                    ? 'Todas ativas'
+                    : `${selectedActivities.length} atividade(s) ticada(s)`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsActivityDropdownOpen(false)}
+                  className="px-3 py-1 bg-[#0284C7] hover:bg-[#0369A1] text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Aplicar / Fechar</span>
+                </button>
               </div>
             </div>
           )}
@@ -1509,7 +1690,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         )}
 
         {/* 5. RANKING DE ATIVIDADES: ONDE O COLABORADOR MAIS DEMORA / GASTA TEMPO */}
-        {selectedActivityName === 'TODOS' && analyzedData.activitiesRank.length > 0 && metricFocus !== 'ESQUECIDAS_ENCERRAR' && (
+        {(selectedActivities.includes('TODOS') || selectedActivities.length > 1) && analyzedData.activitiesRank.length > 0 && metricFocus !== 'ESQUECIDAS_ENCERRAR' && (
           <div className="space-y-3 pt-3 border-t border-[#334155]/60">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
@@ -1518,13 +1699,19 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
                 </div>
                 <div>
                   <h4 className="text-xs sm:text-sm font-black text-white flex items-center gap-1.5">
-                    <span>Ranking das Atividades: Onde {selectedColab === 'TODOS' ? 'a Equipe' : selectedColab.toUpperCase()} Mais Demora</span>
+                    <span>
+                      {selectedActivities.includes('TODOS')
+                        ? `Ranking das Atividades: Onde ${selectedColab === 'TODOS' ? 'a Equipe' : selectedColab.toUpperCase()} Mais Demora`
+                        : `Comparativo das ${selectedActivities.length} Atividades Ticadas: Onde ${selectedColab === 'TODOS' ? 'a Equipe' : selectedColab.toUpperCase()} Mais Demora`}
+                    </span>
                     <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#0284C7]/20 text-[#38BDF8] font-mono">
                       {analyzedData.activitiesRank.length} atividade(s)
                     </span>
                   </h4>
                   <p className="text-[11px] text-[#94A3B8]">
-                    Clique em qualquer atividade abaixo para filtrar e auditar os apontamentos detalhados dela
+                    {selectedActivities.includes('TODOS')
+                      ? 'Clique em qualquer atividade abaixo para filtrar e auditar os apontamentos detalhados dela'
+                      : 'Comparativo proporcional direto entre as atividades que você marcou'}
                   </p>
                 </div>
               </div>
