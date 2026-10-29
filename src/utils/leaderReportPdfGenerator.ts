@@ -38,20 +38,12 @@ export interface LeaderReportPdfOptions {
   collaboratorRoleMap: Map<string, string>;
 }
 
-function formatarDataIsoOuPtBr(dStr: string): string {
-  if (!dStr) return '';
-  if (dStr.includes('/')) return dStr;
-  const parts = dStr.split('-');
-  if (parts.length === 3) {
-    return `${parts[2]}/${parts[1]}/${parts[0]}`;
-  }
-  return dStr;
-}
-
 /**
  * Gera e salva o Relatório Analítico do Líder em PDF (Preto e Branco / Tons de Cinza)
- * Abre o seletor nativo do sistema operacional (Salvar Como...) para escolher a pasta,
- * ou dispara o download direto do arquivo .pdf.
+ * - Fundo 100% legível (sem quadros escuros nos KPIs)
+ * - Nenhuma palavra vazando para fora das bordas
+ * - Sem a tabela de apontamentos (conforme solicitado pelo líder: até o ranking de atividades)
+ * - Abre o seletor nativo do sistema operacional (Salvar Como...) para escolher a pasta.
  */
 export async function generateAndSaveLeaderReportPdf(
   options: LeaderReportPdfOptions
@@ -65,7 +57,6 @@ export async function generateAndSaveLeaderReportPdf(
     excludeMeals,
     summaryAnswerText,
     analyzedData,
-    collaboratorRoleMap,
   } = options;
 
   // Criar documento PDF A4 em formato retrato (portrait)
@@ -83,114 +74,122 @@ export async function generateAndSaveLeaderReportPdf(
   let currentY = margin;
 
   // 1. CABEÇALHO OFICIAL (Tons de cinza e preto para impressão nítida e economia de tinta)
-  doc.setFillColor(242, 244, 246);
-  doc.setDrawColor(30, 30, 30);
+  doc.setFillColor(245, 247, 250);
+  doc.setDrawColor(20, 20, 20);
   doc.setLineWidth(0.4);
   doc.rect(margin, currentY, contentWidth, 18, 'FD');
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
   doc.setTextColor(15, 23, 42);
-  doc.text('MCA | SISTEMA MES INDUSTRIAL - CONTROLE DE ATIVIDADES', margin + 3.5, currentY + 6.5);
+  doc.text('MCA | SISTEMA MES INDUSTRIAL - CONTROLE DE ATIVIDADES', margin + 4, currentY + 6.5);
 
-  doc.setFontSize(8.5);
+  doc.setFontSize(8);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(51, 65, 85);
-  doc.text('RELATÓRIO ANALÍTICO DO LÍDER DE PRODUÇÃO & AUDITORIA DE PROCESSO', margin + 3.5, currentY + 11.5);
+  doc.text('RELATÓRIO ANALÍTICO DO LÍDER DE PRODUÇÃO & AUDITORIA DE PROCESSO', margin + 4, currentY + 11.5);
 
-  doc.setFontSize(7.5);
+  doc.setFontSize(7);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(100, 116, 139);
-  doc.text('Documento Oficial de Chão de Fábrica • Médias, Ocorrências e Registros de Produtividade', margin + 3.5, currentY + 15.5);
+  doc.text('Documento Oficial de Chão de Fábrica • Médias, Ocorrências e Registros de Produtividade', margin + 4, currentY + 15.5);
 
   // Emissão Oficial à direita
   const dataHoraEmissao = `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(15, 23, 42);
-  doc.text('EMISSÃO OFICIAL', pageWidth - margin - 3.5, currentY + 6.5, { align: 'right' });
+  doc.text('EMISSÃO OFICIAL', pageWidth - margin - 4, currentY + 6.5, { align: 'right' });
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
+  doc.setFontSize(7);
   doc.setTextColor(51, 65, 85);
-  doc.text(dataHoraEmissao, pageWidth - margin - 3.5, currentY + 11.5, { align: 'right' });
-  doc.text('Sistema MES MCA', pageWidth - margin - 3.5, currentY + 15.5, { align: 'right' });
+  doc.text(dataHoraEmissao, pageWidth - margin - 4, currentY + 11.5, { align: 'right' });
+  doc.text('Sistema MES MCA', pageWidth - margin - 4, currentY + 15.5, { align: 'right' });
 
   currentY += 21;
 
-  // 2. QUADRO DE CONFIRMAÇÕES IMPORTANTES DOS FILTROS APLICADOS
-  doc.setFillColor(250, 250, 250);
-  doc.setDrawColor(60, 60, 60);
-  doc.setLineWidth(0.3);
-  doc.rect(margin, currentY, contentWidth, 19, 'FD');
+  // 2. QUADRO DE CONFIRMAÇÕES DOS FILTROS (Organizado em 3 linhas sem corte de palavras)
+  const filterBoxHeight = 23;
+  doc.setFillColor(252, 252, 252);
+  doc.setDrawColor(50, 50, 50);
+  doc.setLineWidth(0.35);
+  doc.rect(margin, currentY, contentWidth, filterBoxHeight, 'FD');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
+  doc.setFontSize(7.8);
   doc.setTextColor(0, 0, 0);
-  doc.text('CONFIRMAÇÕES IMPORTANTES DOS FILTROS APLICADOS', margin + 3.5, currentY + 5);
+  doc.text('CONFIRMAÇÕES IMPORTANTES DOS FILTROS APLICADOS', margin + 4, currentY + 5);
 
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(80, 80, 80);
-  doc.text(`${analyzedData.totalCount} Registros Filtrados`, pageWidth - margin - 3.5, currentY + 5, { align: 'right' });
+  doc.setTextColor(70, 70, 70);
+  doc.text(`${analyzedData.totalCount} Registros Filtrados`, pageWidth - margin - 4, currentY + 5, { align: 'right' });
 
-  doc.setDrawColor(200, 200, 200);
+  doc.setDrawColor(210, 210, 210);
   doc.setLineWidth(0.2);
-  doc.line(margin + 3.5, currentY + 6.5, pageWidth - margin - 3.5, currentY + 6.5);
+  doc.line(margin + 4, currentY + 6.5, pageWidth - margin - 4, currentY + 6.5);
 
-  // Linhas de dados de filtros
-  doc.setFontSize(7.5);
+  // Linhas organizadas em 2 colunas amplas:
+  const col1X = margin + 4;
+  const col2X = margin + 96;
 
-  // Linha 1
+  doc.setFontSize(7.2);
+
+  // Linha 1: Cargo / Função e Operador
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(60, 60, 60);
-  doc.text('Cargo / Função:', margin + 3.5, currentY + 10.5);
+  doc.setTextColor(70, 70, 70);
+  doc.text('Cargo / Função: ', col1X, currentY + 10.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(0, 0, 0);
-  const roleText = selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole;
-  doc.text(roleText.toUpperCase(), margin + 27, currentY + 10.5);
+  const roleText = (selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole).toUpperCase();
+  doc.text(roleText.length > 36 ? `${roleText.slice(0, 34)}...` : roleText, col1X + 23, currentY + 10.5);
 
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(60, 60, 60);
-  doc.text('Operador:', margin + 85, currentY + 10.5);
+  doc.setTextColor(70, 70, 70);
+  doc.text('Operador: ', col2X, currentY + 10.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(0, 0, 0);
-  const colabText = selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab;
-  doc.text(colabText.toUpperCase(), margin + 100, currentY + 10.5);
+  const colabText = (selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab).toUpperCase();
+  doc.text(colabText.length > 36 ? `${colabText.slice(0, 34)}...` : colabText, col2X + 16, currentY + 10.5);
 
+  // Linha 2: Período e Critério de Refeição
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(60, 60, 60);
-  doc.text('Período:', margin + 145, currentY + 10.5);
+  doc.setTextColor(70, 70, 70);
+  doc.text('Período: ', col1X, currentY + 15);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(0, 0, 0);
-  doc.text(periodLabel, margin + 158, currentY + 10.5);
+  doc.text(periodLabel.length > 42 ? `${periodLabel.slice(0, 40)}...` : periodLabel, col1X + 14, currentY + 15);
 
-  // Linha 2
   doc.setFont('helvetica', 'bold');
-  doc.setTextColor(60, 60, 60);
-  doc.text('Atividades:', margin + 3.5, currentY + 15.5);
+  doc.setTextColor(70, 70, 70);
+  doc.text('Refeição / Pausas: ', col2X, currentY + 15);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(0, 0, 0);
+  doc.text(excludeMeals ? 'Desconsiderada (Tempo Líquido)' : 'Incluída no Tempo', col2X + 28, currentY + 15);
+
+  // Linha 3: Atividades selecionadas (largura total segura)
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(70, 70, 70);
+  doc.text('Atividades: ', col1X, currentY + 19.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(0, 0, 0);
   const actText = selectedActivities.includes('TODOS')
-    ? `Todas as Atividades (${totalActivitiesCount} cadastradas)`
+    ? `Todas as Atividades (${totalActivitiesCount} cadastradas no sistema)`
     : selectedActivities.length === 0
-    ? 'Nenhuma atividade ticada'
+    ? 'Nenhuma atividade selecionada'
     : selectedActivities.join(', ');
-  const safeActText = actText.length > 70 ? `${actText.slice(0, 67)}...` : actText;
-  doc.text(safeActText, margin + 20, currentY + 15.5);
+  const safeActText = actText.length > 95 ? `${actText.slice(0, 92)}...` : actText;
+  doc.text(safeActText, col1X + 17, currentY + 19.5);
 
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(60, 60, 60);
-  doc.text('Refeição / Pausas:', margin + 125, currentY + 15.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(0, 0, 0);
-  doc.text(excludeMeals ? 'Desconsiderada (Tempo Líquido)' : 'Incluída no Tempo', margin + 153, currentY + 15.5);
-
-  currentY += 22;
+  currentY += filterBoxHeight + 3.5;
 
   // 3. PARECER / DIAGNÓSTICO DO ASSISTENTE INTELIGENTE
-  const splitSummary = doc.splitTextToSize(summaryAnswerText, contentWidth - 7);
-  const summaryBoxHeight = Math.max(14, 8 + splitSummary.length * 4.2);
+  // Configura a fonte ANTES de calcular o splitTextToSize com margem interna de segurança de 14mm
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.8);
+  const splitSummary = doc.splitTextToSize(summaryAnswerText, contentWidth - 14);
+  const summaryBoxHeight = Math.max(14, 7.5 + splitSummary.length * 3.8);
 
-  doc.setFillColor(245, 247, 250);
+  doc.setFillColor(248, 250, 252);
   doc.setDrawColor(30, 30, 30);
   doc.setLineWidth(0.4);
   doc.rect(margin, currentY, contentWidth, summaryBoxHeight, 'FD');
@@ -198,88 +197,93 @@ export async function generateAndSaveLeaderReportPdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(0, 0, 0);
-  doc.text('PARECER DO ASSISTENTE INTELIGENTE:', margin + 3.5, currentY + 5);
+  doc.text('PARECER DO ASSISTENTE INTELIGENTE:', margin + 4, currentY + 4.8);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(20, 20, 20);
-  doc.text(splitSummary, margin + 3.5, currentY + 9.5);
+  doc.setFontSize(7.8);
+  doc.setTextColor(15, 23, 42);
+  doc.text(splitSummary, margin + 4, currentY + 9);
 
   currentY += summaryBoxHeight + 3.5;
 
-  // 4. RESUMO DOS INDICADORES E MÉDIAS (4 KPIS EM P&B)
+  // 4. RESUMO DOS INDICADORES E MÉDIAS (4 KPIS COM FUNDO 100% BRANCO E NÍTIDO)
   const cardGap = 2.5;
   const cardWidth = (contentWidth - cardGap * 3) / 4;
   const cardHeight = 16;
 
-  // KPI 1: Ocorrências
-  doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(40, 40, 40);
-  doc.setLineWidth(0.3);
-  doc.rect(margin, currentY, cardWidth, cardHeight, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
-  doc.setTextColor(80, 80, 80);
-  doc.text('OCORRÊNCIAS', margin + cardWidth / 2, currentY + 4, { align: 'center' });
-  doc.setFontSize(11);
-  doc.setTextColor(0, 0, 0);
-  doc.text(`${analyzedData.totalCount} vezes`, margin + cardWidth / 2, currentY + 9.5, { align: 'center' });
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(100, 100, 100);
-  doc.text(`${analyzedData.completedCount} concl. • ${analyzedData.inProgressCount} ativ.`, margin + cardWidth / 2, currentY + 13.5, { align: 'center' });
+  // Helper para desenhar cada card com fundo BRANCO explícito e borda escura nítida
+  const drawKpiCard = (
+    xPos: number,
+    title: string,
+    mainVal: string,
+    subVal: string
+  ) => {
+    // Fundo BRANCO garantido
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(40, 40, 40);
+    doc.setLineWidth(0.35);
+    doc.rect(xPos, currentY, cardWidth, cardHeight, 'FD');
 
-  // KPI 2: Tempo Médio
+    // Título do KPI (cinza escuro discreto)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.8);
+    doc.setTextColor(80, 80, 80);
+    doc.text(title, xPos + cardWidth / 2, currentY + 4, { align: 'center' });
+
+    // Valor principal (Preto puro, forte e legível)
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(0, 0, 0);
+    doc.text(mainVal, xPos + cardWidth / 2, currentY + 9.5, { align: 'center' });
+
+    // Sub-informação (cinza médio legível)
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(90, 90, 90);
+    doc.text(subVal, xPos + cardWidth / 2, currentY + 13.5, { align: 'center' });
+  };
+
+  // Card 1: Ocorrências
+  drawKpiCard(
+    margin,
+    'OCORRÊNCIAS',
+    `${analyzedData.totalCount} vezes`,
+    `${analyzedData.completedCount} concl. • ${analyzedData.inProgressCount} ativ.`
+  );
+
+  // Card 2: Tempo Médio
   const kpi2X = margin + cardWidth + cardGap;
-  doc.rect(kpi2X, currentY, cardWidth, cardHeight, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
-  doc.setTextColor(80, 80, 80);
-  doc.text('TEMPO MÉDIO', kpi2X + cardWidth / 2, currentY + 4, { align: 'center' });
-  doc.setFontSize(11);
-  doc.setTextColor(0, 0, 0);
-  doc.text(`${analyzedData.avgMinutesPerExecution} min / vez`, kpi2X + cardWidth / 2, currentY + 9.5, { align: 'center' });
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(100, 100, 100);
   const stdInfo = analyzedData.standardMinutes
     ? `Padrão: ${analyzedData.standardMinutes}m`
     : `Mín ${analyzedData.minMinutes}m • Máx ${analyzedData.maxMinutes}m`;
-  doc.text(stdInfo, kpi2X + cardWidth / 2, currentY + 13.5, { align: 'center' });
+  drawKpiCard(
+    kpi2X,
+    'TEMPO MÉDIO',
+    `${analyzedData.avgMinutesPerExecution} min / vez`,
+    stdInfo
+  );
 
-  // KPI 3: Média Diária
+  // Card 3: Média Diária
   const kpi3X = margin + (cardWidth + cardGap) * 2;
-  doc.rect(kpi3X, currentY, cardWidth, cardHeight, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
-  doc.setTextColor(80, 80, 80);
-  doc.text('MÉDIA DIÁRIA', kpi3X + cardWidth / 2, currentY + 4, { align: 'center' });
-  doc.setFontSize(11);
-  doc.setTextColor(0, 0, 0);
-  doc.text(formatarHorasMinutos(analyzedData.avgMinutesPerDay), kpi3X + cardWidth / 2, currentY + 9.5, { align: 'center' });
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(100, 100, 100);
-  doc.text(`${analyzedData.distinctDaysCount} dia(s) com dados`, kpi3X + cardWidth / 2, currentY + 13.5, { align: 'center' });
+  drawKpiCard(
+    kpi3X,
+    'MÉDIA DIÁRIA',
+    formatarHorasMinutos(analyzedData.avgMinutesPerDay),
+    `${analyzedData.distinctDaysCount} dia(s) com dados`
+  );
 
-  // KPI 4: Tempo Total
+  // Card 4: Tempo Total
   const kpi4X = margin + (cardWidth + cardGap) * 3;
-  doc.rect(kpi4X, currentY, cardWidth, cardHeight, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
-  doc.setTextColor(80, 80, 80);
-  doc.text('TEMPO TOTAL', kpi4X + cardWidth / 2, currentY + 4, { align: 'center' });
-  doc.setFontSize(11);
-  doc.setTextColor(0, 0, 0);
-  doc.text(formatarHorasMinutos(analyzedData.totalMinutes), kpi4X + cardWidth / 2, currentY + 9.5, { align: 'center' });
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(100, 100, 100);
-  doc.text(`${analyzedData.totalMinutes} minutos`, kpi4X + cardWidth / 2, currentY + 13.5, { align: 'center' });
+  drawKpiCard(
+    kpi4X,
+    'TEMPO TOTAL',
+    formatarHorasMinutos(analyzedData.totalMinutes),
+    `${analyzedData.totalMinutes} minutos no total`
+  );
 
-  currentY += cardHeight + 4;
+  currentY += cardHeight + 4.5;
 
-  // 5. TABELA DE RANKING DAS ATIVIDADES (se houver)
+  // 5. TABELA DE RANKING DAS ATIVIDADES (DETALHAMENTO OFICIAL DO LÍDER)
   if (analyzedData.activitiesRank.length > 0) {
     const rankingTableData = analyzedData.activitiesRank.map((act) => [
       act.code,
@@ -294,113 +298,51 @@ export async function generateAndSaveLeaderReportPdf(
 
     autoTable(doc, {
       startY: currentY,
-      margin: { left: margin, right: margin, bottom: 20 },
+      margin: { left: margin, right: margin, bottom: 22 },
       head: [
         ['Cód.', 'Atividade', 'Categoria', 'Qtd', 'Total', 'Média', 'Média/Dia', '% Total'],
       ],
       body: rankingTableData,
       theme: 'grid',
       styles: {
-        fontSize: 7.5,
+        fontSize: 7.2,
         cellPadding: 1.5,
         textColor: [20, 20, 20],
-        lineColor: [180, 180, 180],
+        lineColor: [160, 160, 160],
         lineWidth: 0.15,
       },
       headStyles: {
-        fillColor: [225, 228, 232],
+        fillColor: [232, 235, 240],
         textColor: [0, 0, 0],
         fontStyle: 'bold',
         halign: 'left',
       },
       columnStyles: {
         0: { cellWidth: 14, fontStyle: 'bold', halign: 'center' },
-        1: { cellWidth: 62, fontStyle: 'bold' },
+        1: { cellWidth: 60, fontStyle: 'bold' },
         2: { cellWidth: 32 },
         3: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
         4: { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
         5: { cellWidth: 15, halign: 'right' },
         6: { cellWidth: 18, halign: 'right' },
-        7: { cellWidth: 11, halign: 'center', fontStyle: 'bold' },
+        7: { cellWidth: 13, halign: 'center', fontStyle: 'bold' },
       },
       alternateRowStyles: {
         fillColor: [248, 249, 250],
       },
     });
 
-    currentY = (doc as any).lastAutoTable.finalY + 4;
+    currentY = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 7 : currentY + 10;
   }
 
-  // 6. TABELA DE APONTAMENTOS DE PRODUÇÃO
-  if (analyzedData.matchedLogs.length > 0) {
-    // Se o espaço restante for muito pequeno para o cabeçalho da tabela, quebra página
-    if (currentY > pageHeight - 35) {
-      doc.addPage();
-      currentY = margin;
-    }
+  // OBSERVAÇÃO CIRÚRGICA:
+  // Conforme solicitação explícita do usuário:
+  // "PODE SER ATÉ O RANKING DE ATIVIDADES PARA IMPRIMIR, A TABELA DE APONTAMENTO NÃO PRECISA"
+  // Portanto, a tabela de apontamentos individuais foi removida para manter o documento 100% conciso,
+  // limpo e cabendo em uma única folha formal com assinatura do líder!
 
-    const logsTableData = analyzedData.matchedLogs.map((log) => {
-      const dataFmt = formatarDataIsoOuPtBr(log.date);
-      const horarioFmt = `${log.startTime || ''} - ${log.endTime || 'Ativo'}`;
-      const operadorFmt = log.collaboratorName || '-';
-      const cargoFmt = log.role || collaboratorRoleMap.get(log.collaboratorName?.toLowerCase()) || 'Operador';
-      const atividadeFmt = log.activity || '-';
-      const durFmt = log.durationMinutes ? `${log.durationMinutes} min` : (log.status === 'Em Execução' ? 'Ativo' : '-');
-      const obsFmt = log.initialDescription || log.observation || log.notes || '-';
-
-      return [
-        dataFmt,
-        horarioFmt,
-        operadorFmt,
-        cargoFmt,
-        atividadeFmt,
-        durFmt,
-        log.status || 'Concluída',
-        obsFmt,
-      ];
-    });
-
-    autoTable(doc, {
-      startY: currentY,
-      margin: { left: margin, right: margin, bottom: 24 },
-      head: [
-        ['Data', 'Horário', 'Operador', 'Cargo', 'Atividade', 'Duração', 'Status', 'Observação / Q.I.'],
-      ],
-      body: logsTableData,
-      theme: 'grid',
-      styles: {
-        fontSize: 6.8,
-        cellPadding: 1.3,
-        textColor: [20, 20, 20],
-        lineColor: [180, 180, 180],
-        lineWidth: 0.15,
-      },
-      headStyles: {
-        fillColor: [225, 228, 232],
-        textColor: [0, 0, 0],
-        fontStyle: 'bold',
-        halign: 'left',
-      },
-      columnStyles: {
-        0: { cellWidth: 16 },
-        1: { cellWidth: 20 },
-        2: { cellWidth: 26, fontStyle: 'bold' },
-        3: { cellWidth: 24 },
-        4: { cellWidth: 38 },
-        5: { cellWidth: 15, halign: 'right', fontStyle: 'bold' },
-        6: { cellWidth: 18, halign: 'center' },
-        7: { cellWidth: 29 },
-      },
-      alternateRowStyles: {
-        fillColor: [248, 249, 250],
-      },
-    });
-
-    currentY = (doc as any).lastAutoTable.finalY + 6;
-  }
-
-  // 7. ASSINATURA / VISTO DO LÍDER NO RODAPÉ
-  if (currentY > pageHeight - 24) {
+  // 6. ASSINATURA / VISTO DO LÍDER NO FINAL DO RELATÓRIO
+  if (currentY > pageHeight - 26) {
     doc.addPage();
     currentY = margin + 10;
   }
@@ -419,20 +361,20 @@ export async function generateAndSaveLeaderReportPdf(
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.8);
   doc.setTextColor(100, 100, 100);
-  doc.text('Auditoria de apontamentos de produção e indicadores de processo.', margin, currentY + 8);
+  doc.text('Auditoria de apontamentos de produção e eficiência de processos.', margin, currentY + 8);
 
   doc.setDrawColor(40, 40, 40);
-  doc.line(signX, currentY + 7, signX + signWidth, currentY + 7);
+  doc.line(signX, currentY + 6.5, signX + signWidth, currentY + 6.5);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
   doc.setTextColor(0, 0, 0);
-  doc.text('Visto do Líder de Produção', signX + signWidth / 2, currentY + 11, { align: 'center' });
+  doc.text('Visto do Líder de Produção', signX + signWidth / 2, currentY + 10.5, { align: 'center' });
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6.5);
   doc.setTextColor(100, 100, 100);
-  doc.text('Assinatura / Data: ____ / ____ / ________', signX + signWidth / 2, currentY + 15, { align: 'center' });
+  doc.text('Assinatura / Data: ____ / ____ / ________', signX + signWidth / 2, currentY + 14.5, { align: 'center' });
 
-  // 8. NUMERAÇÃO DE PÁGINAS "Página X de Y" EM TODAS AS PÁGINAS
+  // 7. NUMERAÇÃO DE PÁGINAS "Página X de Y"
   const totalPages = (doc as any).internal.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
     doc.setPage(i);
@@ -440,21 +382,21 @@ export async function generateAndSaveLeaderReportPdf(
     doc.setFontSize(6.5);
     doc.setTextColor(120, 120, 120);
     doc.text(
-      `Página ${i} de ${totalPages} • Relatório Analítico MCA Sistema MES`,
+      `Página ${i} de ${totalPages} • Relatório Analítico MCA Sistema MES Industrial`,
       pageWidth / 2,
-      pageHeight - 5,
+      pageHeight - 4.5,
       { align: 'center' }
     );
   }
 
-  // 9. NOME DO ARQUIVO SEGURO
+  // 8. NOME DO ARQUIVO SEGURO
   const safeOp = (selectedColab === 'TODOS' ? 'Geral' : selectedColab).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 25);
   const safeDate = new Date().toISOString().slice(0, 10);
   const fileName = `Relatorio_Analitico_Lider_MCA_${safeOp}_${safeDate}.pdf`;
 
   const pdfBlob = doc.output('blob');
 
-  // 10. TENTATIVA 1: showSaveFilePicker (Abre a janela nativa do Windows/Mac para o usuário ESCOLHER onde salvar!)
+  // 9. TENTATIVA 1: showSaveFilePicker (Abre a janela nativa do Windows/Mac para o usuário ESCOLHER onde salvar!)
   if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
     try {
       const handle = await (window as any).showSaveFilePicker({
@@ -481,12 +423,12 @@ export async function generateAndSaveLeaderReportPdf(
     }
   }
 
-  // 11. TENTATIVA 2: doc.save() direto do jsPDF
+  // 10. TENTATIVA 2: doc.save() direto do jsPDF
   try {
     doc.save(fileName);
     return { success: true, method: 'download', fileName };
   } catch (saveErr) {
-    // 12. TENTATIVA 3: Link de ancoragem com blob
+    // 11. TENTATIVA 3: Link de ancoragem com blob
     const url = URL.createObjectURL(pdfBlob);
     const link = document.createElement('a');
     link.href = url;

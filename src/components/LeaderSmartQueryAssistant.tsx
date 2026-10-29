@@ -2211,37 +2211,41 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
             <span>Confirmações Importantes dos Filtros Aplicados</span>
             <span className="font-mono">{analyzedData.totalCount} Registros Filtrados</span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            <div>
-              <span className="font-bold text-neutral-700">Cargo / Função: </span>
-              <strong className="text-black uppercase">
-                {selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole}
-              </strong>
+          <div className="space-y-1.5">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="font-bold text-neutral-700">Cargo / Função: </span>
+                <strong className="text-black uppercase">
+                  {selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole}
+                </strong>
+              </div>
+              <div>
+                <span className="font-bold text-neutral-700">Operador: </span>
+                <strong className="text-black uppercase">
+                  {selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab}
+                </strong>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <span className="font-bold text-neutral-700">Período: </span>
+                <strong className="text-black">{periodDates.label}</strong>
+              </div>
+              <div>
+                <span className="font-bold text-neutral-700">Refeição / Pausas: </span>
+                <span className="text-black">
+                  {excludeMeals ? 'Desconsiderada (Tempo Líquido)' : 'Incluída no Tempo'}
+                </span>
+              </div>
             </div>
             <div>
-              <span className="font-bold text-neutral-700">Operador: </span>
-              <strong className="text-black uppercase">
-                {selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab}
-              </strong>
-            </div>
-            <div>
-              <span className="font-bold text-neutral-700">Período: </span>
-              <strong className="text-black">{periodDates.label}</strong>
-            </div>
-            <div className="sm:col-span-2">
               <span className="font-bold text-neutral-700">Atividades: </span>
               <span className="text-black font-semibold">
                 {selectedActivities.includes('TODOS')
-                  ? `Todas as Atividades (${enrichedActivitiesList.length} cadastradas)`
+                  ? `Todas as Atividades (${enrichedActivitiesList.length} cadastradas no sistema)`
                   : selectedActivities.length === 0
                   ? 'Nenhuma atividade selecionada'
                   : selectedActivities.join(', ')}
-              </span>
-            </div>
-            <div>
-              <span className="font-bold text-neutral-700">Critério Refeição: </span>
-              <span className="text-black">
-                {excludeMeals ? 'Desconsiderada (Tempo Líquido)' : 'Incluída no Tempo'}
               </span>
             </div>
           </div>
@@ -2351,64 +2355,6 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
           </div>
         )}
 
-        {/* TABELA 2: LISTA COMPLETA DOS APONTAMENTOS / REGISTROS */}
-        {analyzedData.matchedLogs.length > 0 && (
-          <div className="mb-6">
-            <div className="font-bold uppercase tracking-wider text-black text-xs mb-1.5 flex items-center justify-between">
-              <span>Registros Detalhados dos Apontamentos de Produção</span>
-              <span className="text-[10px] text-neutral-600 font-normal">
-                Exibindo todos os {analyzedData.matchedLogs.length} apontamentos
-              </span>
-            </div>
-            <table className="w-full text-[11px] border border-black border-collapse">
-              <thead>
-                <tr className="bg-neutral-200 border-b border-black text-black font-bold text-left">
-                  <th className="p-1.5 border-r border-black w-20">Data</th>
-                  <th className="p-1.5 border-r border-black w-24">Horário</th>
-                  <th className="p-1.5 border-r border-black">Operador</th>
-                  <th className="p-1.5 border-r border-black">Cargo / Função</th>
-                  <th className="p-1.5 border-r border-black">Atividade</th>
-                  <th className="p-1.5 border-r border-black text-right w-16">Duração</th>
-                  <th className="p-1.5 border-r border-black text-center w-20">Status</th>
-                  <th className="p-1.5">Observação / O que vai executar</th>
-                </tr>
-              </thead>
-              <tbody>
-                {analyzedData.matchedLogs.map((log, idx) => (
-                  <tr
-                    key={log.id}
-                    className={`border-b border-neutral-300 ${idx % 2 === 1 ? 'bg-neutral-100' : 'bg-white'}`}
-                  >
-                    <td className="p-1.5 border-r border-neutral-300 font-mono">
-                      {formatarDataIsoOuPtBr(log.date)}
-                    </td>
-                    <td className="p-1.5 border-r border-neutral-300 font-mono text-[10px]">
-                      {log.startTime} - {log.endTime || 'Em andamento'}
-                    </td>
-                    <td className="p-1.5 border-r border-neutral-300 font-bold">
-                      {log.collaboratorName}
-                    </td>
-                    <td className="p-1.5 border-r border-neutral-300 text-neutral-700">
-                      {log.role || collaboratorRoleMap.get(log.collaboratorName?.toLowerCase()) || 'Operador'}
-                    </td>
-                    <td className="p-1.5 border-r border-neutral-300 font-medium">
-                      {log.activity}
-                    </td>
-                    <td className="p-1.5 border-r border-neutral-300 text-right font-mono font-bold">
-                      {log.durationMinutes ? `${log.durationMinutes} min` : (log.status === 'Em Execução' ? 'Ativo' : '-')}
-                    </td>
-                    <td className="p-1.5 border-r border-neutral-300 text-center text-[10px]">
-                      {log.status}
-                    </td>
-                    <td className="p-1.5 text-neutral-700 italic">
-                      {log.initialDescription || log.observation || log.notes || '-'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
 
         {/* RODAPÉ FORMAL COM ASSINATURA E AUDITORIA FABRIL */}
         <div className="border-t-2 border-black pt-4 mt-6 flex flex-wrap items-end justify-between gap-6 text-xs">
@@ -2520,37 +2466,41 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
                     <span>Confirmações Importantes dos Filtros Dinâmicos</span>
                     <span className="font-mono text-neutral-700">{analyzedData.totalCount} Registros</span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    <div>
-                      <span className="font-bold text-neutral-700">Cargo / Função: </span>
-                      <strong className="text-black uppercase">
-                        {selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole}
-                      </strong>
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <span className="font-bold text-neutral-700">Cargo / Função: </span>
+                        <strong className="text-black uppercase">
+                          {selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="font-bold text-neutral-700">Operador: </span>
+                        <strong className="text-black uppercase">
+                          {selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab}
+                        </strong>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <span className="font-bold text-neutral-700">Período: </span>
+                        <strong className="text-black">{periodDates.label}</strong>
+                      </div>
+                      <div>
+                        <span className="font-bold text-neutral-700">Refeições / Pausas: </span>
+                        <span className="text-black">
+                          {excludeMeals ? 'Desconsideradas (Tempo Líquido)' : 'Incluídas'}
+                        </span>
+                      </div>
                     </div>
                     <div>
-                      <span className="font-bold text-neutral-700">Operador: </span>
-                      <strong className="text-black uppercase">
-                        {selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab}
-                      </strong>
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-700">Período: </span>
-                      <strong className="text-black">{periodDates.label}</strong>
-                    </div>
-                    <div className="sm:col-span-2">
                       <span className="font-bold text-neutral-700">Atividades: </span>
                       <span className="text-black font-semibold">
                         {selectedActivities.includes('TODOS')
-                          ? `Todas as Atividades (${enrichedActivitiesList.length} cadastradas)`
+                          ? `Todas as Atividades (${enrichedActivitiesList.length} cadastradas no sistema)`
                           : selectedActivities.length === 0
                           ? 'Nenhuma atividade ticada'
                           : selectedActivities.join(', ')}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="font-bold text-neutral-700">Refeições / Pausas: </span>
-                      <span className="text-black">
-                        {excludeMeals ? 'Desconsideradas (Tempo Líquido)' : 'Incluídas'}
                       </span>
                     </div>
                   </div>
@@ -2662,66 +2612,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
                   </div>
                 )}
 
-                {/* TABELA DE REGISTROS */}
-                {analyzedData.matchedLogs.length > 0 && (
-                  <div className="mb-6">
-                    <div className="font-bold uppercase tracking-wider text-black text-xs mb-1.5 flex items-center justify-between">
-                      <span>Apontamentos de Produção</span>
-                      <span className="text-[10px] text-neutral-600 font-normal">
-                        {analyzedData.matchedLogs.length} apontamentos
-                      </span>
-                    </div>
-                    <div className="overflow-x-auto max-h-72 border border-black rounded">
-                      <table className="w-full text-[11px] border-collapse">
-                        <thead className="sticky top-0 bg-neutral-200">
-                          <tr className="border-b border-black text-black font-bold text-left">
-                            <th className="p-1.5 border-r border-black w-20">Data</th>
-                            <th className="p-1.5 border-r border-black w-24">Horário</th>
-                            <th className="p-1.5 border-r border-black">Operador</th>
-                            <th className="p-1.5 border-r border-black">Cargo</th>
-                            <th className="p-1.5 border-r border-black">Atividade</th>
-                            <th className="p-1.5 border-r border-black text-right w-16">Duração</th>
-                            <th className="p-1.5 border-r border-black text-center w-20">Status</th>
-                            <th className="p-1.5">Observação</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {analyzedData.matchedLogs.map((log, idx) => (
-                            <tr
-                              key={log.id}
-                              className={`border-b border-neutral-300 ${idx % 2 === 1 ? 'bg-neutral-100' : 'bg-white'}`}
-                            >
-                              <td className="p-1.5 border-r border-neutral-300 font-mono">
-                                {formatarDataIsoOuPtBr(log.date)}
-                              </td>
-                              <td className="p-1.5 border-r border-neutral-300 font-mono text-[10px]">
-                                {log.startTime} - {log.endTime || 'Ativo'}
-                              </td>
-                              <td className="p-1.5 border-r border-neutral-300 font-bold">
-                                {log.collaboratorName}
-                              </td>
-                              <td className="p-1.5 border-r border-neutral-300 text-neutral-700">
-                                {log.role || collaboratorRoleMap.get(log.collaboratorName?.toLowerCase()) || 'Operador'}
-                              </td>
-                              <td className="p-1.5 border-r border-neutral-300 font-medium">
-                                {log.activity}
-                              </td>
-                              <td className="p-1.5 border-r border-neutral-300 text-right font-mono font-bold">
-                                {log.durationMinutes ? `${log.durationMinutes} min` : (log.status === 'Em Execução' ? 'Ativo' : '-')}
-                              </td>
-                              <td className="p-1.5 border-r border-neutral-300 text-center text-[10px]">
-                                {log.status}
-                              </td>
-                              <td className="p-1.5 text-neutral-700 italic">
-                                {log.initialDescription || log.observation || log.notes || '-'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
+
 
                 {/* ASSINATURA */}
                 <div className="border-t-2 border-black pt-4 mt-6 flex flex-wrap items-end justify-between gap-6 text-xs">
