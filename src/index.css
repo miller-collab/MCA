@@ -43,3 +43,49 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
+
+/* ============================================================
+   ESTILOS DE IMPRESSÃO CIRÚRGICA: PRETO & BRANCO / TONS DE CINZA
+   ============================================================ */
+@media print {
+  html, body {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Oculta elementos de tela desnecessários na folha de impressão */
+  header, nav, aside, .no-print, [data-no-print="true"], button {
+    display: none !important;
+  }
+
+  /* Exibe o documento impresso com formatação cristalina */
+  #mca-printable-report {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Força tabelas e quebras de página limpas */
+  table {
+    page-break-inside: auto;
+  }
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+  thead {
+    display: table-header-group;
+  }
+  tfoot {
+    display: table-footer-group;
+  }
+}

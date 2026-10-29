@@ -4,7 +4,8 @@ import {
   TrendingUp, CheckCircle2, AlertTriangle, ArrowRight, X, 
   RotateCcw, Copy, ExternalLink, ChevronDown, ChevronUp, Zap, HelpCircle,
   Trophy, Award, Flame, BarChart3, UtensilsCrossed, ShieldAlert, AlertOctagon,
-  CheckSquare, Square, Check
+  CheckSquare, Square, Check, Printer, FileText, Briefcase, Filter, Download,
+  FolderDown, CheckCheck
 } from 'lucide-react';
 import { ProductionLog, Collaborator, ShiftConfig, ActivityItem, AutoCloseNotification } from '../types';
 import { 
@@ -12,6 +13,7 @@ import {
   calcularDiferencaMinutos, 
   obterDataHojeIsoPtBr 
 } from '../utils/factoryCalculations';
+import { generateAndSaveLeaderReportPdf } from '../utils/leaderReportPdfGenerator';
 
 function formatarDataIsoOuPtBr(dStr: string): string {
   if (!dStr) return '';
@@ -86,6 +88,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
 }) => {
   // 1. Estado da consulta livre e construtor guiado
   const [naturalQuery, setNaturalQuery] = useState('');
+  const [selectedRole, setSelectedRole] = useState<string>('TODOS');
   const [selectedColab, setSelectedColab] = useState<string>('TODOS');
   // Multi-seleção de atividades: ['TODOS'] indica todas as atividades.
   // Pode conter múltiplas atividades ticadas pelo líder (ex: ['SETUP DE MAQUINA', 'AFIAR FERRAMENTAS']).
@@ -102,6 +105,9 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   const [excludeMeals, setExcludeMeals] = useState<boolean>(true); // Refeição não conta nos tempos produtivos por padrão
   const [copiedAnswer, setCopiedAnswer] = useState(false);
   const [showLogsDetails, setShowLogsDetails] = useState(false);
+  const [showPrintModal, setShowPrintModal] = useState(false);
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [pdfNotification, setPdfNotification] = useState<string | null>(null);
   const activityDropdownRef = useRef<HTMLDivElement>(null);
 
   // Nome derivado para retrocompatibilidade quando 1 única atividade está ativa ou 'TODOS'
@@ -212,7 +218,37 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     );
   }, [enrichedActivitiesList, activitySearchInput]);
 
-  // Lista única de operadores (ativos + colaboradores encontrados nos logs)
+  // Mapeamento rápido do cargo de cada colaborador
+  const collaboratorRoleMap = useMemo(() => {
+    const map = new Map<string, string>();
+    (collaborators || []).forEach((c) => {
+      if (c && c.name) map.set(c.name.trim().toLowerCase(), c.role || 'Operador');
+    });
+    return map;
+  }, [collaborators]);
+
+  // Lista única de Cargos e Funções disponíveis na fábrica
+  const availableRoles = useMemo(() => {
+    const roleSet = new Set<string>();
+    (collaborators || []).forEach((c) => {
+      if (c && c.role && c.role.trim()) {
+        roleSet.add(c.role.trim().toUpperCase());
+      }
+    });
+    (activities || []).forEach((a) => {
+      if (a && a.role && a.role.trim()) {
+        roleSet.add(a.role.trim().toUpperCase());
+      }
+    });
+    (logs || []).forEach((l) => {
+      if (l && l.role && l.role.trim()) {
+        roleSet.add(l.role.trim().toUpperCase());
+      }
+    });
+    return Array.from(roleSet).sort((a, b) => a.localeCompare(b));
+  }, [collaborators, activities, logs]);
+
+  // Lista única de operadores (ativos + colaboradores encontrados nos logs), contextualizada pelo Cargo selecionado
   const availableOperators = useMemo(() => {
     const map = new Map<string, { name: string; role: string }>();
     (collaborators || []).forEach((c) => {
@@ -222,12 +258,28 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       if (l && l.collaboratorName) {
         const key = l.collaboratorName.trim().toLowerCase();
         if (!map.has(key)) {
-          map.set(key, { name: l.collaboratorName.trim(), role: l.role || 'Operador' });
+          map.set(key, { name: l.collaboratorName.trim(), role: l.role || collaboratorRoleMap.get(key) || 'Operador' });
         }
       }
     });
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [collaborators, logs]);
+    const all = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+    if (selectedRole === 'TODOS') return all;
+    
+    // Se um cargo específico está selecionado, filtra os colaboradores daquele cargo
+    const filtered = all.filter((op) => (op.role || '').trim().toUpperCase() === selectedRole.toUpperCase());
+    return filtered.length > 0 ? filtered : all;
+  }, [collaborators, logs, selectedRole, collaboratorRoleMap]);
+
+  // Handler para troca de Cargo / Função com ajuste automático do operador
+  const handleSelectRole = (newRole: string) => {
+    setSelectedRole(newRole);
+    if (newRole !== 'TODOS' && selectedColab !== 'TODOS') {
+      const colabRole = (collaboratorRoleMap.get(selectedColab.toLowerCase()) || '').trim().toUpperCase();
+      if (colabRole && colabRole !== newRole.toUpperCase()) {
+        setSelectedColab('TODOS');
+      }
+    }
+  };
 
   // Fechar dropdown de atividades ao clicar fora
   useEffect(() => {
@@ -281,6 +333,18 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       setSelectedColab('TODOS');
     } else {
       setSelectedColab(foundColab);
+    }
+
+    // 2.5. Detectar Cargo / Função citado na pergunta (ex: preparador, torneiro, fresador, operador)
+    let foundRole = 'TODOS';
+    for (const r of availableRoles) {
+      if (lower.includes(r.toLowerCase())) {
+        foundRole = r;
+        break;
+      }
+    }
+    if (foundRole !== 'TODOS') {
+      setSelectedRole(foundRole);
     }
 
     // 3. Detectar se é uma pergunta comparativa de "QUAL ATIVIDADE..."
@@ -495,6 +559,16 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       // Filtro por colaborador
       if (targetColabNorm && l.collaboratorName.trim().toLowerCase() !== targetColabNorm) {
         return false;
+      }
+
+      // Filtro por Cargo / Função
+      if (selectedRole !== 'TODOS') {
+        const normRole = selectedRole.trim().toUpperCase();
+        const logRole = (l.role || '').trim().toUpperCase();
+        const colabRole = (collaboratorRoleMap.get((l.collaboratorName || '').toLowerCase().trim()) || '').trim().toUpperCase();
+        if (logRole !== normRole && colabRole !== normRole) {
+          return false;
+        }
       }
 
       // Filtro por atividade(s) ticada(s)
@@ -801,7 +875,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       unclosedRanking,
       shouldFilterOutMeals,
     };
-  }, [logs, periodDates, selectedColab, selectedActivities, enrichedActivitiesList, excludeMeals, autoCloseNotifs, collaborators]);
+  }, [logs, periodDates, selectedRole, selectedColab, selectedActivities, enrichedActivitiesList, excludeMeals, autoCloseNotifs, collaborators, collaboratorRoleMap]);
 
   // 6. Geração da Frase Síntese em Linguagem Natural Clara e Cirúrgica
   const summaryAnswerText = useMemo(() => {
@@ -821,7 +895,10 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       shouldFilterOutMeals,
     } = analyzedData;
 
-    const opText = selectedColab === 'TODOS' ? 'A equipe da fábrica' : `O operador ${selectedColab.toUpperCase()}`;
+    const roleQualifier = selectedRole !== 'TODOS' ? ` (${selectedRole})` : '';
+    const opText = selectedColab === 'TODOS'
+      ? (selectedRole !== 'TODOS' ? `A equipe do cargo ${selectedRole}` : 'A equipe da fábrica')
+      : `O operador ${selectedColab.toUpperCase()}${roleQualifier}`;
     const periodLabel = periodDates.label.toLowerCase();
 
     // -------------------------------------------------------------------------------------------------
@@ -993,7 +1070,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
     }
 
     return `${countPart}${totalTimePart}${avgPart}${standardPart}${dailyPart}`;
-  }, [analyzedData, selectedColab, selectedActivities, selectedActivityName, periodDates, metricFocus]);
+  }, [analyzedData, selectedRole, selectedColab, selectedActivities, selectedActivityName, periodDates, metricFocus]);
 
   // Copiar resposta para a área de transferência
   const handleCopyAnswer = () => {
@@ -1005,6 +1082,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   // Resetar consulta para padrão
   const handleResetQuery = () => {
     setNaturalQuery('');
+    setSelectedRole('TODOS');
     setSelectedColab('TODOS');
     setSelectedActivityName('TODOS');
     setActivitySearchInput('');
@@ -1015,6 +1093,44 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
   // Chips de perguntas prontas recomendadas para o líder
   const handleQuickQuestion = (question: string) => {
     handleParseNaturalQuery(question);
+  };
+
+  // Gerar e Salvar Relatório em PDF com opção de escolher a pasta (showSaveFilePicker)
+  const handleDownloadPdf = async () => {
+    if (analyzedData.totalCount === 0 || isGeneratingPdf) return;
+    setIsGeneratingPdf(true);
+    setPdfNotification('Gerando arquivo PDF...');
+    try {
+      const res = await generateAndSaveLeaderReportPdf({
+        selectedRole,
+        selectedColab,
+        periodLabel: periodDates.label,
+        selectedActivities,
+        totalActivitiesCount: enrichedActivitiesList.length,
+        excludeMeals,
+        summaryAnswerText,
+        analyzedData,
+        collaboratorRoleMap,
+      });
+
+      if (res.success) {
+        if (res.method === 'picker') {
+          setPdfNotification(`Arquivo salvo na pasta escolhida: ${res.fileName}`);
+        } else {
+          setPdfNotification(`Download concluído: ${res.fileName}`);
+        }
+      } else if (res.method === 'cancelled') {
+        setPdfNotification(null);
+      }
+    } catch (err) {
+      console.error('Erro ao gerar relatório PDF:', err);
+      setPdfNotification('Erro ao gerar o PDF. Tentando download direto...');
+    } finally {
+      setIsGeneratingPdf(false);
+      setTimeout(() => {
+        setPdfNotification(null);
+      }, 5000);
+    }
   };
 
   return (
@@ -1044,7 +1160,7 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
         </div>
 
         <div className="flex items-center gap-2">
-          {(selectedColab !== 'TODOS' || !selectedActivities.includes('TODOS') || naturalQuery || periodPreset !== 'HOJE') && (
+          {(selectedRole !== 'TODOS' || selectedColab !== 'TODOS' || !selectedActivities.includes('TODOS') || naturalQuery || periodPreset !== 'HOJE') && (
             <button
               onClick={handleResetQuery}
               className="px-2.5 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-[#94A3B8] hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-[#334155]"
@@ -1054,6 +1170,30 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
               <span>Limpar</span>
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={handleDownloadPdf}
+            disabled={analyzedData.totalCount === 0 || isGeneratingPdf}
+            className="px-3 py-1.5 bg-[#00E676] hover:bg-[#00C853] text-black rounded-xl text-xs font-black flex items-center gap-1.5 transition cursor-pointer shadow disabled:opacity-50"
+            title="Salvar arquivo PDF no computador (escolha a pasta)"
+          >
+            <Download className="w-3.5 h-3.5 text-black" />
+            <span className="hidden sm:inline">{isGeneratingPdf ? 'Salvando...' : 'Salvar PDF'}</span>
+            <span className="sm:hidden">PDF</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowPrintModal(true)}
+            disabled={analyzedData.totalCount === 0}
+            className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-white border border-[#475569] rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow disabled:opacity-50"
+            title="Visualizar e Imprimir relatório analítico em Preto e Branco (P&B / PDF)"
+          >
+            <Printer className="w-3.5 h-3.5 text-[#38BDF8]" />
+            <span className="hidden sm:inline">Visualizar / Imprimir P&B</span>
+            <span className="sm:hidden">Imprimir P&B</span>
+          </button>
 
           <button
             onClick={handleCopyAnswer}
@@ -1148,19 +1288,65 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
       </div>
 
       {/* 2. CONSTRUTOR GUIADO / FILTROS INTELIGENTES DE CONSULTA */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 bg-[#090D16]/80 p-3 rounded-xl border border-[#1E293B]">
-        {/* Filtro Operador */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2.5 bg-[#090D16]/80 p-3 rounded-xl border border-[#1E293B]">
+        {/* Filtro 1: Cargo / Função (FOTO 1 - AJUSTE CIRÚRGICO) */}
         <div className="space-y-1">
-          <label className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8] flex items-center gap-1">
-            <User className="w-3 h-3 text-[#38BDF8]" />
-            <span>Operador</span>
+          <label className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8] flex items-center justify-between">
+            <span className="flex items-center gap-1">
+              <Briefcase className="w-3 h-3 text-[#38BDF8]" />
+              <span>Cargo / Função</span>
+            </span>
+            {selectedRole !== 'TODOS' && (
+              <button
+                type="button"
+                onClick={() => handleSelectRole('TODOS')}
+                className="text-[10px] text-[#38BDF8] hover:underline cursor-pointer font-bold"
+                title="Ver todos os cargos e funções"
+              >
+                Todos
+              </button>
+            )}
+          </label>
+          <select
+            value={selectedRole}
+            onChange={(e) => handleSelectRole(e.target.value)}
+            className="w-full py-1.5 px-2.5 bg-[#1E293B] text-white border border-[#475569] rounded-lg text-xs font-medium focus:outline-none focus:border-[#38BDF8]"
+          >
+            <option value="TODOS">Todos os Cargos / Funções</option>
+            {availableRoles.map((role) => (
+              <option key={role} value={role}>
+                {role}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Filtro 2: Operador (Contextualizado pelo Cargo) */}
+        <div className="space-y-1">
+          <label className="text-[10px] font-bold uppercase tracking-wider text-[#94A3B8] flex items-center justify-between">
+            <span className="flex items-center gap-1">
+              <User className="w-3 h-3 text-[#38BDF8]" />
+              <span>Operador</span>
+            </span>
+            {selectedColab !== 'TODOS' && (
+              <button
+                type="button"
+                onClick={() => setSelectedColab('TODOS')}
+                className="text-[10px] text-[#38BDF8] hover:underline cursor-pointer font-bold"
+                title="Ver todos os operadores"
+              >
+                Todos
+              </button>
+            )}
           </label>
           <select
             value={selectedColab}
             onChange={(e) => setSelectedColab(e.target.value)}
             className="w-full py-1.5 px-2.5 bg-[#1E293B] text-white border border-[#475569] rounded-lg text-xs font-medium focus:outline-none focus:border-[#38BDF8]"
           >
-            <option value="TODOS">Todos os Operadores</option>
+            <option value="TODOS">
+              {selectedRole !== 'TODOS' ? `Todos (${selectedRole})` : 'Todos os Operadores'}
+            </option>
             {availableOperators.map((op) => (
               <option key={op.name} value={op.name}>
                 {op.name} ({op.role})
@@ -1990,6 +2176,622 @@ export const LeaderSmartQueryAssistant: React.FC<LeaderSmartQueryAssistantProps>
           </div>
         )}
       </div>
+
+      {/* ========================================================================= */}
+      {/* RELATÓRIO CIRÚRGICO EM PRETO E BRANCO / TONS DE CINZA (PRONTO PARA PDF)   */}
+      {/* ========================================================================= */}
+      <div id="mca-printable-report" className="hidden print:block font-sans text-black bg-white p-6 leading-normal">
+        {/* CABEÇALHO FORMAL DO RELATÓRIO P&B */}
+        <div className="border-b-2 border-black pb-3 mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-black uppercase tracking-tight text-black">
+              MCA | SISTEMA MES INDUSTRIAL - CONTROLE DE ATIVIDADES
+            </h1>
+            <h2 className="text-sm font-bold text-neutral-800 uppercase tracking-wide mt-0.5">
+              RELATÓRIO ANALÍTICO DO LÍDER DE PRODUÇÃO & AUDITORIA DE PROCESSO
+            </h2>
+            <p className="text-xs text-neutral-600 mt-1">
+              Documento Oficial de Chão de Fábrica • Médias, Ocorrências e Registros de Produtividade
+            </p>
+          </div>
+          <div className="text-right text-xs shrink-0 border border-black p-2 rounded bg-neutral-100">
+            <div className="font-bold text-black">EMISSÃO OFICIAL</div>
+            <div className="font-mono text-neutral-800 mt-0.5">
+              {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+            </div>
+            <div className="text-[10px] text-neutral-600 mt-0.5 font-semibold">
+              Sistema MES MCA
+            </div>
+          </div>
+        </div>
+
+        {/* QUADRO DE CONFIRMAÇÕES IMPORTANTES DINÂMICAS E LEGÍVEIS */}
+        <div className="border border-black rounded p-3 mb-4 bg-neutral-50 text-xs">
+          <div className="font-bold uppercase tracking-wider text-black border-b border-neutral-300 pb-1.5 mb-2 flex items-center justify-between">
+            <span>Confirmações Importantes dos Filtros Aplicados</span>
+            <span className="font-mono">{analyzedData.totalCount} Registros Filtrados</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <div>
+              <span className="font-bold text-neutral-700">Cargo / Função: </span>
+              <strong className="text-black uppercase">
+                {selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole}
+              </strong>
+            </div>
+            <div>
+              <span className="font-bold text-neutral-700">Operador: </span>
+              <strong className="text-black uppercase">
+                {selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab}
+              </strong>
+            </div>
+            <div>
+              <span className="font-bold text-neutral-700">Período: </span>
+              <strong className="text-black">{periodDates.label}</strong>
+            </div>
+            <div className="sm:col-span-2">
+              <span className="font-bold text-neutral-700">Atividades: </span>
+              <span className="text-black font-semibold">
+                {selectedActivities.includes('TODOS')
+                  ? `Todas as Atividades (${enrichedActivitiesList.length} cadastradas)`
+                  : selectedActivities.length === 0
+                  ? 'Nenhuma atividade selecionada'
+                  : selectedActivities.join(', ')}
+              </span>
+            </div>
+            <div>
+              <span className="font-bold text-neutral-700">Critério Refeição: </span>
+              <span className="text-black">
+                {excludeMeals ? 'Desconsiderada (Tempo Líquido)' : 'Incluída no Tempo'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* PARECER / DIAGNÓSTICO DO ASSISTENTE INTELIGENTE */}
+        <div className="border-2 border-black rounded p-3.5 mb-4 bg-neutral-100 text-xs">
+          <div className="font-black uppercase tracking-wider text-black mb-1 flex items-center gap-1.5">
+            <span>PARECER / DIAGNÓSTICO DO ASSISTENTE INTELIGENTE:</span>
+          </div>
+          <p className="text-black font-medium leading-relaxed text-sm">
+            {summaryAnswerText}
+          </p>
+        </div>
+
+        {/* RESUMO DOS INDICADORES E MÉDIAS (KPIS) EM P&B */}
+        <div className="grid grid-cols-4 gap-2 mb-4">
+          <div className="border border-black p-2.5 rounded bg-white text-center">
+            <div className="text-[10px] font-bold uppercase text-neutral-700">Ocorrências</div>
+            <div className="text-lg font-black text-black mt-0.5">
+              {analyzedData.totalCount} <span className="text-xs font-normal">vezes</span>
+            </div>
+            <div className="text-[9px] text-neutral-600 mt-0.5">
+              {analyzedData.completedCount} concl. • {analyzedData.inProgressCount} ativ.
+            </div>
+          </div>
+
+          <div className="border border-black p-2.5 rounded bg-white text-center">
+            <div className="text-[10px] font-bold uppercase text-neutral-700">Tempo Médio</div>
+            <div className="text-lg font-black text-black mt-0.5">
+              {analyzedData.avgMinutesPerExecution} <span className="text-xs font-normal">min / vez</span>
+            </div>
+            <div className="text-[9px] text-neutral-600 mt-0.5">
+              {analyzedData.standardMinutes ? `Padrão: ${analyzedData.standardMinutes}m` : `Mín ${analyzedData.minMinutes}m • Máx ${analyzedData.maxMinutes}m`}
+            </div>
+          </div>
+
+          <div className="border border-black p-2.5 rounded bg-white text-center">
+            <div className="text-[10px] font-bold uppercase text-neutral-700">Média por Dia</div>
+            <div className="text-lg font-black text-black mt-0.5">
+              {formatarHorasMinutos(analyzedData.avgMinutesPerDay)}
+            </div>
+            <div className="text-[9px] text-neutral-600 mt-0.5">
+              {analyzedData.distinctDaysCount} dia(s) com registros
+            </div>
+          </div>
+
+          <div className="border border-black p-2.5 rounded bg-white text-center">
+            <div className="text-[10px] font-bold uppercase text-neutral-700">Tempo Total</div>
+            <div className="text-lg font-black text-black mt-0.5">
+              {formatarHorasMinutos(analyzedData.totalMinutes)}
+            </div>
+            <div className="text-[9px] text-neutral-600 mt-0.5 font-mono">
+              {analyzedData.totalMinutes} minutos
+            </div>
+          </div>
+        </div>
+
+        {/* TABELA 1: RANKING DAS ATIVIDADES ANALISADAS (TEMPO & FREQUÊNCIA) */}
+        {analyzedData.activitiesRank.length > 0 && (
+          <div className="mb-4">
+            <div className="font-bold uppercase tracking-wider text-black text-xs mb-1.5 flex items-center justify-between">
+              <span>Ranking de Atividades (Detalhamento por Tempo e Frequência)</span>
+              <span className="text-[10px] text-neutral-600 font-normal">
+                {analyzedData.activitiesRank.length} atividade(s)
+              </span>
+            </div>
+            <table className="w-full text-xs border border-black border-collapse">
+              <thead>
+                <tr className="bg-neutral-200 border-b border-black text-black font-bold text-left">
+                  <th className="p-1.5 border-r border-black w-14">Cód.</th>
+                  <th className="p-1.5 border-r border-black">Atividade</th>
+                  <th className="p-1.5 border-r border-black">Cargo/Cat.</th>
+                  <th className="p-1.5 border-r border-black text-center w-16">Qtd</th>
+                  <th className="p-1.5 border-r border-black text-right w-24">Tempo Total</th>
+                  <th className="p-1.5 border-r border-black text-right w-20">Média/Vez</th>
+                  <th className="p-1.5 border-r border-black text-right w-24">Média Diária</th>
+                  <th className="p-1.5 text-center w-16">% Tempo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analyzedData.activitiesRank.map((act, idx) => (
+                  <tr
+                    key={act.fullName}
+                    className={`border-b border-neutral-300 ${idx % 2 === 1 ? 'bg-neutral-100' : 'bg-white'}`}
+                  >
+                    <td className="p-1.5 border-r border-neutral-300 font-mono font-bold">{act.code}</td>
+                    <td className="p-1.5 border-r border-neutral-300 font-bold">{act.name}</td>
+                    <td className="p-1.5 border-r border-neutral-300 text-neutral-700">{act.category}</td>
+                    <td className="p-1.5 border-r border-neutral-300 text-center font-bold">{act.count}x</td>
+                    <td className="p-1.5 border-r border-neutral-300 text-right font-mono font-bold">
+                      {formatarHorasMinutos(act.totalMinutes)}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 text-right font-mono">
+                      {act.avgMinutesPerExecution} min
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 text-right font-mono">
+                      {formatarHorasMinutos(act.avgMinutesPerDay)}
+                    </td>
+                    <td className="p-1.5 text-center font-mono font-bold">
+                      {act.percentageOfTotal}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* TABELA 2: LISTA COMPLETA DOS APONTAMENTOS / REGISTROS */}
+        {analyzedData.matchedLogs.length > 0 && (
+          <div className="mb-6">
+            <div className="font-bold uppercase tracking-wider text-black text-xs mb-1.5 flex items-center justify-between">
+              <span>Registros Detalhados dos Apontamentos de Produção</span>
+              <span className="text-[10px] text-neutral-600 font-normal">
+                Exibindo todos os {analyzedData.matchedLogs.length} apontamentos
+              </span>
+            </div>
+            <table className="w-full text-[11px] border border-black border-collapse">
+              <thead>
+                <tr className="bg-neutral-200 border-b border-black text-black font-bold text-left">
+                  <th className="p-1.5 border-r border-black w-20">Data</th>
+                  <th className="p-1.5 border-r border-black w-24">Horário</th>
+                  <th className="p-1.5 border-r border-black">Operador</th>
+                  <th className="p-1.5 border-r border-black">Cargo / Função</th>
+                  <th className="p-1.5 border-r border-black">Atividade</th>
+                  <th className="p-1.5 border-r border-black text-right w-16">Duração</th>
+                  <th className="p-1.5 border-r border-black text-center w-20">Status</th>
+                  <th className="p-1.5">Observação / O que vai executar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analyzedData.matchedLogs.map((log, idx) => (
+                  <tr
+                    key={log.id}
+                    className={`border-b border-neutral-300 ${idx % 2 === 1 ? 'bg-neutral-100' : 'bg-white'}`}
+                  >
+                    <td className="p-1.5 border-r border-neutral-300 font-mono">
+                      {formatarDataIsoOuPtBr(log.date)}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 font-mono text-[10px]">
+                      {log.startTime} - {log.endTime || 'Em andamento'}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 font-bold">
+                      {log.collaboratorName}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 text-neutral-700">
+                      {log.role || collaboratorRoleMap.get(log.collaboratorName?.toLowerCase()) || 'Operador'}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 font-medium">
+                      {log.activity}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 text-right font-mono font-bold">
+                      {log.durationMinutes ? `${log.durationMinutes} min` : (log.status === 'Em Execução' ? 'Ativo' : '-')}
+                    </td>
+                    <td className="p-1.5 border-r border-neutral-300 text-center text-[10px]">
+                      {log.status}
+                    </td>
+                    <td className="p-1.5 text-neutral-700 italic">
+                      {log.initialDescription || log.observation || log.notes || '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* RODAPÉ FORMAL COM ASSINATURA E AUDITORIA FABRIL */}
+        <div className="border-t-2 border-black pt-4 mt-6 flex flex-wrap items-end justify-between gap-6 text-xs">
+          <div>
+            <div className="font-bold text-black uppercase">Controle de Chão de Fábrica MCA</div>
+            <div className="text-neutral-600 text-[10px] mt-0.5">
+              Validação operacional e auditoria de produtividade industrial.
+            </div>
+          </div>
+          <div className="text-center min-w-[240px]">
+            <div className="border-b border-black pb-1 mb-1">
+              &nbsp;
+            </div>
+            <div className="font-bold text-black uppercase text-[11px]">
+              Visto do Líder de Produção
+            </div>
+            <div className="text-[10px] text-neutral-600">
+              Assinatura / Data: ____ / ____ / ________
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* MODAL DE PRÉ-VISUALIZAÇÃO DE IMPRESSÃO EM PRETO & BRANCO / PDF            */}
+      {/* ========================================================================= */}
+      {showPrintModal && (
+        <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-2 sm:p-4 no-print">
+          <div className="bg-[#0F172A] border border-[#38BDF8]/60 rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl animate-in fade-in zoom-in-95">
+            {/* CABEÇALHO DO MODAL */}
+            <div className="p-3.5 sm:p-4 border-b border-[#334155] flex items-center justify-between gap-3 bg-[#1E293B]/70 rounded-t-2xl">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-[#0284C7]/20 text-[#38BDF8] rounded-xl border border-[#38BDF8]/40">
+                  <Printer className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
+                    <span>Relatório Analítico para Impressão e PDF</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-neutral-100 text-black font-black uppercase tracking-wider">
+                      Preto e Branco / Tons de Cinza
+                    </span>
+                  </h3>
+                  <p className="text-xs text-[#94A3B8] mt-0.5">
+                    Layout com fundo branco, alto contraste, confirmações dinâmicas e economia de tinta
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={isGeneratingPdf}
+                  className="px-3.5 py-1.5 bg-[#00E676] hover:bg-[#00C853] text-black rounded-xl text-xs font-black flex items-center gap-1.5 transition cursor-pointer shadow-lg disabled:opacity-50"
+                  title="Salvar arquivo .pdf no computador (abre opção para escolher a pasta)"
+                >
+                  <Download className="w-4 h-4 text-black" />
+                  <span>{isGeneratingPdf ? 'Salvando...' : 'Salvar Arquivo PDF (.pdf)'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#334155] text-white border border-[#475569] rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                  title="Abrir diálogo de impressão em papel"
+                >
+                  <Printer className="w-3.5 h-3.5 text-white" />
+                  <span className="hidden sm:inline">Imprimir</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPrintModal(false)}
+                  className="px-3 py-1.5 bg-[#334155] hover:bg-[#475569] text-white rounded-xl text-xs font-bold transition cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+
+            {/* ÁREA DE PRÉ-VISUALIZAÇÃO DA FOLHA DE PAPEL */}
+            <div className="p-3 sm:p-6 overflow-y-auto flex-1 bg-[#090D16] custom-scrollbar">
+              <div className="max-w-4xl mx-auto bg-white text-black p-6 sm:p-8 rounded-xl shadow-2xl border border-neutral-300 font-sans leading-normal">
+                {/* CABEÇALHO DA FOLHA */}
+                <div className="border-b-2 border-black pb-3 mb-4 flex items-start justify-between gap-4">
+                  <div>
+                    <h1 className="text-base sm:text-xl font-black uppercase tracking-tight text-black">
+                      MCA | SISTEMA MES INDUSTRIAL - CONTROLE DE ATIVIDADES
+                    </h1>
+                    <h2 className="text-xs sm:text-sm font-bold text-neutral-800 uppercase tracking-wide mt-0.5">
+                      RELATÓRIO ANALÍTICO DO LÍDER DE PRODUÇÃO & AUDITORIA DE PROCESSO
+                    </h2>
+                    <p className="text-[11px] text-neutral-600 mt-0.5">
+                      Documento Oficial de Chão de Fábrica • Médias, Ocorrências e Registros de Produtividade
+                    </p>
+                  </div>
+                  <div className="text-right text-xs shrink-0 border border-black p-2 rounded bg-neutral-100">
+                    <div className="font-bold text-black text-[10px] uppercase">Emissão Oficial</div>
+                    <div className="font-mono text-neutral-800 mt-0.5 text-[11px]">
+                      {new Date().toLocaleDateString('pt-BR')} às {new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                    <div className="text-[10px] text-neutral-600 font-semibold">
+                      Sistema MES MCA
+                    </div>
+                  </div>
+                </div>
+
+                {/* QUADRO DE CONFIRMAÇÕES IMPORTANTES DINÂMICAS */}
+                <div className="border border-black rounded p-3 mb-4 bg-neutral-50 text-xs">
+                  <div className="font-bold uppercase tracking-wider text-black border-b border-neutral-300 pb-1 mb-2 flex items-center justify-between">
+                    <span>Confirmações Importantes dos Filtros Dinâmicos</span>
+                    <span className="font-mono text-neutral-700">{analyzedData.totalCount} Registros</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <div>
+                      <span className="font-bold text-neutral-700">Cargo / Função: </span>
+                      <strong className="text-black uppercase">
+                        {selectedRole === 'TODOS' ? 'Todos os Cargos e Funções' : selectedRole}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="font-bold text-neutral-700">Operador: </span>
+                      <strong className="text-black uppercase">
+                        {selectedColab === 'TODOS' ? 'Todos os Operadores' : selectedColab}
+                      </strong>
+                    </div>
+                    <div>
+                      <span className="font-bold text-neutral-700">Período: </span>
+                      <strong className="text-black">{periodDates.label}</strong>
+                    </div>
+                    <div className="sm:col-span-2">
+                      <span className="font-bold text-neutral-700">Atividades: </span>
+                      <span className="text-black font-semibold">
+                        {selectedActivities.includes('TODOS')
+                          ? `Todas as Atividades (${enrichedActivitiesList.length} cadastradas)`
+                          : selectedActivities.length === 0
+                          ? 'Nenhuma atividade ticada'
+                          : selectedActivities.join(', ')}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="font-bold text-neutral-700">Refeições / Pausas: </span>
+                      <span className="text-black">
+                        {excludeMeals ? 'Desconsideradas (Tempo Líquido)' : 'Incluídas'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* PARECER / DIAGNÓSTICO DO ASSISTENTE INTELIGENTE */}
+                <div className="border-2 border-black rounded p-3.5 mb-4 bg-neutral-100 text-xs">
+                  <div className="font-black uppercase tracking-wider text-black mb-1">
+                    PARECER DO ASSISTENTE INTELIGENTE:
+                  </div>
+                  <p className="text-black font-medium leading-relaxed text-sm">
+                    {summaryAnswerText}
+                  </p>
+                </div>
+
+                {/* KPIS / MÉDIAS */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                  <div className="border border-black p-2.5 rounded bg-white text-center">
+                    <div className="text-[10px] font-bold uppercase text-neutral-700">Ocorrências</div>
+                    <div className="text-base sm:text-lg font-black text-black mt-0.5">
+                      {analyzedData.totalCount} <span className="text-xs font-normal">vezes</span>
+                    </div>
+                    <div className="text-[9px] text-neutral-600 mt-0.5">
+                      {analyzedData.completedCount} concl. • {analyzedData.inProgressCount} ativ.
+                    </div>
+                  </div>
+
+                  <div className="border border-black p-2.5 rounded bg-white text-center">
+                    <div className="text-[10px] font-bold uppercase text-neutral-700">Tempo Médio</div>
+                    <div className="text-base sm:text-lg font-black text-black mt-0.5">
+                      {analyzedData.avgMinutesPerExecution} <span className="text-xs font-normal">min / vez</span>
+                    </div>
+                    <div className="text-[9px] text-neutral-600 mt-0.5">
+                      {analyzedData.standardMinutes ? `Padrão: ${analyzedData.standardMinutes}m` : `Mín ${analyzedData.minMinutes}m • Máx ${analyzedData.maxMinutes}m`}
+                    </div>
+                  </div>
+
+                  <div className="border border-black p-2.5 rounded bg-white text-center">
+                    <div className="text-[10px] font-bold uppercase text-neutral-700">Média Diária</div>
+                    <div className="text-base sm:text-lg font-black text-black mt-0.5">
+                      {formatarHorasMinutos(analyzedData.avgMinutesPerDay)}
+                    </div>
+                    <div className="text-[9px] text-neutral-600 mt-0.5">
+                      {analyzedData.distinctDaysCount} dia(s) com dados
+                    </div>
+                  </div>
+
+                  <div className="border border-black p-2.5 rounded bg-white text-center">
+                    <div className="text-[10px] font-bold uppercase text-neutral-700">Tempo Total</div>
+                    <div className="text-base sm:text-lg font-black text-black mt-0.5">
+                      {formatarHorasMinutos(analyzedData.totalMinutes)}
+                    </div>
+                    <div className="text-[9px] text-neutral-600 mt-0.5 font-mono">
+                      {analyzedData.totalMinutes} minutos
+                    </div>
+                  </div>
+                </div>
+
+                {/* TABELA DE RANKING DAS ATIVIDADES */}
+                {analyzedData.activitiesRank.length > 0 && (
+                  <div className="mb-4">
+                    <div className="font-bold uppercase tracking-wider text-black text-xs mb-1.5 flex items-center justify-between">
+                      <span>Ranking de Atividades</span>
+                      <span className="text-[10px] text-neutral-600 font-normal">
+                        {analyzedData.activitiesRank.length} atividade(s)
+                      </span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs border border-black border-collapse">
+                        <thead>
+                          <tr className="bg-neutral-200 border-b border-black text-black font-bold text-left">
+                            <th className="p-1.5 border-r border-black w-12">Cód.</th>
+                            <th className="p-1.5 border-r border-black">Atividade</th>
+                            <th className="p-1.5 border-r border-black">Categoria</th>
+                            <th className="p-1.5 border-r border-black text-center w-14">Qtd</th>
+                            <th className="p-1.5 border-r border-black text-right w-20">Total</th>
+                            <th className="p-1.5 border-r border-black text-right w-16">Média</th>
+                            <th className="p-1.5 border-r border-black text-right w-20">Média/Dia</th>
+                            <th className="p-1.5 text-center w-14">% Total</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {analyzedData.activitiesRank.map((act, idx) => (
+                            <tr
+                              key={act.fullName}
+                              className={`border-b border-neutral-300 ${idx % 2 === 1 ? 'bg-neutral-100' : 'bg-white'}`}
+                            >
+                              <td className="p-1.5 border-r border-neutral-300 font-mono font-bold">{act.code}</td>
+                              <td className="p-1.5 border-r border-neutral-300 font-bold">{act.name}</td>
+                              <td className="p-1.5 border-r border-neutral-300 text-neutral-700">{act.category}</td>
+                              <td className="p-1.5 border-r border-neutral-300 text-center font-bold">{act.count}x</td>
+                              <td className="p-1.5 border-r border-neutral-300 text-right font-mono font-bold">
+                                {formatarHorasMinutos(act.totalMinutes)}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 text-right font-mono">
+                                {act.avgMinutesPerExecution}m
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 text-right font-mono">
+                                {formatarHorasMinutos(act.avgMinutesPerDay)}
+                              </td>
+                              <td className="p-1.5 text-center font-mono font-bold">
+                                {act.percentageOfTotal}%
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* TABELA DE REGISTROS */}
+                {analyzedData.matchedLogs.length > 0 && (
+                  <div className="mb-6">
+                    <div className="font-bold uppercase tracking-wider text-black text-xs mb-1.5 flex items-center justify-between">
+                      <span>Apontamentos de Produção</span>
+                      <span className="text-[10px] text-neutral-600 font-normal">
+                        {analyzedData.matchedLogs.length} apontamentos
+                      </span>
+                    </div>
+                    <div className="overflow-x-auto max-h-72 border border-black rounded">
+                      <table className="w-full text-[11px] border-collapse">
+                        <thead className="sticky top-0 bg-neutral-200">
+                          <tr className="border-b border-black text-black font-bold text-left">
+                            <th className="p-1.5 border-r border-black w-20">Data</th>
+                            <th className="p-1.5 border-r border-black w-24">Horário</th>
+                            <th className="p-1.5 border-r border-black">Operador</th>
+                            <th className="p-1.5 border-r border-black">Cargo</th>
+                            <th className="p-1.5 border-r border-black">Atividade</th>
+                            <th className="p-1.5 border-r border-black text-right w-16">Duração</th>
+                            <th className="p-1.5 border-r border-black text-center w-20">Status</th>
+                            <th className="p-1.5">Observação</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {analyzedData.matchedLogs.map((log, idx) => (
+                            <tr
+                              key={log.id}
+                              className={`border-b border-neutral-300 ${idx % 2 === 1 ? 'bg-neutral-100' : 'bg-white'}`}
+                            >
+                              <td className="p-1.5 border-r border-neutral-300 font-mono">
+                                {formatarDataIsoOuPtBr(log.date)}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 font-mono text-[10px]">
+                                {log.startTime} - {log.endTime || 'Ativo'}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 font-bold">
+                                {log.collaboratorName}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 text-neutral-700">
+                                {log.role || collaboratorRoleMap.get(log.collaboratorName?.toLowerCase()) || 'Operador'}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 font-medium">
+                                {log.activity}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 text-right font-mono font-bold">
+                                {log.durationMinutes ? `${log.durationMinutes} min` : (log.status === 'Em Execução' ? 'Ativo' : '-')}
+                              </td>
+                              <td className="p-1.5 border-r border-neutral-300 text-center text-[10px]">
+                                {log.status}
+                              </td>
+                              <td className="p-1.5 text-neutral-700 italic">
+                                {log.initialDescription || log.observation || log.notes || '-'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* ASSINATURA */}
+                <div className="border-t-2 border-black pt-4 mt-6 flex flex-wrap items-end justify-between gap-6 text-xs">
+                  <div>
+                    <div className="font-bold text-black uppercase">Controle Fabril MCA</div>
+                    <div className="text-neutral-600 text-[10px] mt-0.5">
+                      Auditoria de apontamentos de produção e eficiência de processos.
+                    </div>
+                  </div>
+                  <div className="text-center min-w-[240px]">
+                    <div className="border-b border-black pb-1 mb-1">
+                      &nbsp;
+                    </div>
+                    <div className="font-bold text-black uppercase text-[11px]">
+                      Visto do Líder de Produção
+                    </div>
+                    <div className="text-[10px] text-neutral-600">
+                      Assinatura / Data: ____ / ____ / ________
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* RODAPÉ DO MODAL */}
+            <div className="p-3 sm:p-3.5 border-t border-[#334155] flex flex-wrap items-center justify-between gap-3 bg-[#1E293B]/80 rounded-b-2xl">
+              <div className="text-xs text-[#94A3B8] flex items-center gap-2">
+                {pdfNotification ? (
+                  <span className="text-[#00E676] font-bold flex items-center gap-1.5 animate-in fade-in">
+                    <CheckCircle2 className="w-4 h-4 text-[#00E676]" />
+                    <span>{pdfNotification}</span>
+                  </span>
+                ) : (
+                  <span>
+                    💡 Ao clicar em <strong className="text-white">Salvar Arquivo PDF (.pdf)</strong>, você escolhe onde salvar o arquivo no seu computador.
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadPdf}
+                  disabled={isGeneratingPdf}
+                  className="px-4 py-2 bg-[#00E676] hover:bg-[#00C853] text-black font-black text-xs rounded-xl flex items-center gap-2 transition cursor-pointer shadow-lg disabled:opacity-50"
+                  title="Salvar arquivo PDF no computador (escolha a pasta)"
+                >
+                  <Download className="w-4 h-4 text-black" />
+                  <span>{isGeneratingPdf ? 'Salvando...' : 'Salvar Arquivo PDF (.pdf)'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-3.5 py-2 bg-[#1E293B] hover:bg-[#334155] text-white border border-[#475569] font-bold text-xs rounded-xl flex items-center gap-1.5 transition cursor-pointer"
+                  title="Enviar para impressão em papel"
+                >
+                  <Printer className="w-4 h-4 text-white" />
+                  <span>Imprimir na Impressora</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPrintModal(false)}
+                  className="px-3 py-2 bg-[#334155] hover:bg-[#475569] text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
