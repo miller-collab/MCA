@@ -631,7 +631,12 @@ export function desduplicarLogsAtivos(
     }
 
     const isOvernight = timeToSecondsOfDay(shiftEntrada) > timeToSecondsOfDay(shiftSaida);
-    const shiftEnded = isPreviousDay || verificarTurnoEncerrado(shiftSaida, shiftEntrada, shiftDias, agora);
+    const statusTurnoAgora = obterStatusTurno(shiftSaida, shiftEntrada, shiftDias, agora);
+    const ontemPtBr = formatarDataPtBr(new Date(agora.getTime() - 24 * 60 * 60 * 1000));
+    // Se o turno é noturno (ex: 15:30 às 01:30), o log começou ontem e o turno ainda está EM_ANDAMENTO na madrugada,
+    // o operador ainda está em sua jornada legítima de trabalho até o horário de término configurado (01:30)!
+    const isNightShiftStillRunning = isOvernight && dateStr === ontemPtBr && statusTurnoAgora === 'EM_ANDAMENTO';
+    const shiftEnded = !isNightShiftStillRunning && (isPreviousDay || verificarTurnoEncerrado(shiftSaida, shiftEntrada, shiftDias, agora));
     const mealConfig = obterConfiguracaoRefeicao(colabKey, shifts || [], collaborators || []);
 
     // Ordena cronologicamente por horário de início respeitando turnos noturnos
@@ -726,7 +731,8 @@ export function desduplicarLogsAtivos(
       } else {
         // Último log do dia para este colaborador:
         // Se for do dia atual e estiver Em Execução ou Pausada, DEVE PERMANECER ATIVO na tela do operador!
-        if (isPreviousDay && (current.status === 'Em Execução' || current.status === 'Pausada')) {
+        // Se for de turno noturno iniciado ontem e ainda em andamento na madrugada (ex: até 01:30), TAMBÉM DEVE PERMANECER ATIVO!
+        if (isPreviousDay && !isNightShiftStillRunning && (current.status === 'Em Execução' || current.status === 'Pausada')) {
           // Atividade de dia anterior que ficou esquecida aberta: encerra com segurança no horário de saída do turno
           updatedLog.status = 'Concluída';
           updatedLog.endTime = current.endTime || shiftSaida;
@@ -815,22 +821,24 @@ export function obterStatusTurno(
 ): ShiftStatus {
   if (!saida || !entrada) return 'ENCERRADO';
 
-  // Verifica se hoje é um dia de trabalho ativo para este turno
-  if (dias && dias.length > 0) {
-    const diaHoje = obterDiaSemanaSiglaPtBr(date);
-    const diasNorm = dias.map((d) => d.trim().toLowerCase().slice(0, 3));
-    const diaHojeNorm = diaHoje.trim().toLowerCase().slice(0, 3);
-    if (!diasNorm.includes(diaHojeNorm)) {
-      return 'FOLGA';
-    }
-  }
-
   const currentHourMin = obterHoraMinutoPtBr(date);
   const ent = entrada.slice(0, 5);
   const sai = saida.slice(0, 5);
+  const isOvernight = ent > sai;
 
-  if (ent <= sai) {
+  const diasNorm = dias && dias.length > 0
+    ? dias.map((d) => d.trim().toLowerCase().slice(0, 3))
+    : undefined;
+
+  if (!isOvernight) {
     // Turno diurno normal (ex: 07:00 às 17:30)
+    if (diasNorm) {
+      const diaHoje = obterDiaSemanaSiglaPtBr(date).trim().toLowerCase().slice(0, 3);
+      if (!diasNorm.includes(diaHoje)) {
+        return 'FOLGA';
+      }
+    }
+
     if (currentHourMin < ent) {
       return 'NAO_INICIADO';
     } else if (currentHourMin >= ent && currentHourMin <= sai) {
@@ -839,16 +847,43 @@ export function obterStatusTurno(
       return 'ENCERRADO';
     }
   } else {
-    // Turno que cruza a meia-noite (ex: 15:30 às 01:30, ou 22:00 às 06:00)
-    // No período diurno entre a saída da madrugada (01:30) e a entrada da tarde (15:30):
-    // O turno de hoje AINDA NÃO INICIOU!
-    if (currentHourMin > sai && currentHourMin < ent) {
-      return 'NAO_INICIADO';
-    } else if (currentHourMin >= ent || currentHourMin <= sai) {
+    // Turno que cruza a meia-noite (ex: Turno 2 das 15:30 às 01:30)
+    // Janela 1: Pós meia-noite na madrugada até o horário de saída (ex: 00:00:00 até 01:30:00)
+    if (currentHourMin <= sai) {
+      if (diasNorm) {
+        // A jornada ativa na madrugada iniciou no dia anterior (ontem)
+        const ontem = new Date(date.getTime() - 24 * 60 * 60 * 1000);
+        const diaOntem = obterDiaSemanaSiglaPtBr(ontem).trim().toLowerCase().slice(0, 3);
+        if (!diasNorm.includes(diaOntem)) {
+          return 'FOLGA';
+        }
+      }
       return 'EM_ANDAMENTO';
-    } else {
-      return 'ENCERRADO';
     }
+
+    // Janela 2: Entre o término da madrugada e o novo início da tarde/noite (ex: 01:31 às 15:29)
+    if (currentHourMin > sai && currentHourMin < ent) {
+      if (diasNorm) {
+        const diaHoje = obterDiaSemanaSiglaPtBr(date).trim().toLowerCase().slice(0, 3);
+        if (!diasNorm.includes(diaHoje)) {
+          return 'FOLGA';
+        }
+      }
+      return 'NAO_INICIADO';
+    }
+
+    // Janela 3: Do início da jornada no dia de hoje até meia-noite (ex: 15:30 às 23:59:59)
+    if (currentHourMin >= ent) {
+      if (diasNorm) {
+        const diaHoje = obterDiaSemanaSiglaPtBr(date).trim().toLowerCase().slice(0, 3);
+        if (!diasNorm.includes(diaHoje)) {
+          return 'FOLGA';
+        }
+      }
+      return 'EM_ANDAMENTO';
+    }
+
+    return 'ENCERRADO';
   }
 }
 
@@ -856,8 +891,23 @@ export function obterStatusTurno(
  * Checks if current time is past the shift's end time (or outside working days)
  */
 export function verificarTurnoEncerrado(saida: string, entrada: string, dias?: string[], date: Date = new Date()): boolean {
+  if (!saida || !entrada) return true;
+  const ent = entrada.slice(0, 5);
+  const sai = saida.slice(0, 5);
+  const isOvernight = ent > sai;
+
   const status = obterStatusTurno(saida, entrada, dias, date);
-  return status === 'ENCERRADO' || status === 'FOLGA';
+
+  if (!isOvernight) {
+    return status === 'ENCERRADO' || status === 'FOLGA';
+  } else {
+    // Para turno noturno: se estiver EM_ANDAMENTO (15:30 às 23:59 ou 00:00 às 01:30), NÃO encerrou!
+    if (status === 'EM_ANDAMENTO') {
+      return false;
+    }
+    // Fora do horário de trabalho (entre 01:31 e 15:29 ou em folga), a jornada encerrou
+    return true;
+  }
 }
 
 export interface ShiftGapEntry {
@@ -1917,20 +1967,7 @@ export function obterTurnoDoLog(log: ProductionLog, collaborators: Collaborator[
  */
 export function obterTurnosAtivosNoMomento(shifts: ShiftConfig[], date: Date = new Date()): ShiftConfig[] {
   if (!shifts || shifts.length === 0) return [];
-  const currentDayName = obterDiaSemanaSiglaPtBr(date);
-  const currentHourMin = obterHoraMinutoPtBr(date);
-
-  return shifts.filter((s) => {
-    if (s.dias && s.dias.length > 0 && !s.dias.includes(currentDayName)) {
-      return false;
-    }
-    if (s.entrada <= s.saida) {
-      return currentHourMin >= s.entrada && currentHourMin <= s.saida;
-    } else {
-      // Overnight shift
-      return currentHourMin >= s.entrada || currentHourMin <= s.saida;
-    }
-  });
+  return shifts.filter((s) => obterStatusTurno(s.saida, s.entrada, s.dias, date) === 'EM_ANDAMENTO');
 }
 
 /**

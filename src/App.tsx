@@ -834,21 +834,16 @@ export function App() {
             // Verifica se a atividade é de dia anterior OU se o turno do colaborador encerrou enquanto a atividade estava em andamento
             const isOvernight = timeToMinutesOfDay(shift.entrada) > timeToMinutesOfDay(shift.saida);
             const statusAtualTurno = obterStatusTurno(shift.saida, shift.entrada, shift.dias, now);
+            const isTurnoEncerrado = verificarTurnoEncerrado(shift.saida, shift.entrada, shift.dias, now);
             const isLogFromPreviousDay = Boolean(log.date && log.date !== todayDateStr);
 
-            // Turno noturno que iniciou ontem e ainda está em andamento na madrugada NÃO deve ser encerrado
+            // Turno noturno que iniciou ontem e ainda está em andamento na madrugada (até 01:30) NÃO deve ser encerrado
             const isNightShiftRunning = isOvernight && isLogFromPreviousDay && statusAtualTurno === 'EM_ANDAMENTO';
 
-            // Para atividades de hoje: só encerra se o início ocorreu dentro do turno e o horário de saída já passou
-            const startMins = timeToMinutesOfDay(log.startTime);
-            const saidaMins = timeToMinutesOfDay(shift.saida);
-            const entradaMins = timeToMinutesOfDay(shift.entrada);
-            const iniciouNoTurno = !isOvernight
-              ? (startMins >= entradaMins && startMins <= saidaMins)
-              : (startMins >= entradaMins || startMins <= saidaMins);
-
-            const turnoEncerrouHoje = !isNightShiftRunning && iniciouNoTurno && statusAtualTurno === 'ENCERRADO';
-            const logEsquecidoDiaAnterior = isLogFromPreviousDay && !isNightShiftRunning && statusAtualTurno !== 'EM_ANDAMENTO';
+            // Para atividades iniciadas hoje ou ontem:
+            // Só encerra quando o turno do colaborador realmente encerrou (passou das 01:30 no noturno ou das 17:30 no diurno)
+            const turnoEncerrouHoje = !isNightShiftRunning && isTurnoEncerrado;
+            const logEsquecidoDiaAnterior = isLogFromPreviousDay && !isNightShiftRunning;
 
             const turnoEncerrou = turnoEncerrouHoje || logEsquecidoDiaAnterior;
 
