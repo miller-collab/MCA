@@ -74,6 +74,29 @@ body {
     margin: 0 !important;
   }
 
+  #mca-timeline-printable-report {
+    display: none !important;
+  }
+
+  /* Quando o Relatório de Gestão Início/Fim está ativo para impressão, isola apenas ele */
+  body[data-print-target="timeline-report"] #mca-printable-report {
+    display: none !important;
+  }
+
+  body[data-print-target="timeline-report"] #mca-timeline-printable-report {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    background: #ffffff !important;
+    color: #111827 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  body[data-print-target="timeline-report"] .print-hide-non-report {
+    display: none !important;
+  }
+
   /* Força tabelas e quebras de página limpas */
   table {
     page-break-inside: auto;
@@ -89,3 +112,4 @@ body {
     display: table-footer-group;
   }
 }
+

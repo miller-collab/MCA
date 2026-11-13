@@ -4,7 +4,7 @@ import {
   CheckCircle2, Clock, Lock, KeyRound, ArrowDown, UserCheck, 
   HelpCircle, ChevronRight, Zap, Settings, Activity, BellRing,
   Check, Trash2, ExternalLink, ShieldAlert, Search, Calendar,
-  RotateCcw, Filter, Upload, Download, Database, Tablet, Share2, Copy, X, AlertCircle
+  RotateCcw, Filter, Upload, Download, Database, Tablet, Share2, Copy, X, AlertCircle, FileBarChart2
 } from 'lucide-react';
 import { 
   ProductionLog, 
@@ -28,6 +28,7 @@ import {
 } from '../utils/factoryCalculations';
 import { FactoryConfigManager } from './FactoryConfigManager';
 import { LeaderSmartQueryAssistant } from './LeaderSmartQueryAssistant';
+import { LeaderTimelineReportModal } from './LeaderTimelineReportModal';
 
 interface LeaderDashboardViewProps {
   logs: ProductionLog[];
@@ -112,6 +113,7 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
 
   // Modal e Estados para Reset e Restauração de Produção
   const [showResetModal, setShowResetModal] = useState(false);
+  const [showTimelineReportModal, setShowTimelineReportModal] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [resetFeedback, setResetFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -615,6 +617,17 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
               </button>
             )}
           </div>
+
+          {/* Botão Discreto: Relatório de Gestão Início/Fim (Cinza/Impressão) */}
+          <button
+            type="button"
+            onClick={() => setShowTimelineReportModal(true)}
+            className="px-2.5 py-1.5 bg-[#18181B] hover:bg-[#27272A] text-[#D4D4D8] hover:text-white border border-[#3F3F46] rounded-lg text-[11px] font-medium flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0"
+            title="Abrir formulário de gestão em tons de cinza com gráfico de início/fim por data ou período e ação do líder"
+          >
+            <FileBarChart2 className="w-3.5 h-3.5 text-[#A1A1AA]" />
+            <span>Relatório Início/Fim</span>
+          </button>
 
           {/* Botão de Simulação Discreto Apenas no Painel do Líder */}
           {onSimulateShiftAutoClose && (
@@ -1558,6 +1571,15 @@ export const LeaderDashboardView: React.FC<LeaderDashboardViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* MODAL DO RELATÓRIO DE GESTÃO INÍCIO/FIM EM TONS DE CINZA */}
+      <LeaderTimelineReportModal
+        isOpen={showTimelineReportModal}
+        onClose={() => setShowTimelineReportModal(false)}
+        logs={logs}
+        collaborators={collaborators}
+        shifts={shifts}
+      />
     </div>
   );
 };
