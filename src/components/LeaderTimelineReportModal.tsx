@@ -24,6 +24,8 @@ import {
   padronizarNomeTurno,
   obterHoraMinutoPtBr,
   timeToMinutesOfDay,
+  calcularGapsJornadaColaboradores,
+  converterDataPtParaIso,
 } from '../utils/factoryCalculations';
 import {
   TimelineActivityBlock,
@@ -63,11 +65,63 @@ function formatMinTick(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}${nextDay}`;
 }
 
+/**
+ * Combina initialDescription, observation e notes sem duplicar textos repetidos,
+ * garantindo que todas as observações apareçam na tela, impressão e PDF.
+ */
+function buildCombinedObservation(log: ProductionLog): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  [log.initialDescription, log.observation, log.notes].forEach((val) => {
+    const clean = (val || '').trim();
+    if (!clean) return;
+    const norm = clean.toLowerCase();
+    if (!seen.has(norm)) {
+      seen.add(norm);
+      parts.push(clean);
+    }
+  });
+  return parts.join(' · ');
+}
+
+function resolveShiftWindowForColab(
+  shiftName: string,
+  shifts: ShiftConfig[]
+): { entrada: string; saida: string; isOvernight: boolean } {
+  const foundShift =
+    (shifts || []).find(
+      (s) =>
+        padronizarNomeTurno(s.name) === padronizarNomeTurno(shiftName) ||
+        padronizarNomeTurno(s.code) === padronizarNomeTurno(shiftName) ||
+        s.name.toUpperCase().includes(shiftName.toUpperCase())
+    ) ||
+    shifts?.[0] || { entrada: '07:00', saida: '17:30' };
+
+  const entrada = foundShift.entrada || '07:00';
+  const saida = foundShift.saida || '17:30';
+  const isOvernight = timeToMinutesOfDay(entrada) > timeToMinutesOfDay(saida);
+  return { entrada, saida, isOvernight };
+}
+
+function toShiftAwareMinute(
+  timeStr: string,
+  shiftEntrada: string,
+  isOvernight: boolean
+): number {
+  const raw = timeToMinutesOfDay(timeStr);
+  const entMin = timeToMinutesOfDay(shiftEntrada);
+  if (isOvernight && raw < entMin) {
+    return raw + 1440;
+  }
+  return raw;
+}
+
 export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps> = ({
   isOpen,
   onClose,
   logs,
   collaborators,
+  shifts,
 }) => {
   // 1. Filtros de Data / Período
   const [periodMode, setPeriodMode] = useState<'DATA' | 'PERIODO'>('DATA');
@@ -75,21 +129,21 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
   const [startDate, setStartDate] = useState<string>(() => obterDataHojeIsoPtBr());
   const [endDate, setEndDate] = useState<string>(() => obterDataHojeIsoPtBr());
 
-  // 2. Filtro de Turno & Ordenação
+  // 2. Filtro de Turno, Ordenação & Auditoria de Turno Inteiro
   const [shiftFilter, setShiftFilter] = useState<string>('TODOS');
-  const [sortBy, setSortBy] = useState<'INICIO' | 'TEMPO' | 'NOME'>('INICIO');
+  const [sortBy, setSortBy] = useState<'INICIO' | 'TEMPO' | 'SEM_APONTAR' | 'NOME'>('INICIO');
   const [chartView, setChartView] = useState<'AUTO' | 'TIMELINE' | 'BARRAS' | 'AMBOS'>('AUTO');
+  const [includeShiftGaps, setIncludeShiftGaps] = useState<boolean>(true);
 
   // 3. Seletor de Colaboradores ("todos ou de quem eu escolher")
-  // Vazio = Todos que iniciaram atividades. Preenchido = apenas os nomes selecionados.
   const [selectedNames, setSelectedNames] = useState<string[]>([]);
   const [colabDropdownOpen, setColabDropdownOpen] = useState(false);
   const [colabSearch, setColabSearch] = useState('');
   const colabDropdownRef = useRef<HTMLDivElement>(null);
 
   // 4. Formulário: Campo para Ação do Líder (persistido por chave de data/período)
-  const effectiveStart = periodMode === 'DATA' ? singleDate : (startDate || singleDate);
-  const effectiveEnd = periodMode === 'DATA' ? singleDate : (endDate || startDate || singleDate);
+  const effectiveStart = periodMode === 'DATA' ? singleDate : startDate || singleDate;
+  const effectiveEnd = periodMode === 'DATA' ? singleDate : endDate || startDate || singleDate;
   const draftStorageKey = `mca_leader_action_draft_${effectiveStart}_${effectiveEnd}`;
 
   const [leaderAction, setLeaderAction] = useState<LeaderActionFormState>({
@@ -99,7 +153,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     deadline: '',
   });
 
-  // Carrega rascunho da ação do líder quando muda a data/período
   useEffect(() => {
     try {
       const saved = localStorage.getItem(draftStorageKey);
@@ -124,7 +177,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     }
   }, [draftStorageKey]);
 
-  // Salva rascunho automaticamente
   useEffect(() => {
     try {
       localStorage.setItem(draftStorageKey, JSON.stringify(leaderAction));
@@ -133,11 +185,9 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     }
   }, [draftStorageKey, leaderAction]);
 
-  // Estados de exportação PDF / Impressão
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfFeedback, setPdfFeedback] = useState<string | null>(null);
 
-  // Fechar popover ao clicar fora
   useEffect(() => {
     const handleOutside = (e: MouseEvent) => {
       if (colabDropdownRef.current && !colabDropdownRef.current.contains(e.target as Node)) {
@@ -148,7 +198,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     return () => document.removeEventListener('mousedown', handleOutside);
   }, []);
 
-  // Atalhos rápidos de data/período
   const applyPreset = (preset: 'HOJE' | 'ONTEM' | '7DIAS' | 'MES') => {
     const today = new Date();
     const todayIso = obterDataHojeIsoPtBr();
@@ -175,104 +224,158 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     }
   };
 
-  // Logs base filtrados por data/período e turno (antes do filtro de colaborador individual, para popular lista)
-  const periodAndShiftLogs = useMemo(() => {
-    const nowTime = obterHoraMinutoPtBr(new Date());
-    const todayIso = obterDataHojeIsoPtBr();
+  // Logs brutos no intervalo e turno selecionados
+  const rawPeriodAndShiftLogs = useMemo(() => {
+    return (logs || []).filter((log) => {
+      if (!log || !log.date || !log.collaboratorName || !log.startTime) return false;
+      const inRange = verificarDataNoPeriodo(log.date, effectiveStart, effectiveEnd);
+      if (!inRange) return false;
 
-    return (logs || [])
-      .filter((log) => {
-        if (!log || !log.date || !log.collaboratorName || !log.startTime) return false;
-        const inRange = verificarDataNoPeriodo(log.date, effectiveStart, effectiveEnd);
-        if (!inRange) return false;
-
-        if (shiftFilter !== 'TODOS') {
-          const itemShift = obterTurnoDoLog(log, collaborators);
-          if (padronizarNomeTurno(itemShift) !== padronizarNomeTurno(shiftFilter)) {
-            return false;
-          }
-        }
-        return true;
-      })
-      .map((log) => {
-        const isOngoing = log.status === 'Em Execução' || log.status === 'Pausada';
-        const isAutoClosed = Boolean(log.autoClosed || log.autoClosedAtShiftEnd);
-        const startMin = timeToMinutesOfDay(log.startTime);
-
-        let endStr = log.endTime || '';
-        let endMin = startMin;
-        let durMin = typeof log.durationMinutes === 'number' && log.durationMinutes > 0 ? log.durationMinutes : 0;
-
-        if (log.endTime) {
-          endMin = timeToMinutesOfDay(log.endTime);
-          if (endMin < startMin) endMin += 1440; // Cruza meia-noite (ex: Turno 2 até 01:30)
-          if (durMin <= 0) {
-            durMin = Math.max(1, calcularDiferencaMinutos(log.startTime, log.endTime));
-          }
-        } else if (isOngoing) {
-          // Para barra visual na linha do tempo: usa hora atual se for hoje, senão start + 30m
-          const parts = log.date.split('/');
-          const logIso = parts.length === 3 ? `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}` : log.date;
-          const refEndTime = logIso === todayIso ? nowTime : log.startTime;
-          endMin = timeToMinutesOfDay(refEndTime);
-          if (endMin < startMin) endMin += 1440;
-          if (endMin <= startMin) endMin = startMin + 15;
-          durMin = durMin > 0 ? durMin : Math.max(1, endMin - startMin);
-          endStr = 'Em andamento';
-        } else {
-          endMin = startMin + Math.max(5, durMin);
-          endStr = '-';
-        }
-
-        const colabObj = (collaborators || []).find(
-          (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
-        );
-
-        const block: TimelineActivityBlock = {
-          id: log.id,
-          date: log.date,
-          collaboratorName: log.collaboratorName.trim(),
-          role: log.role || colabObj?.role || 'Operador',
-          shift: obterTurnoDoLog(log, collaborators),
-          activity: log.activity || 'Sem Atividade',
-          startTime: log.startTime,
-          endTime: endStr,
-          startMinOfDay: startMin,
-          endMinOfDay: endMin,
-          durationMinutes: durMin,
-          status: log.status,
-          isOngoing,
-          isAutoClosed,
-          observation: log.observation || log.notes || log.initialDescription,
-        };
-        return block;
-      });
-  }, [logs, collaborators, effectiveStart, effectiveEnd, shiftFilter]);
-
-  // Lista de colaboradores disponíveis para seleção no popover
-  // Mostra primeiro todos que INICIARAM atividades no período, depois os demais cadastrados
-  const availableColabOptions = useMemo(() => {
-    const countMap = new Map<string, { name: string; role: string; shift: string; count: number; firstStart: string; lastEnd: string }>();
-
-    periodAndShiftLogs.forEach((b) => {
-      const key = b.collaboratorName.toLowerCase();
-      const prev = countMap.get(key);
-      if (!prev) {
-        countMap.set(key, {
-          name: b.collaboratorName,
-          role: b.role,
-          shift: b.shift,
-          count: 1,
-          firstStart: b.startTime,
-          lastEnd: b.endTime,
-        });
-      } else {
-        prev.count += 1;
-        if (b.startTime < prev.firstStart) prev.firstStart = b.startTime;
-        if (b.endTime === 'Em andamento' || (prev.lastEnd !== 'Em andamento' && b.endTime > prev.lastEnd)) {
-          prev.lastEnd = b.endTime;
+      if (shiftFilter !== 'TODOS') {
+        const itemShift = obterTurnoDoLog(log, collaborators);
+        if (padronizarNomeTurno(itemShift) !== padronizarNomeTurno(shiftFilter)) {
+          return false;
         }
       }
+      return true;
+    });
+  }, [logs, collaborators, effectiveStart, effectiveEnd, shiftFilter]);
+
+  // Converte logs de atividades e lacunas ("Sem Apontamento" do turno inteiro) em blocos unificados
+  const periodAndShiftBlocks = useMemo<TimelineActivityBlock[]>(() => {
+    const nowTime = obterHoraMinutoPtBr(new Date());
+    const todayIso = obterDataHojeIsoPtBr();
+    const result: TimelineActivityBlock[] = [];
+
+    // 1. Blocos de atividades reais apontadas
+    rawPeriodAndShiftLogs.forEach((log) => {
+      const isOngoing = log.status === 'Em Execução' || log.status === 'Pausada';
+      const isAutoClosed = Boolean(log.autoClosed || log.autoClosedAtShiftEnd);
+      const shiftName = obterTurnoDoLog(log, collaborators);
+      const { entrada, isOvernight } = resolveShiftWindowForColab(shiftName, shifts);
+
+      const startMin = toShiftAwareMinute(log.startTime, entrada, isOvernight);
+      let endStr = log.endTime || '';
+      let endMin = startMin;
+      let durMin =
+        typeof log.durationMinutes === 'number' && log.durationMinutes > 0
+          ? log.durationMinutes
+          : 0;
+
+      if (log.endTime) {
+        endMin = toShiftAwareMinute(log.endTime, entrada, isOvernight);
+        if (endMin < startMin) endMin += 1440;
+        if (durMin <= 0) {
+          durMin = Math.max(1, calcularDiferencaMinutos(log.startTime, log.endTime));
+        }
+      } else if (isOngoing) {
+        const logIso = converterDataPtParaIso(log.date);
+        const refEndTime = logIso === todayIso ? nowTime : log.startTime;
+        endMin = toShiftAwareMinute(refEndTime, entrada, isOvernight);
+        if (endMin < startMin) endMin += 1440;
+        if (endMin <= startMin) endMin = startMin + 15;
+        durMin = durMin > 0 ? durMin : Math.max(1, endMin - startMin);
+        endStr = 'Em andamento';
+      } else {
+        endMin = startMin + Math.max(5, durMin);
+        endStr = '-';
+      }
+
+      const colabObj = (collaborators || []).find(
+        (c) => c.name.trim().toLowerCase() === log.collaboratorName.trim().toLowerCase()
+      );
+
+      result.push({
+        id: log.id,
+        date: log.date,
+        collaboratorName: log.collaboratorName.trim(),
+        role: log.role || colabObj?.role || 'Operador',
+        shift: shiftName,
+        activity: log.activity || 'Sem Atividade',
+        startTime: log.startTime,
+        endTime: endStr,
+        startMinOfDay: startMin,
+        endMinOfDay: endMin,
+        durationMinutes: durMin,
+        status: log.status,
+        isOngoing,
+        isAutoClosed,
+        isGap: false,
+        observation: buildCombinedObservation(log),
+      });
+    });
+
+    // 2. Regra de Turno Inteiro: Se o colaborador abriu ao menos 1 atividade naquela data,
+    // contabiliza TODO o turno e lista qualquer período em que ele deixou de apontar (>= 1 min).
+    if (includeShiftGaps && rawPeriodAndShiftLogs.length > 0) {
+      const shiftGaps = calcularGapsJornadaColaboradores(
+        rawPeriodAndShiftLogs,
+        collaborators,
+        shifts,
+        undefined,
+        new Date()
+      );
+
+      shiftGaps.forEach((gap) => {
+        if (!verificarDataNoPeriodo(gap.date, effectiveStart, effectiveEnd)) return;
+        const { entrada, isOvernight } = resolveShiftWindowForColab(gap.shift, shifts);
+        const startMin = toShiftAwareMinute(gap.startTime, entrada, isOvernight);
+        let endMin = toShiftAwareMinute(gap.endTime, entrada, isOvernight);
+        if (endMin < startMin) endMin += 1440;
+
+        result.push({
+          id: gap.id,
+          date: gap.date,
+          collaboratorName: gap.collaboratorName.trim(),
+          role: gap.role || 'Operador',
+          shift: padronizarNomeTurno(gap.shift),
+          activity: gap.activity.replace(/^⚠️\s*/, '').trim(),
+          startTime: gap.startTime,
+          endTime: gap.endTime,
+          startMinOfDay: startMin,
+          endMinOfDay: endMin,
+          durationMinutes: gap.durationMinutes,
+          status: 'Sem Apontamento',
+          isOngoing: false,
+          isAutoClosed: false,
+          isGap: true,
+          observation: gap.observation,
+        });
+      });
+    }
+
+    return result;
+  }, [
+    rawPeriodAndShiftLogs,
+    collaborators,
+    shifts,
+    includeShiftGaps,
+    effectiveStart,
+    effectiveEnd,
+  ]);
+
+  // Lista de colaboradores para o popover seletor
+  const availableColabOptions = useMemo(() => {
+    const countMap = new Map<
+      string,
+      { name: string; role: string; shift: string; count: number; gapMins: number }
+    >();
+
+    periodAndShiftBlocks.forEach((b) => {
+      const key = b.collaboratorName.toLowerCase();
+      const prev = countMap.get(key) || {
+        name: b.collaboratorName,
+        role: b.role,
+        shift: b.shift,
+        count: 0,
+        gapMins: 0,
+      };
+      if (b.isGap) {
+        prev.gapMins += b.durationMinutes;
+      } else {
+        prev.count += 1;
+      }
+      countMap.set(key, prev);
     });
 
     (collaborators || []).forEach((c) => {
@@ -284,8 +387,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
           role: c.role || 'Operador',
           shift: c.shift || 'Turno 1',
           count: 0,
-          firstStart: '-',
-          lastEnd: '-',
+          gapMins: 0,
         });
       }
     });
@@ -295,7 +397,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
       if (a.count === 0 && b.count > 0) return 1;
       return a.name.localeCompare(b.name);
     });
-  }, [periodAndShiftLogs, collaborators]);
+  }, [periodAndShiftBlocks, collaborators]);
 
   const filteredColabOptions = useMemo(() => {
     const q = colabSearch.trim().toLowerCase();
@@ -305,62 +407,77 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     );
   }, [availableColabOptions, colabSearch]);
 
-  // Agrupamento final por colaborador que iniciou atividades (respeitando seleção do usuário)
+  // Agrupamento final por colaborador que iniciou atividades
   const summaries = useMemo<CollaboratorTimelineSummary[]>(() => {
     const selectedSet = new Set(selectedNames.map((n) => n.trim().toLowerCase()));
     const filteredBlocks =
       selectedSet.size === 0
-        ? periodAndShiftLogs
-        : periodAndShiftLogs.filter((b) => selectedSet.has(b.collaboratorName.toLowerCase()));
+        ? periodAndShiftBlocks
+        : periodAndShiftBlocks.filter((b) => selectedSet.has(b.collaboratorName.toLowerCase()));
 
     const map = new Map<string, CollaboratorTimelineSummary>();
     filteredBlocks.forEach((b) => {
       const key = b.collaboratorName.toLowerCase();
       let entry = map.get(key);
       if (!entry) {
+        const { entrada, saida } = resolveShiftWindowForColab(b.shift, shifts);
         entry = {
           collaboratorName: b.collaboratorName,
           role: b.role,
           shift: b.shift,
+          shiftWindow: `${entrada}–${saida}`,
           firstStartTime: b.startTime,
           lastEndTime: b.endTime,
           activitiesCount: 0,
+          gapsCount: 0,
           totalMinutes: 0,
+          totalGapMinutes: 0,
           blocks: [],
         };
         map.set(key, entry);
       }
-      entry.activitiesCount += 1;
-      entry.totalMinutes += b.durationMinutes;
+      if (b.isGap) {
+        entry.gapsCount += 1;
+        entry.totalGapMinutes += b.durationMinutes;
+      } else {
+        entry.activitiesCount += 1;
+        entry.totalMinutes += b.durationMinutes;
+      }
       entry.blocks.push(b);
     });
 
-    // Ordenar blocos de cada colaborador cronologicamente
-    const list = Array.from(map.values()).map((col) => {
-      col.blocks.sort((a, b) => {
-        const dc = a.date.localeCompare(b.date);
-        if (dc !== 0) return dc;
-        return a.startTime.localeCompare(b.startTime);
+    const list = Array.from(map.values())
+      .filter((col) => col.activitiesCount > 0) // Só traz quem de fato iniciou atividade
+      .map((col) => {
+        col.blocks.sort((a, b) => {
+          const isoA = converterDataPtParaIso(a.date);
+          const isoB = converterDataPtParaIso(b.date);
+          if (isoA !== isoB) return isoA.localeCompare(isoB);
+          return a.startMinOfDay - b.startMinOfDay;
+        });
+
+        const realActs = col.blocks.filter((b) => !b.isGap);
+        const firstReal = realActs[0];
+        const lastReal = realActs[realActs.length - 1];
+        col.firstStartTime = firstReal?.startTime || '-';
+        col.lastEndTime = lastReal?.endTime || '-';
+        return col;
       });
-      const firstBlock = col.blocks[0];
-      const lastBlock = col.blocks[col.blocks.length - 1];
-      col.firstStartTime = firstBlock?.startTime || '-';
-      col.lastEndTime = lastBlock?.endTime || '-';
-      return col;
-    });
 
     if (sortBy === 'INICIO') {
       list.sort((a, b) => a.firstStartTime.localeCompare(b.firstStartTime));
     } else if (sortBy === 'TEMPO') {
       list.sort((a, b) => b.totalMinutes - a.totalMinutes);
+    } else if (sortBy === 'SEM_APONTAR') {
+      list.sort((a, b) => b.totalGapMinutes - a.totalGapMinutes);
     } else {
       list.sort((a, b) => a.collaboratorName.localeCompare(b.collaboratorName));
     }
 
     return list;
-  }, [periodAndShiftLogs, selectedNames, sortBy]);
+  }, [periodAndShiftBlocks, selectedNames, sortBy, shifts]);
 
-  // Faixa de horário dinâmica para o gráfico de Linha do Tempo (Início -> Fim)
+  // Faixa de horário dinâmica para o gráfico de Linha do Tempo (cobrindo turno inteiro)
   const timelineRange = useMemo(() => {
     const allBlocks = summaries.flatMap((s) => s.blocks);
     if (allBlocks.length === 0) {
@@ -384,11 +501,15 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     return ticks;
   }, [timelineRange]);
 
-  // Totais gerais do relatório
   const totals = useMemo(() => {
     const totalActivities = summaries.reduce((acc, s) => acc + s.activitiesCount, 0);
+    const totalGapsCount = summaries.reduce((acc, s) => acc + s.gapsCount, 0);
     const totalMinutes = summaries.reduce((acc, s) => acc + s.totalMinutes, 0);
-    const maxColabMin = Math.max(1, ...summaries.map((s) => s.totalMinutes));
+    const totalGapMinutes = summaries.reduce((acc, s) => acc + s.totalGapMinutes, 0);
+    const maxColabTotalSpan = Math.max(
+      1,
+      ...summaries.map((s) => s.totalMinutes + (includeShiftGaps ? s.totalGapMinutes : 0))
+    );
 
     let overallFirstStart = '-';
     let overallLastEnd = '-';
@@ -405,8 +526,16 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
       }
     }
 
-    return { totalActivities, totalMinutes, maxColabMin, overallFirstStart, overallLastEnd };
-  }, [summaries]);
+    return {
+      totalActivities,
+      totalGapsCount,
+      totalMinutes,
+      totalGapMinutes,
+      maxColabTotalSpan,
+      overallFirstStart,
+      overallLastEnd,
+    };
+  }, [summaries, includeShiftGaps]);
 
   const periodLabel = useMemo(() => {
     if (periodMode === 'DATA') {
@@ -431,7 +560,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     chartView === 'AMBOS' ||
     (chartView === 'AUTO' && periodMode === 'PERIODO');
 
-  // Handlers de seleção de colaboradores
   const toggleColabName = (name: string) => {
     setSelectedNames((prev) => {
       const exists = prev.some((n) => n.toLowerCase() === name.toLowerCase());
@@ -442,7 +570,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
     });
   };
 
-  // Handlers do formulário Ação do Líder
   const toggleActionClassification = (opt: string) => {
     setLeaderAction((prev) => {
       const exists = prev.classifications.includes(opt);
@@ -477,10 +604,13 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
         periodLabel,
         selectedCollaboratorsLabel,
         shiftFilterLabel: shiftFilter === 'TODOS' ? 'Todos os Turnos' : shiftFilter,
+        includeShiftGaps,
         summaries,
         timelineRange,
         totalActivities: totals.totalActivities,
+        totalGapsCount: totals.totalGapsCount,
         totalMinutes: totals.totalMinutes,
+        totalGapMinutes: totals.totalGapMinutes,
         overallFirstStart: totals.overallFirstStart,
         overallLastEnd: totals.overallLastEnd,
         leaderAction,
@@ -500,7 +630,11 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
 
   if (!isOpen) return null;
 
-  const grayShadesBg = ['#18181B', '#3F3F46', '#71717A', '#A1A1AA'];
+  const grayShadesBg = ['#18181B', '#3F3F46', '#52525B', '#71717A'];
+  const hatchedGapStyle: React.CSSProperties = {
+    backgroundImage:
+      'repeating-linear-gradient(-45deg, #F4F4F5, #F4F4F5 3px, #D4D4D8 3px, #D4D4D8 6px)',
+  };
 
   return (
     <>
@@ -517,10 +651,10 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                 </div>
                 <div className="min-w-0">
                   <h2 className="text-sm sm:text-base font-bold text-zinc-100 truncate">
-                    Relatório de Gestão · Início e Fim de Atividades
+                    Relatório de Gestão · Início, Fim e Auditoria de Turno
                   </h2>
                   <p className="text-xs text-zinc-400 truncate">
-                    Formulário clean em tons de cinza para impressão · Gráfico, horários e ação do líder
+                    Formulário clean em tons de cinza · Observações completas, lacunas sem apontar e ação do líder
                   </p>
                 </div>
               </div>
@@ -558,7 +692,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
 
             {/* BARRA DE FILTROS COMPACTA */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end pt-1">
-              {/* Modo: Data ou Período + Presets */}
               <div className="md:col-span-5 space-y-1">
                 <div className="flex items-center justify-between gap-2">
                   <div className="inline-flex bg-zinc-950 p-0.5 rounded-lg border border-zinc-800 text-[11px]">
@@ -634,7 +767,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                 )}
               </div>
 
-              {/* Seletor de Colaboradores (Todos ou quem eu escolher) */}
               <div className="md:col-span-4 relative" ref={colabDropdownRef}>
                 <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
                   Colaboradores (Todos ou Específicos)
@@ -722,6 +854,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                             </div>
                             <span className="text-[10px] font-mono tabular-nums text-zinc-400 shrink-0">
                               {opt.count > 0 ? `${opt.count}x` : '0x'}
+                              {opt.gapMins > 0 ? ` · ${formatarHorasMinutos(opt.gapMins)} s/ap` : ''}
                             </span>
                           </button>
                         );
@@ -731,7 +864,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                 )}
               </div>
 
-              {/* Turno e Visualização de Gráfico */}
               <div className="md:col-span-3 grid grid-cols-2 gap-1.5">
                 <div>
                   <label className="block text-[11px] font-semibold text-zinc-400 mb-1">Turno</label>
@@ -751,10 +883,11 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                   <label className="block text-[11px] font-semibold text-zinc-400 mb-1">Ordenar</label>
                   <select
                     value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as 'INICIO' | 'TEMPO' | 'NOME')}
+                    onChange={(e) => setSortBy(e.target.value as 'INICIO' | 'TEMPO' | 'SEM_APONTAR' | 'NOME')}
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-100 outline-none cursor-pointer"
                   >
                     <option value="INICIO">1º Início</option>
+                    <option value="SEM_APONTAR">Mais Sem Apontar</option>
                     <option value="TEMPO">Maior Tempo</option>
                     <option value="NOME">Nome A–Z</option>
                   </select>
@@ -762,30 +895,54 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
               </div>
             </div>
 
-            {/* Sub-barra: Tipo de Gráfico + Feedback de PDF */}
+            {/* Sub-barra: Tipo de Gráfico + Contar Turno Inteiro + Feedback */}
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-zinc-400">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-medium text-zinc-500">Gráfico na folha:</span>
-                {(['AUTO', 'TIMELINE', 'BARRAS', 'AMBOS'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setChartView(mode)}
-                    className={`px-2 py-0.5 rounded font-medium transition cursor-pointer whitespace-nowrap ${
-                      chartView === mode
-                        ? 'bg-zinc-700 text-white'
-                        : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-medium text-zinc-500">Gráfico:</span>
+                  {(['AUTO', 'TIMELINE', 'BARRAS', 'AMBOS'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setChartView(mode)}
+                      className={`px-2 py-0.5 rounded font-medium transition cursor-pointer whitespace-nowrap ${
+                        chartView === mode
+                          ? 'bg-zinc-700 text-white'
+                          : 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                      }`}
+                    >
+                      {mode === 'AUTO'
+                        ? 'Automático'
+                        : mode === 'TIMELINE'
+                        ? 'Linha do Tempo'
+                        : mode === 'BARRAS'
+                        ? 'Barras Comparativas'
+                        : 'Ambos'}
+                    </button>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIncludeShiftGaps((prev) => !prev)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded border text-[11px] font-medium transition cursor-pointer whitespace-nowrap ${
+                    includeShiftGaps
+                      ? 'bg-zinc-800 border-zinc-600 text-zinc-100'
+                      : 'bg-zinc-950 border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                  }`}
+                  title="Quando ativado, conta o turno inteiro de quem iniciou alguma atividade e destaca períodos sem apontar"
+                >
+                  <span
+                    className={`w-3 h-3 rounded-sm border flex items-center justify-center text-[9px] ${
+                      includeShiftGaps
+                        ? 'bg-zinc-200 border-zinc-200 text-zinc-900 font-bold'
+                        : 'border-zinc-600 text-transparent'
                     }`}
                   >
-                    {mode === 'AUTO'
-                      ? 'Automático'
-                      : mode === 'TIMELINE'
-                      ? 'Linha do Tempo'
-                      : mode === 'BARRAS'
-                      ? 'Barras Comparativas'
-                      : 'Ambos'}
-                  </button>
-                ))}
+                    ✓
+                  </span>
+                  <span>Auditar Turno Inteiro (Mostrar Sem Apontar)</span>
+                </button>
               </div>
 
               {pdfFeedback && (
@@ -809,7 +966,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                     MCA Controle de Atividades · Gestão Operacional
                   </div>
                   <h1 className="text-lg sm:text-xl font-bold text-zinc-900 tracking-tight">
-                    Relatório de Início e Fim de Atividades
+                    Relatório de Início, Fim e Auditoria de Turno
                   </h1>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-600">
                     <span>
@@ -837,7 +994,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                 </div>
               </div>
 
-              {/* 2. INDICADORES RESUMO (CINZA CLEAN, SEM PILLS) */}
+              {/* 2. INDICADORES RESUMO (CINZA CLEAN) */}
               <div className="grid grid-cols-2 sm:grid-cols-4 border border-zinc-300 divide-y sm:divide-y-0 sm:divide-x divide-zinc-300 bg-zinc-50">
                 <div className="p-3">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
@@ -846,38 +1003,48 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                   <div className="text-lg font-bold text-zinc-900 font-mono tabular-nums mt-0.5">
                     {summaries.length}
                   </div>
-                  <div className="text-[11px] text-zinc-600">colaborador(es)</div>
+                  <div className="text-[11px] text-zinc-600">colaborador(es) no turno</div>
                 </div>
 
                 <div className="p-3">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    Total de Registros
+                    Registros / Lacunas
                   </div>
                   <div className="text-lg font-bold text-zinc-900 font-mono tabular-nums mt-0.5">
                     {totals.totalActivities}
+                    {includeShiftGaps && (
+                      <span className="text-xs font-medium text-zinc-500 ml-1">
+                        · {totals.totalGapsCount} lac.
+                      </span>
+                    )}
                   </div>
-                  <div className="text-[11px] text-zinc-600">apontamento(s)</div>
+                  <div className="text-[11px] text-zinc-600">atividades · períodos sem apontar</div>
                 </div>
 
                 <div className="p-3">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    Janela (Início → Fim)
-                  </div>
-                  <div className="text-base sm:text-lg font-bold text-zinc-900 font-mono tabular-nums mt-0.5">
-                    {totals.overallFirstStart} – {totals.overallLastEnd === 'Em andamento' ? 'Ativo' : totals.overallLastEnd}
-                  </div>
-                  <div className="text-[11px] text-zinc-600">1º início ao último fim</div>
-                </div>
-
-                <div className="p-3">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                    Carga Total Apontada
+                    Tempo Apontado
                   </div>
                   <div className="text-lg font-bold text-zinc-900 font-mono tabular-nums mt-0.5">
                     {formatarHorasMinutos(totals.totalMinutes)}
                   </div>
                   <div className="text-[11px] text-zinc-600 font-mono tabular-nums">
-                    {totals.totalMinutes} min totais
+                    {totals.overallFirstStart} –{' '}
+                    {totals.overallLastEnd === 'Em andamento' ? 'Ativo' : totals.overallLastEnd}
+                  </div>
+                </div>
+
+                <div className="p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                    Sem Apontamento (Turno)
+                  </div>
+                  <div className="text-lg font-bold text-zinc-900 font-mono tabular-nums mt-0.5">
+                    {formatarHorasMinutos(totals.totalGapMinutes)}
+                  </div>
+                  <div className="text-[11px] text-zinc-600 font-mono tabular-nums">
+                    {totals.totalGapMinutes > 0
+                      ? `${totals.totalGapMinutes} min descobertos`
+                      : 'Turno 100% apontado'}
                   </div>
                 </div>
               </div>
@@ -895,29 +1062,37 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                 </div>
               ) : (
                 <div className="space-y-5">
-                  {/* 3A. GRÁFICO LINHA DO TEMPO HORÁRIA (INÍCIO → FIM) */}
+                  {/* 3A. GRÁFICO LINHA DO TEMPO HORÁRIA (TURNO INTEIRO: APONTADO + SEM APONTAR) */}
                   {showTimelineGraph && (
                     <div className="space-y-2">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-800">
-                          Gráfico Linha do Tempo (Início → Fim por Colaborador)
+                          Gráfico Linha do Tempo do Turno Inteiro (Início → Fim)
                         </h3>
                         <div className="flex items-center gap-3 text-[11px] text-zinc-600">
                           <span className="inline-flex items-center gap-1.5">
                             <span className="w-3 h-2.5 inline-block bg-zinc-800 border border-zinc-900" />
-                            <span>Concluída</span>
+                            <span>Apontado</span>
                           </span>
                           <span className="inline-flex items-center gap-1.5">
                             <span className="w-3 h-2.5 inline-block bg-zinc-300 border border-dashed border-zinc-800" />
-                            <span>Em andamento</span>
+                            <span>Ativo</span>
                           </span>
+                          {includeShiftGaps && (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                style={hatchedGapStyle}
+                                className="w-3 h-2.5 inline-block border border-zinc-500"
+                              />
+                              <span>Sem Apontamento</span>
+                            </span>
+                          )}
                         </div>
                       </div>
 
                       <div className="border border-zinc-300 bg-white overflow-x-auto">
-                        <div className="min-w-[600px]">
-                          {/* Eixo de Horas */}
-                          <div className="grid grid-cols-[150px_1fr_115px] border-b border-zinc-300 bg-zinc-100 text-[10px] font-mono tabular-nums text-zinc-600">
+                        <div className="min-w-[620px]">
+                          <div className="grid grid-cols-[150px_1fr_135px] border-b border-zinc-300 bg-zinc-100 text-[10px] font-mono tabular-nums text-zinc-600">
                             <div className="px-2.5 py-1.5 font-bold text-zinc-700 border-r border-zinc-300">
                               Colaborador
                             </div>
@@ -937,18 +1112,18 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                               })}
                             </div>
                             <div className="px-2.5 py-1.5 font-bold text-zinc-700 text-right border-l border-zinc-300">
-                              Início–Fim · Total
+                              Apont. / S/ Apontar
                             </div>
                           </div>
 
-                          {/* Linhas por Colaborador */}
                           <div className="divide-y divide-zinc-200">
                             {summaries.map((col, idx) => {
                               const span = Math.max(60, timelineRange.maxMinute - timelineRange.minMinute);
+                              let actColorCounter = 0;
                               return (
                                 <div
                                   key={col.collaboratorName}
-                                  className={`grid grid-cols-[150px_1fr_115px] items-center ${
+                                  className={`grid grid-cols-[150px_1fr_135px] items-center ${
                                     idx % 2 === 1 ? 'bg-zinc-50/80' : 'bg-white'
                                   }`}
                                 >
@@ -957,12 +1132,11 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                                       {col.collaboratorName}
                                     </div>
                                     <div className="text-[10px] text-zinc-500 truncate">
-                                      {col.role} · {col.activitiesCount}x
+                                      {col.shift} ({col.shiftWindow})
                                     </div>
                                   </div>
 
                                   <div className="relative h-9 mx-1">
-                                    {/* Linhas de grade verticais */}
                                     {timelineTicks.map((tick) => {
                                       const pct = ((tick - timelineRange.minMinute) / span) * 100;
                                       return (
@@ -974,11 +1148,9 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                                       );
                                     })}
 
-                                    {/* Trilho base */}
-                                    <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-4 bg-zinc-100 border border-zinc-200" />
+                                    <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-4 bg-zinc-50 border border-zinc-200" />
 
-                                    {/* Blocos de atividades (Início -> Fim) */}
-                                    {col.blocks.map((blk, bIdx) => {
+                                    {col.blocks.map((blk) => {
                                       const leftPct = Math.max(
                                         0,
                                         ((blk.startMinOfDay - timelineRange.minMinute) / span) * 100
@@ -988,7 +1160,30 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                                         ((Math.max(blk.startMinOfDay + 5, blk.endMinOfDay) - timelineRange.minMinute) / span) * 100
                                       );
                                       const widthPct = Math.max(1.2, rightPct - leftPct);
-                                      const bgTone = grayShadesBg[bIdx % grayShadesBg.length];
+
+                                      if (blk.isGap) {
+                                        return (
+                                          <div
+                                            key={blk.id}
+                                            style={{
+                                              left: `${leftPct}%`,
+                                              width: `${widthPct}%`,
+                                              ...hatchedGapStyle,
+                                            }}
+                                            title={`${blk.activity} | ${blk.startTime.slice(0, 5)} às ${blk.endTime.slice(0, 5)} (${blk.durationMinutes} min) - ${blk.observation || ''}`}
+                                            className="absolute top-1/2 -translate-y-1/2 h-4 border border-zinc-500 flex items-center justify-center overflow-hidden"
+                                          >
+                                            {widthPct > 9 && (
+                                              <span className="text-[8.5px] font-mono font-bold text-zinc-700 px-1 truncate bg-white/75">
+                                                S/Ap {blk.durationMinutes}m
+                                              </span>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+
+                                      const bgTone = grayShadesBg[actColorCounter % grayShadesBg.length];
+                                      actColorCounter++;
 
                                       return (
                                         <div
@@ -998,7 +1193,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                                             width: `${widthPct}%`,
                                             backgroundColor: blk.isOngoing ? '#D4D4D8' : bgTone,
                                           }}
-                                          title={`${blk.activity} | Início: ${blk.startTime} | Fim: ${blk.endTime} (${blk.durationMinutes} min)`}
+                                          title={`${blk.activity}${blk.observation ? ` (${blk.observation})` : ''} | Início: ${blk.startTime} | Fim: ${blk.endTime} (${blk.durationMinutes} min)`}
                                           className={`absolute top-1/2 -translate-y-1/2 h-4 border ${
                                             blk.isOngoing
                                               ? 'border-dashed border-zinc-900 text-zinc-900'
@@ -1017,10 +1212,14 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
 
                                   <div className="px-2.5 py-2 border-l border-zinc-200 text-right font-mono tabular-nums">
                                     <div className="text-[11px] font-bold text-zinc-900">
-                                      {col.firstStartTime.slice(0, 5)}–{col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5)}
+                                      {formatarHorasMinutos(col.totalMinutes)}
                                     </div>
                                     <div className="text-[10px] text-zinc-600">
-                                      {formatarHorasMinutos(col.totalMinutes)}
+                                      {col.totalGapMinutes > 0
+                                        ? `S/Ap: ${formatarHorasMinutos(col.totalGapMinutes)}`
+                                        : `${col.firstStartTime.slice(0, 5)}–${
+                                            col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5)
+                                          }`}
                                     </div>
                                   </div>
                                 </div>
@@ -1032,42 +1231,50 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                     </div>
                   )}
 
-                  {/* 3B. GRÁFICO DE BARRAS HORIZONTAIS EM TONS DE CINZA */}
+                  {/* 3B. GRÁFICO DE BARRAS HORIZONTAIS (APONTADO vs SEM APONTAR) */}
                   {showBarsGraph && (
                     <div className="space-y-2">
                       <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-800">
-                        Gráfico Comparativo de Tempo Apontado (Tons de Cinza)
+                        Gráfico Comparativo: Tempo Apontado vs. Sem Apontamento (Tons de Cinza)
                       </h3>
 
                       <div className="border border-zinc-300 bg-white divide-y divide-zinc-200">
-                        {summaries.map((col, idx) => {
-                          const pct = Math.max(2, Math.round((col.totalMinutes / totals.maxColabMin) * 100));
-                          const shadeClass = idx % 2 === 0 ? 'bg-zinc-800' : 'bg-zinc-600';
+                        {summaries.map((col) => {
+                          const workPct = Math.max(1, Math.round((col.totalMinutes / totals.maxColabTotalSpan) * 100));
+                          const gapPct = includeShiftGaps
+                            ? Math.min(100 - workPct, Math.round((col.totalGapMinutes / totals.maxColabTotalSpan) * 100))
+                            : 0;
                           return (
                             <div
                               key={col.collaboratorName}
-                              className="grid grid-cols-1 sm:grid-cols-[160px_1fr_185px] items-center gap-2 px-3 py-2"
+                              className="grid grid-cols-1 sm:grid-cols-[155px_1fr_220px] items-center gap-2 px-3 py-2"
                             >
                               <div className="min-w-0">
                                 <div className="text-xs font-bold text-zinc-900 truncate">{col.collaboratorName}</div>
-                                <div className="text-[10px] text-zinc-500 truncate">{col.role}</div>
+                                <div className="text-[10px] text-zinc-500 truncate">
+                                  {col.shift} ({col.shiftWindow})
+                                </div>
                               </div>
 
-                              <div className="w-full h-4 bg-zinc-100 border border-zinc-200 overflow-hidden">
-                                <div
-                                  style={{ width: `${pct}%` }}
-                                  className={`h-full ${shadeClass}`}
-                                />
+                              <div className="w-full h-4 bg-zinc-100 border border-zinc-200 overflow-hidden flex">
+                                <div style={{ width: `${workPct}%` }} className="h-full bg-zinc-800" />
+                                {gapPct > 0 && (
+                                  <div
+                                    style={{ width: `${gapPct}%`, ...hatchedGapStyle }}
+                                    className="h-full border-l border-zinc-500"
+                                  />
+                                )}
                               </div>
 
                               <div className="text-right text-[11px] font-mono tabular-nums text-zinc-800">
                                 <strong className="text-zinc-900">{formatarHorasMinutos(col.totalMinutes)}</strong>
-                                {' · '}
-                                <span>{col.activitiesCount}x</span>
-                                {' · '}
-                                <span className="text-zinc-600">
-                                  {col.firstStartTime.slice(0, 5)}–{col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5)}
-                                </span>
+                                <span> ({col.activitiesCount}x)</span>
+                                {col.totalGapMinutes > 0 && (
+                                  <span className="text-zinc-600 font-semibold">
+                                    {' · S/Ap: '}
+                                    {formatarHorasMinutos(col.totalGapMinutes)}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           );
@@ -1076,14 +1283,15 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                     </div>
                   )}
 
-                  {/* 4. TABELA DETALHADA DE INÍCIO E FIM DAS ATIVIDADES */}
+                  {/* 4. TABELA DETALHADA DE INÍCIO, FIM, OBSERVAÇÕES E PERÍODOS SEM APONTAR */}
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-800">
-                        Registros de Atividades Iniciadas (Início e Fim)
+                        Detalhamento do Turno (Atividades, Observações e Períodos Sem Apontar)
                       </h3>
                       <span className="text-[11px] font-mono tabular-nums text-zinc-500">
-                        {totals.totalActivities} registro(s)
+                        {totals.totalActivities} atividade(s)
+                        {includeShiftGaps && totals.totalGapsCount > 0 ? ` · ${totals.totalGapsCount} período(s) sem apontar` : ''}
                       </span>
                     </div>
 
@@ -1093,7 +1301,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                           <tr className="bg-zinc-200 border-b border-zinc-400 text-zinc-900 font-bold">
                             <th className="py-2 px-2.5 border-r border-zinc-300">Colaborador</th>
                             <th className="py-2 px-2 border-r border-zinc-300 text-center">Data</th>
-                            <th className="py-2 px-2.5 border-r border-zinc-300">Atividade</th>
+                            <th className="py-2 px-2.5 border-r border-zinc-300">Atividade / Observação</th>
                             <th className="py-2 px-2 border-r border-zinc-300 text-center">Início</th>
                             <th className="py-2 px-2 border-r border-zinc-300 text-center">Fim</th>
                             <th className="py-2 px-2 border-r border-zinc-300 text-right">Duração</th>
@@ -1103,32 +1311,45 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                         <tbody className="divide-y divide-zinc-200">
                           {summaries.flatMap((col) =>
                             col.blocks.map((blk, bIdx) => (
-                              <tr key={blk.id} className={bIdx % 2 === 1 ? 'bg-zinc-50' : 'bg-white'}>
-                                <td className="py-1.5 px-2.5 border-r border-zinc-200 font-semibold text-zinc-900 whitespace-nowrap">
+                              <tr
+                                key={blk.id}
+                                className={
+                                  blk.isGap
+                                    ? 'bg-zinc-100 text-zinc-800'
+                                    : bIdx % 2 === 1
+                                    ? 'bg-zinc-50/60'
+                                    : 'bg-white'
+                                }
+                              >
+                                <td className="py-1.5 px-2.5 border-r border-zinc-200 font-semibold text-zinc-900 whitespace-nowrap align-top">
                                   {col.collaboratorName}
                                 </td>
-                                <td className="py-1.5 px-2 border-r border-zinc-200 text-center font-mono tabular-nums text-zinc-700 whitespace-nowrap">
+                                <td className="py-1.5 px-2 border-r border-zinc-200 text-center font-mono tabular-nums text-zinc-700 whitespace-nowrap align-top">
                                   {blk.date}
                                 </td>
-                                <td className="py-1.5 px-2.5 border-r border-zinc-200 text-zinc-900">
-                                  <div className="font-medium">{blk.activity}</div>
+                                <td className="py-1.5 px-2.5 border-r border-zinc-200 text-zinc-900 align-top">
+                                  <div className={blk.isGap ? 'font-bold text-zinc-800' : 'font-semibold text-zinc-900'}>
+                                    {blk.activity}
+                                  </div>
                                   {blk.observation && (
-                                    <div className="text-[10px] text-zinc-500 truncate max-w-[260px]">
-                                      Obs: {blk.observation}
+                                    <div className="text-[11px] text-zinc-600 mt-0.5 whitespace-normal break-words leading-snug">
+                                      <span className="font-semibold text-zinc-700">Obs:</span> {blk.observation}
                                     </div>
                                   )}
                                 </td>
-                                <td className="py-1.5 px-2 border-r border-zinc-200 text-center font-mono tabular-nums font-semibold text-zinc-900 whitespace-nowrap">
+                                <td className="py-1.5 px-2 border-r border-zinc-200 text-center font-mono tabular-nums font-semibold text-zinc-900 whitespace-nowrap align-top">
                                   {blk.startTime.slice(0, 8)}
                                 </td>
-                                <td className="py-1.5 px-2 border-r border-zinc-200 text-center font-mono tabular-nums text-zinc-800 whitespace-nowrap">
+                                <td className="py-1.5 px-2 border-r border-zinc-200 text-center font-mono tabular-nums text-zinc-800 whitespace-nowrap align-top">
                                   {blk.endTime === 'Em andamento' ? 'Em andamento' : blk.endTime.slice(0, 8)}
                                 </td>
-                                <td className="py-1.5 px-2 border-r border-zinc-200 text-right font-mono tabular-nums font-bold text-zinc-900 whitespace-nowrap">
+                                <td className="py-1.5 px-2 border-r border-zinc-200 text-right font-mono tabular-nums font-bold text-zinc-900 whitespace-nowrap align-top">
                                   {blk.durationMinutes > 0 ? `${blk.durationMinutes} min` : blk.isOngoing ? 'Ativo' : '-'}
                                 </td>
-                                <td className="py-1.5 px-2 text-center text-[11px] text-zinc-700 whitespace-nowrap">
-                                  {blk.isAutoClosed ? 'Auto-Fim' : blk.status}
+                                <td className="py-1.5 px-2 text-center text-[11px] whitespace-nowrap align-top">
+                                  <span className={blk.isGap ? 'font-bold text-zinc-800' : 'text-zinc-700'}>
+                                    {blk.isGap ? 'Sem Apontar' : blk.isAutoClosed ? 'Auto-Fim' : blk.status}
+                                  </span>
                                 </td>
                               </tr>
                             ))
@@ -1154,7 +1375,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                   </span>
                 </div>
 
-                {/* Checkboxes discretas de classificação */}
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-zinc-800">
                   {LEADER_ACTION_OPTIONS.map((opt) => {
                     const checked = leaderAction.classifications.includes(opt);
@@ -1180,7 +1400,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                   })}
                 </div>
 
-                {/* Campo de texto editável para a ação do líder */}
                 <div>
                   <textarea
                     rows={3}
@@ -1191,7 +1410,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                   />
                 </div>
 
-                {/* Campos compactos de Responsável, Prazo e Assinatura */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1 items-end">
                   <div>
                     <label className="block text-[10px] font-bold uppercase text-zinc-600 mb-1">
@@ -1242,7 +1460,7 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
               MCA Controle de Atividades · Gestão Operacional
             </div>
             <h1 className="text-lg font-bold text-zinc-900 mt-0.5">
-              Relatório de Início e Fim de Atividades
+              Relatório de Início, Fim e Auditoria de Turno
             </h1>
             <div className="text-[11px] text-zinc-700 mt-0.5">
               Período: <strong>{periodLabel}</strong> · Filtro: <strong>{selectedCollaboratorsLabel}</strong> · Turno:{' '}
@@ -1258,38 +1476,39 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
           </div>
         </div>
 
-        {/* Faixa de Resumo */}
         <div className="grid grid-cols-4 border border-zinc-400 divide-x divide-zinc-400 bg-zinc-50 mb-4">
           <div className="p-2">
             <div className="text-[9px] font-bold uppercase text-zinc-600">Iniciaram Atividades</div>
             <div className="text-sm font-bold font-mono tabular-nums text-zinc-900">{summaries.length} colab.</div>
           </div>
           <div className="p-2">
-            <div className="text-[9px] font-bold uppercase text-zinc-600">Registros</div>
-            <div className="text-sm font-bold font-mono tabular-nums text-zinc-900">{totals.totalActivities} apont.</div>
-          </div>
-          <div className="p-2">
-            <div className="text-[9px] font-bold uppercase text-zinc-600">Janela Início → Fim</div>
+            <div className="text-[9px] font-bold uppercase text-zinc-600">Registros / Lacunas</div>
             <div className="text-sm font-bold font-mono tabular-nums text-zinc-900">
-              {totals.overallFirstStart} – {totals.overallLastEnd === 'Em andamento' ? 'Ativo' : totals.overallLastEnd}
+              {totals.totalActivities} apont.
+              {includeShiftGaps ? ` · ${totals.totalGapsCount} lac.` : ''}
             </div>
           </div>
           <div className="p-2">
-            <div className="text-[9px] font-bold uppercase text-zinc-600">Tempo Total</div>
+            <div className="text-[9px] font-bold uppercase text-zinc-600">Tempo Apontado</div>
             <div className="text-sm font-bold font-mono tabular-nums text-zinc-900">
               {formatarHorasMinutos(totals.totalMinutes)}
             </div>
           </div>
+          <div className="p-2">
+            <div className="text-[9px] font-bold uppercase text-zinc-600">Sem Apontamento</div>
+            <div className="text-sm font-bold font-mono tabular-nums text-zinc-900">
+              {formatarHorasMinutos(totals.totalGapMinutes)}
+            </div>
+          </div>
         </div>
 
-        {/* Gráfico Linha do Tempo na Impressão */}
         {summaries.length > 0 && showTimelineGraph && (
           <div className="mb-4">
             <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-800 mb-1">
-              Gráfico Linha do Tempo (Início → Fim por Colaborador)
+              Gráfico Linha do Tempo do Turno Inteiro (Início → Fim)
             </div>
             <div className="border border-zinc-400">
-              <div className="grid grid-cols-[135px_1fr_105px] border-b border-zinc-400 bg-zinc-100 text-[9px] font-mono tabular-nums text-zinc-700">
+              <div className="grid grid-cols-[135px_1fr_115px] border-b border-zinc-400 bg-zinc-100 text-[9px] font-mono tabular-nums text-zinc-700">
                 <div className="px-2 py-1 font-bold border-r border-zinc-300">Colaborador</div>
                 <div className="relative h-5">
                   {timelineTicks.map((tick) => {
@@ -1302,43 +1521,60 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
                     );
                   })}
                 </div>
-                <div className="px-2 py-1 font-bold text-right border-l border-zinc-300">Início–Fim</div>
+                <div className="px-2 py-1 font-bold text-right border-l border-zinc-300">Apont. / S/Ap</div>
               </div>
               <div className="divide-y divide-zinc-200">
                 {summaries.map((col, idx) => {
                   const span = Math.max(60, timelineRange.maxMinute - timelineRange.minMinute);
+                  let actColorCounter = 0;
                   return (
                     <div
                       key={col.collaboratorName}
-                      className={`grid grid-cols-[135px_1fr_105px] items-center ${idx % 2 === 1 ? 'bg-zinc-50' : 'bg-white'}`}
+                      className={`grid grid-cols-[135px_1fr_115px] items-center ${idx % 2 === 1 ? 'bg-zinc-50' : 'bg-white'}`}
                     >
                       <div className="px-2 py-1.5 border-r border-zinc-200 text-[10px] font-bold truncate">
                         {col.collaboratorName}
                       </div>
                       <div className="relative h-6 mx-1">
-                        <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-3 bg-zinc-100 border border-zinc-200" />
-                        {col.blocks.map((blk, bIdx) => {
+                        <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-3 bg-zinc-50 border border-zinc-200" />
+                        {col.blocks.map((blk) => {
                           const leftPct = Math.max(0, ((blk.startMinOfDay - timelineRange.minMinute) / span) * 100);
                           const rightPct = Math.min(
                             100,
                             ((Math.max(blk.startMinOfDay + 5, blk.endMinOfDay) - timelineRange.minMinute) / span) * 100
                           );
                           const widthPct = Math.max(1.2, rightPct - leftPct);
+                          if (blk.isGap) {
+                            return (
+                              <div
+                                key={blk.id}
+                                style={{
+                                  left: `${leftPct}%`,
+                                  width: `${widthPct}%`,
+                                  ...hatchedGapStyle,
+                                }}
+                                className="absolute top-1/2 -translate-y-1/2 h-3 border border-zinc-500"
+                              />
+                            );
+                          }
+                          const bgTone = grayShadesBg[actColorCounter % grayShadesBg.length];
+                          actColorCounter++;
                           return (
                             <div
                               key={blk.id}
                               style={{
                                 left: `${leftPct}%`,
                                 width: `${widthPct}%`,
-                                backgroundColor: blk.isOngoing ? '#D4D4D8' : grayShadesBg[bIdx % grayShadesBg.length],
+                                backgroundColor: blk.isOngoing ? '#D4D4D8' : bgTone,
                               }}
                               className="absolute top-1/2 -translate-y-1/2 h-3 border border-zinc-900"
                             />
                           );
                         })}
                       </div>
-                      <div className="px-2 py-1.5 border-l border-zinc-200 text-right font-mono tabular-nums text-[9.5px]">
-                        {col.firstStartTime.slice(0, 5)}–{col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5)}
+                      <div className="px-2 py-1.5 border-l border-zinc-200 text-right font-mono tabular-nums text-[9px]">
+                        {formatarHorasMinutos(col.totalMinutes)}
+                        {col.totalGapMinutes > 0 ? ` · ${formatarHorasMinutos(col.totalGapMinutes)}` : ''}
                       </div>
                     </div>
                   );
@@ -1348,24 +1584,29 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
           </div>
         )}
 
-        {/* Gráfico Barras na Impressão */}
         {summaries.length > 0 && showBarsGraph && (
           <div className="mb-4">
             <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-800 mb-1">
-              Gráfico Comparativo de Tempo Apontado (Tons de Cinza)
+              Gráfico Comparativo: Apontado vs. Sem Apontamento (Tons de Cinza)
             </div>
             <div className="border border-zinc-400 divide-y divide-zinc-200">
-              {summaries.map((col, idx) => {
-                const pct = Math.max(2, Math.round((col.totalMinutes / totals.maxColabMin) * 100));
+              {summaries.map((col) => {
+                const workPct = Math.max(1, Math.round((col.totalMinutes / totals.maxColabTotalSpan) * 100));
+                const gapPct = includeShiftGaps
+                  ? Math.min(100 - workPct, Math.round((col.totalGapMinutes / totals.maxColabTotalSpan) * 100))
+                  : 0;
                 return (
-                  <div key={col.collaboratorName} className="grid grid-cols-[140px_1fr_160px] items-center gap-2 px-2.5 py-1.5">
+                  <div key={col.collaboratorName} className="grid grid-cols-[135px_1fr_180px] items-center gap-2 px-2.5 py-1.5">
                     <div className="text-[10px] font-bold truncate">{col.collaboratorName}</div>
-                    <div className="w-full h-3 bg-zinc-100 border border-zinc-300">
-                      <div style={{ width: `${pct}%` }} className={`h-full ${idx % 2 === 0 ? 'bg-zinc-800' : 'bg-zinc-600'}`} />
+                    <div className="w-full h-3 bg-zinc-100 border border-zinc-300 flex overflow-hidden">
+                      <div style={{ width: `${workPct}%` }} className="h-full bg-zinc-800" />
+                      {gapPct > 0 && (
+                        <div style={{ width: `${gapPct}%`, ...hatchedGapStyle }} className="h-full border-l border-zinc-500" />
+                      )}
                     </div>
-                    <div className="text-right text-[10px] font-mono tabular-nums">
-                      {formatarHorasMinutos(col.totalMinutes)} ({col.activitiesCount}x) · {col.firstStartTime.slice(0, 5)}–
-                      {col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5)}
+                    <div className="text-right text-[9.5px] font-mono tabular-nums">
+                      {formatarHorasMinutos(col.totalMinutes)} ({col.activitiesCount}x)
+                      {col.totalGapMinutes > 0 ? ` · S/Ap: ${formatarHorasMinutos(col.totalGapMinutes)}` : ''}
                     </div>
                   </div>
                 );
@@ -1374,18 +1615,17 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
           </div>
         )}
 
-        {/* Tabela Detalhada na Impressão */}
         {summaries.length > 0 && (
           <div className="mb-4">
             <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-800 mb-1">
-              Detalhamento de Início e Fim
+              Detalhamento do Turno (Atividades, Observações e Períodos Sem Apontar)
             </div>
             <table className="w-full text-[10px] border border-zinc-400 border-collapse">
               <thead>
                 <tr className="bg-zinc-200 border-b border-zinc-400 font-bold text-left">
                   <th className="p-1.5 border-r border-zinc-300">Colaborador</th>
                   <th className="p-1.5 border-r border-zinc-300 text-center">Data</th>
-                  <th className="p-1.5 border-r border-zinc-300">Atividade</th>
+                  <th className="p-1.5 border-r border-zinc-300">Atividade / Observação</th>
                   <th className="p-1.5 border-r border-zinc-300 text-center">Início</th>
                   <th className="p-1.5 border-r border-zinc-300 text-center">Fim</th>
                   <th className="p-1.5 border-r border-zinc-300 text-right">Duração</th>
@@ -1395,20 +1635,36 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
               <tbody>
                 {summaries.flatMap((col) =>
                   col.blocks.map((blk, bIdx) => (
-                    <tr key={blk.id} className={`border-b border-zinc-200 ${bIdx % 2 === 1 ? 'bg-zinc-50' : 'bg-white'}`}>
-                      <td className="p-1.5 border-r border-zinc-200 font-bold">{col.collaboratorName}</td>
-                      <td className="p-1.5 border-r border-zinc-200 text-center font-mono tabular-nums">{blk.date}</td>
-                      <td className="p-1.5 border-r border-zinc-200">{blk.activity}</td>
-                      <td className="p-1.5 border-r border-zinc-200 text-center font-mono tabular-nums font-bold">
+                    <tr
+                      key={blk.id}
+                      className={`border-b border-zinc-200 ${
+                        blk.isGap ? 'bg-zinc-100' : bIdx % 2 === 1 ? 'bg-zinc-50' : 'bg-white'
+                      }`}
+                    >
+                      <td className="p-1.5 border-r border-zinc-200 font-bold align-top">{col.collaboratorName}</td>
+                      <td className="p-1.5 border-r border-zinc-200 text-center font-mono tabular-nums align-top">{blk.date}</td>
+                      <td className="p-1.5 border-r border-zinc-200 align-top">
+                        <div className={blk.isGap ? 'font-bold text-zinc-900' : 'font-semibold text-zinc-900'}>
+                          {blk.activity}
+                        </div>
+                        {blk.observation && (
+                          <div className="text-[9.5px] text-zinc-600 mt-0.5 whitespace-normal break-words">
+                            <strong>Obs:</strong> {blk.observation}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-1.5 border-r border-zinc-200 text-center font-mono tabular-nums font-bold align-top">
                         {blk.startTime.slice(0, 8)}
                       </td>
-                      <td className="p-1.5 border-r border-zinc-200 text-center font-mono tabular-nums">
+                      <td className="p-1.5 border-r border-zinc-200 text-center font-mono tabular-nums align-top">
                         {blk.endTime === 'Em andamento' ? 'Em andamento' : blk.endTime.slice(0, 8)}
                       </td>
-                      <td className="p-1.5 border-r border-zinc-200 text-right font-mono tabular-nums font-bold">
+                      <td className="p-1.5 border-r border-zinc-200 text-right font-mono tabular-nums font-bold align-top">
                         {blk.durationMinutes > 0 ? `${blk.durationMinutes} min` : blk.isOngoing ? 'Ativo' : '-'}
                       </td>
-                      <td className="p-1.5 text-center">{blk.isAutoClosed ? 'Auto-Fim' : blk.status}</td>
+                      <td className="p-1.5 text-center align-top">
+                        {blk.isGap ? 'Sem Apontar' : blk.isAutoClosed ? 'Auto-Fim' : blk.status}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -1417,7 +1673,6 @@ export const LeaderTimelineReportModal: React.FC<LeaderTimelineReportModalProps>
           </div>
         )}
 
-        {/* Campo para Ação do Líder na Impressão */}
         <div className="border border-zinc-700 bg-zinc-50 p-3 space-y-2.5">
           <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-900 border-b border-zinc-300 pb-1">
             Ação do Líder / Encaminhamento de Gestão

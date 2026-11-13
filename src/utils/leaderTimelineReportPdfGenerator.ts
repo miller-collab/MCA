@@ -17,6 +17,7 @@ export interface TimelineActivityBlock {
   status: string;
   isOngoing: boolean;
   isAutoClosed: boolean;
+  isGap?: boolean;
   observation?: string;
 }
 
@@ -24,11 +25,14 @@ export interface CollaboratorTimelineSummary {
   collaboratorName: string;
   role: string;
   shift: string;
+  shiftWindow: string; // Ex: "07:00–17:30"
   firstStartTime: string;
   lastEndTime: string;
   activitiesCount: number;
+  gapsCount: number;
   totalMinutes: number;
-  blocks: TimelineActivityBlock[];
+  totalGapMinutes: number;
+  blocks: TimelineActivityBlock[]; // Todos os blocos (atividades + lacunas sem apontar) em ordem cronológica
 }
 
 export interface LeaderActionFormState {
@@ -43,13 +47,32 @@ export interface LeaderTimelineReportPdfOptions {
   periodLabel: string;
   selectedCollaboratorsLabel: string;
   shiftFilterLabel: string;
+  includeShiftGaps: boolean;
   summaries: CollaboratorTimelineSummary[];
   timelineRange: { minMinute: number; maxMinute: number };
   totalActivities: number;
+  totalGapsCount: number;
   totalMinutes: number;
+  totalGapMinutes: number;
   overallFirstStart: string;
   overallLastEnd: string;
   leaderAction: LeaderActionFormState;
+}
+
+/**
+ * Remove emojis/símbolos incompatíveis com a fonte padrão Helvetica do jsPDF,
+ * mantendo todo texto e acentuação PT-BR 100% legíveis no arquivo PDF salvo.
+ */
+function sanitizePdfText(text?: string): string {
+  if (!text) return '';
+  return text
+    .replace(/⚠️/g, '[Alerta]')
+    .replace(/🍽️/g, '[Refeição]')
+    .replace(/🚨/g, '[Alerta]')
+    .replace(/✅/g, '[OK]')
+    .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{FE00}-\u{FEFF}]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function formatMinuteTickLabel(totalMin: number): string {
@@ -61,7 +84,33 @@ function formatMinuteTickLabel(totalMin: number): string {
 }
 
 /**
- * Gera e salva o Relatório Clean de Gestão (Início/Fim + Gráfico em Tons de Cinza + Ação do Líder)
+ * Desenha um padrão hachurado discreto em cinza no PDF para representar períodos SEM APONTAMENTO
+ */
+function drawHatchedGrayRect(
+  doc: jsPDF,
+  x: number,
+  y: number,
+  w: number,
+  h: number
+) {
+  doc.setFillColor(244, 244, 245); // fundo cinza bem claro
+  doc.setDrawColor(113, 113, 122); // borda cinza médio
+  doc.setLineWidth(0.15);
+  doc.rect(x, y, w, h, 'FD');
+
+  // Linhas diagonais discretas dentro do retângulo se houver largura suficiente
+  if (w >= 2.2) {
+    doc.setDrawColor(161, 161, 170);
+    doc.setLineWidth(0.12);
+    const step = 1.6;
+    for (let dx = 0.8; dx < w - 0.5; dx += step) {
+      doc.line(x + dx, y + h - 0.2, x + Math.min(w - 0.2, dx + h * 0.7), y + 0.2);
+    }
+  }
+}
+
+/**
+ * Gera e salva o Relatório Clean de Gestão (Início/Fim + Lacunas do Turno Inteiro + Observações + Ação do Líder)
  * usando estritamente tons de cinza e preto para impressão nítida e econômica.
  */
 export async function generateAndSaveLeaderTimelinePdf(
@@ -72,12 +121,13 @@ export async function generateAndSaveLeaderTimelinePdf(
     periodLabel,
     selectedCollaboratorsLabel,
     shiftFilterLabel,
+    includeShiftGaps,
     summaries,
     timelineRange,
     totalActivities,
+    totalGapsCount,
     totalMinutes,
-    overallFirstStart,
-    overallLastEnd,
+    totalGapMinutes,
     leaderAction,
   } = options;
 
@@ -111,12 +161,12 @@ export async function generateAndSaveLeaderTimelinePdf(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
   doc.setTextColor(24, 24, 27); // zinc-900
-  doc.text('RELATÓRIO DE GESTÃO · INÍCIO E FIM DE ATIVIDADES', margin + 4, currentY + 6.5);
+  doc.text('RELATÓRIO DE GESTÃO · INÍCIO, FIM E AUDITORIA DE TURNO', margin + 4, currentY + 6.5);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(82, 82, 91); // zinc-600
-  doc.text('MCA Controle de Atividades · Acompanhamento de Execução e Encaminhamento do Líder', margin + 4, currentY + 11.5);
+  doc.text('MCA Controle de Atividades · Apontamentos, Períodos Sem Apontar e Ação do Líder', margin + 4, currentY + 11.5);
   doc.text(`Período: ${periodLabel}  ·  Turno: ${shiftFilterLabel}`, margin + 4, currentY + 15.5);
 
   const emissaoStr = `${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
@@ -127,7 +177,7 @@ export async function generateAndSaveLeaderTimelinePdf(
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(82, 82, 91);
   doc.text(emissaoStr, pageWidth - margin - 4, currentY + 11, { align: 'right' });
-  doc.text(`Filtro: ${selectedCollaboratorsLabel.slice(0, 32)}`, pageWidth - margin - 4, currentY + 15.5, { align: 'right' });
+  doc.text(`Filtro: ${sanitizePdfText(selectedCollaboratorsLabel).slice(0, 32)}`, pageWidth - margin - 4, currentY + 15.5, { align: 'right' });
 
   currentY += 21.5;
 
@@ -142,35 +192,35 @@ export async function generateAndSaveLeaderTimelinePdf(
     {
       label: 'INICIARAM ATIVIDADES',
       value: `${summaries.length} colaborador(es)`,
-      sub: selectedCollaboratorsLabel === 'Todos que iniciaram' ? 'Equipe ativa no filtro' : 'Seleção filtrada',
+      sub: selectedCollaboratorsLabel === 'Todos que iniciaram' ? 'Turno inteiro auditado' : 'Seleção filtrada',
     },
     {
       label: 'ATIVIDADES REGISTRADAS',
       value: `${totalActivities} registro(s)`,
-      sub: 'Ordenado por início',
+      sub: includeShiftGaps ? `${totalGapsCount} período(s) sem apontar` : 'Somente atividades',
     },
     {
-      label: 'JANELA INÍCIO → FIM',
-      value: `${overallFirstStart} – ${overallLastEnd}`,
-      sub: '1º início ao último fim',
-    },
-    {
-      label: 'TEMPO TOTAL APONTADO',
+      label: 'TEMPO APONTADO',
       value: formatarHorasMinutos(totalMinutes),
-      sub: `${totalMinutes} minutos totais`,
+      sub: `${totalMinutes} minutos em atividade`,
+    },
+    {
+      label: 'SEM APONTAMENTO (TURNO)',
+      value: formatarHorasMinutos(totalGapMinutes),
+      sub: totalGapMinutes > 0 ? `${totalGapMinutes} min sem registro` : 'Nenhuma lacuna no turno',
     },
   ];
 
   kpiItems.forEach((item, idx) => {
     const x = margin + idx * (kpiW + kpiGap);
     doc.setFillColor(255, 255, 255);
-    doc.setDrawColor(161, 161, 170); // zinc-400
+    doc.setDrawColor(161, 161, 170);
     doc.setLineWidth(0.25);
     doc.rect(x, currentY, kpiW, kpiH, 'FD');
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(6.2);
-    doc.setTextColor(113, 113, 122); // zinc-500
+    doc.setTextColor(113, 113, 122);
     doc.text(item.label, x + 3, currentY + 4.2);
 
     doc.setFont('helvetica', 'bold');
@@ -190,11 +240,10 @@ export async function generateAndSaveLeaderTimelinePdf(
   // 3. GRÁFICO VETORIAL EM TONS DE CINZA (LINHA DO TEMPO OU CARGA HORÁRIA)
   // =========================================================================
   if (summaries.length > 0) {
-    // 3A. Gráfico Linha do Tempo (Início → Fim) quando Data Específica
     if (periodMode === 'DATA') {
-      const rowH = 7.5;
+      const rowH = 7.8;
       const headerH = 9;
-      const maxVisibleRows = Math.min(summaries.length, 18);
+      const maxVisibleRows = Math.min(summaries.length, 20);
       const chartH = headerH + maxVisibleRows * rowH + 5;
 
       ensureSpace(chartH + 10);
@@ -202,7 +251,13 @@ export async function generateAndSaveLeaderTimelinePdf(
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(24, 24, 27);
-      doc.text('GRÁFICO DE LINHA DO TEMPO (INÍCIO → FIM POR COLABORADOR)', margin, currentY + 3.2);
+      doc.text('GRÁFICO DE LINHA DO TEMPO DO TURNO INTEIRO (APONTADO vs. SEM APONTAR)', margin, currentY + 3.2);
+
+      // Legenda discreta à direita
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.2);
+      doc.setTextColor(82, 82, 91);
+      doc.text('[Cinza Escuro: Apontado]   [Hachurado Claro: Sem Apontar no Turno]', pageWidth - margin, currentY + 3.2, { align: 'right' });
       currentY += 5;
 
       doc.setFillColor(255, 255, 255);
@@ -210,20 +265,19 @@ export async function generateAndSaveLeaderTimelinePdf(
       doc.setLineWidth(0.25);
       doc.rect(margin, currentY, contentWidth, chartH, 'FD');
 
-      const labelColW = 36;
-      const summaryColW = 28;
+      const labelColW = 35;
+      const summaryColW = 35;
       const trackX = margin + labelColW;
       const trackW = contentWidth - labelColW - summaryColW - 3;
       const spanMin = Math.max(60, timelineRange.maxMinute - timelineRange.minMinute);
 
-      // Grade horária vertical
       const stepMinutes = spanMin <= 480 ? 60 : 120;
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(6);
       for (let m = timelineRange.minMinute; m <= timelineRange.maxMinute; m += stepMinutes) {
         const ratio = (m - timelineRange.minMinute) / spanMin;
         const xTick = trackX + ratio * trackW;
-        doc.setDrawColor(228, 228, 231); // zinc-200
+        doc.setDrawColor(228, 228, 231);
         doc.setLineWidth(0.18);
         doc.line(xTick, currentY + 6, xTick, currentY + headerH + maxVisibleRows * rowH);
         doc.setTextColor(113, 113, 122);
@@ -231,10 +285,9 @@ export async function generateAndSaveLeaderTimelinePdf(
       }
 
       const grayShades: Array<[number, number, number]> = [
-        [39, 39, 42],   // zinc-800
-        [82, 82, 91],   // zinc-600
-        [113, 113, 122],// zinc-500
-        [161, 161, 170],// zinc-400
+        [39, 39, 42],
+        [82, 82, 91],
+        [113, 113, 122],
       ];
 
       summaries.slice(0, maxVisibleRows).forEach((col, idx) => {
@@ -245,44 +298,48 @@ export async function generateAndSaveLeaderTimelinePdf(
           doc.rect(margin + 0.5, rowY, contentWidth - 1, rowH, 'F');
         }
 
-        // Nome do colaborador
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(6.6);
+        doc.setFontSize(6.5);
         doc.setTextColor(24, 24, 27);
-        const shortName = col.collaboratorName.length > 20 ? `${col.collaboratorName.slice(0, 18)}…` : col.collaboratorName;
-        doc.text(shortName, margin + 2.5, rowY + 4.7);
+        const shortName = col.collaboratorName.length > 19 ? `${col.collaboratorName.slice(0, 17)}…` : col.collaboratorName;
+        doc.text(sanitizePdfText(shortName), margin + 2.5, rowY + 4.7);
 
         // Trilho de fundo fino
-        doc.setFillColor(244, 244, 245);
+        doc.setFillColor(248, 248, 250);
         doc.rect(trackX, rowY + 1.8, trackW, rowH - 3.6, 'F');
 
-        // Blocos de início → fim das atividades
-        col.blocks.forEach((blk, bIdx) => {
+        // 1º desenha blocos de lacuna (Sem Apontamento) em hachurado claro
+        let actColorCounter = 0;
+        col.blocks.forEach((blk) => {
           const clampedStart = Math.max(timelineRange.minMinute, blk.startMinOfDay);
           const clampedEnd = Math.min(timelineRange.maxMinute, Math.max(clampedStart + 4, blk.endMinOfDay));
           const xStart = trackX + ((clampedStart - timelineRange.minMinute) / spanMin) * trackW;
           const bWidth = Math.max(1.2, ((clampedEnd - clampedStart) / spanMin) * trackW);
 
-          const [r, g, b] = grayShades[bIdx % grayShades.length];
-          if (blk.isOngoing) {
-            doc.setFillColor(212, 212, 216);
-            doc.setDrawColor(24, 24, 27);
+          if (blk.isGap) {
+            drawHatchedGrayRect(doc, xStart, rowY + 1.8, bWidth, rowH - 3.6);
           } else {
-            doc.setFillColor(r, g, b);
-            doc.setDrawColor(24, 24, 27);
+            const [r, g, b] = grayShades[actColorCounter % grayShades.length];
+            actColorCounter++;
+            if (blk.isOngoing) {
+              doc.setFillColor(212, 212, 216);
+              doc.setDrawColor(24, 24, 27);
+            } else {
+              doc.setFillColor(r, g, b);
+              doc.setDrawColor(24, 24, 27);
+            }
+            doc.setLineWidth(0.15);
+            doc.rect(xStart, rowY + 1.8, bWidth, rowH - 3.6, 'FD');
           }
-          doc.setLineWidth(0.15);
-          doc.rect(xStart, rowY + 1.8, bWidth, rowH - 3.6, 'FD');
         });
 
-        // Resumo à direita (1º Início - Últ. Fim | Total)
+        // Resumo à direita: Apontado + Sem Apontar
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(6);
-        doc.setTextColor(63, 63, 70);
-        const startHHMM = col.firstStartTime.slice(0, 5);
-        const endHHMM = col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5);
+        doc.setFontSize(5.8);
+        doc.setTextColor(39, 39, 42);
+        const gapStr = col.totalGapMinutes > 0 ? ` · S/Ap: ${formatarHorasMinutos(col.totalGapMinutes)}` : '';
         doc.text(
-          `${startHHMM}-${endHHMM} (${formatarHorasMinutos(col.totalMinutes)})`,
+          `${formatarHorasMinutos(col.totalMinutes)}${gapStr}`,
           pageWidth - margin - 2.5,
           rowY + 4.7,
           { align: 'right' }
@@ -291,16 +348,15 @@ export async function generateAndSaveLeaderTimelinePdf(
 
       currentY += chartH + 4.5;
     } else {
-      // 3B. Gráfico Comparativo de Barras Horizontais em Tons de Cinza (Período)
       const maxRows = Math.min(summaries.length, 16);
-      const rowH = 6.8;
+      const rowH = 7;
       const chartH = 7 + maxRows * rowH + 3;
       ensureSpace(chartH + 10);
 
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(8);
       doc.setTextColor(24, 24, 27);
-      doc.text('GRÁFICO DE TEMPO APONTADO POR COLABORADOR (TONS DE CINZA)', margin, currentY + 3.2);
+      doc.text('GRÁFICO COMPARATIVO: APONTADO vs. SEM APONTAMENTO NO TURNO', margin, currentY + 3.2);
       currentY += 5;
 
       doc.setFillColor(255, 255, 255);
@@ -308,9 +364,9 @@ export async function generateAndSaveLeaderTimelinePdf(
       doc.setLineWidth(0.25);
       doc.rect(margin, currentY, contentWidth, chartH, 'FD');
 
-      const maxMins = Math.max(1, ...summaries.map((s) => s.totalMinutes));
-      const labelW = 40;
-      const rightInfoW = 46;
+      const maxTotalSpan = Math.max(1, ...summaries.map((s) => s.totalMinutes + s.totalGapMinutes));
+      const labelW = 36;
+      const rightInfoW = 58;
       const barAreaX = margin + labelW;
       const barAreaW = contentWidth - labelW - rightInfoW - 4;
 
@@ -318,29 +374,29 @@ export async function generateAndSaveLeaderTimelinePdf(
         const y = currentY + 4 + idx * rowH;
 
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(6.6);
+        doc.setFontSize(6.5);
         doc.setTextColor(24, 24, 27);
-        const shortName = col.collaboratorName.length > 22 ? `${col.collaboratorName.slice(0, 20)}…` : col.collaboratorName;
-        doc.text(shortName, margin + 2.5, y + 4.2);
+        const shortName = col.collaboratorName.length > 20 ? `${col.collaboratorName.slice(0, 18)}…` : col.collaboratorName;
+        doc.text(sanitizePdfText(shortName), margin + 2.5, y + 4.2);
 
-        // Fundo da barra
         doc.setFillColor(244, 244, 245);
         doc.rect(barAreaX, y + 1.3, barAreaW, rowH - 2.8, 'F');
 
-        // Barra preenchida em tom cinza escuro
-        const fillW = Math.max(1.5, (col.totalMinutes / maxMins) * barAreaW);
-        const shade = idx % 2 === 0 ? 63 : 113;
-        doc.setFillColor(shade, shade, shade + 6);
-        doc.rect(barAreaX, y + 1.3, fillW, rowH - 2.8, 'F');
+        const workW = Math.max(0.8, (col.totalMinutes / maxTotalSpan) * barAreaW);
+        doc.setFillColor(39, 39, 42);
+        doc.rect(barAreaX, y + 1.3, workW, rowH - 2.8, 'F');
 
-        // Rótulo impresso diretamente ao lado
+        if (col.totalGapMinutes > 0 && includeShiftGaps) {
+          const gapW = Math.max(0.8, (col.totalGapMinutes / maxTotalSpan) * barAreaW);
+          drawHatchedGrayRect(doc, barAreaX + workW, y + 1.3, Math.min(gapW, barAreaW - workW), rowH - 2.8);
+        }
+
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(6.2);
+        doc.setFontSize(6);
         doc.setTextColor(39, 39, 42);
-        const startHHMM = col.firstStartTime.slice(0, 5);
-        const endHHMM = col.lastEndTime === 'Em andamento' ? 'Ativo' : col.lastEndTime.slice(0, 5);
+        const gapTxt = col.totalGapMinutes > 0 ? ` | S/Ap: ${formatarHorasMinutos(col.totalGapMinutes)}` : '';
         doc.text(
-          `${formatarHorasMinutos(col.totalMinutes)} (${col.activitiesCount}x) · ${startHHMM}–${endHHMM}`,
+          `Apont: ${formatarHorasMinutos(col.totalMinutes)} (${col.activitiesCount}x)${gapTxt}`,
           pageWidth - margin - 2.5,
           y + 4.2,
           { align: 'right' }
@@ -352,43 +408,56 @@ export async function generateAndSaveLeaderTimelinePdf(
   }
 
   // =========================================================================
-  // 4. TABELA DETALHADA DE INÍCIO E FIM DAS ATIVIDADES
+  // 4. TABELA DETALHADA DE INÍCIO, FIM, OBSERVAÇÕES E PERÍODOS SEM APONTAR
   // =========================================================================
   ensureSpace(24);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(24, 24, 27);
-  doc.text('DETALHAMENTO DE ATIVIDADES INICIADAS (INÍCIO / FIM)', margin, currentY + 3);
+  doc.text('DETALHAMENTO DO TURNO (ATIVIDADES, OBSERVAÇÕES E PERÍODOS SEM APONTAR)', margin, currentY + 3);
   currentY += 4.5;
 
-  const tableRows: Array<string[]> = [];
+  interface PdfRowMeta {
+    cells: string[];
+    isGap: boolean;
+  }
+
+  const rowsMeta: PdfRowMeta[] = [];
   summaries.forEach((col) => {
     col.blocks.forEach((b) => {
-      tableRows.push([
-        col.collaboratorName,
-        b.date,
-        b.activity,
-        b.startTime.slice(0, 8),
-        b.endTime === 'Em andamento' ? 'Em andamento' : b.endTime.slice(0, 8),
-        b.durationMinutes > 0 ? `${b.durationMinutes} min` : (b.isOngoing ? 'Ativo' : '-'),
-        b.isAutoClosed ? 'Auto-Fim' : b.status,
-      ]);
+      const cleanAct = sanitizePdfText(b.activity);
+      const cleanObs = sanitizePdfText(b.observation);
+      const actWithObs = cleanObs ? `${cleanAct}\nObs: ${cleanObs}` : cleanAct;
+
+      rowsMeta.push({
+        isGap: Boolean(b.isGap),
+        cells: [
+          sanitizePdfText(col.collaboratorName),
+          b.date,
+          actWithObs,
+          b.startTime.slice(0, 8),
+          b.endTime === 'Em andamento' ? 'Em andamento' : b.endTime.slice(0, 8),
+          b.durationMinutes > 0 ? `${b.durationMinutes} min` : b.isOngoing ? 'Ativo' : '-',
+          b.isGap ? 'Sem Apontar' : b.isAutoClosed ? 'Auto-Fim' : b.status,
+        ],
+      });
     });
   });
 
-  if (tableRows.length > 0) {
+  if (rowsMeta.length > 0) {
     autoTable(doc, {
       startY: currentY,
       margin: { left: margin, right: margin, bottom: 16 },
-      head: [['Colaborador', 'Data', 'Atividade', 'Início', 'Fim', 'Duração', 'Status']],
-      body: tableRows,
+      head: [['Colaborador', 'Data', 'Atividade / Observação', 'Início', 'Fim', 'Duração', 'Status']],
+      body: rowsMeta.map((r) => r.cells),
       theme: 'grid',
       styles: {
-        fontSize: 6.8,
-        cellPadding: 1.4,
+        fontSize: 6.7,
+        cellPadding: 1.5,
         textColor: [24, 24, 27],
         lineColor: [212, 212, 216],
         lineWidth: 0.15,
+        overflow: 'linebreak',
       },
       headStyles: {
         fillColor: [228, 228, 231],
@@ -396,16 +465,28 @@ export async function generateAndSaveLeaderTimelinePdf(
         fontStyle: 'bold',
       },
       columnStyles: {
-        0: { cellWidth: 34, fontStyle: 'bold' },
-        1: { cellWidth: 19, halign: 'center' },
-        2: { cellWidth: 58 },
-        3: { cellWidth: 17, halign: 'center' },
-        4: { cellWidth: 21, halign: 'center' },
-        5: { cellWidth: 17, halign: 'right', fontStyle: 'bold' },
-        6: { cellWidth: 20, halign: 'center' },
+        0: { cellWidth: 28, fontStyle: 'bold' },
+        1: { cellWidth: 18, halign: 'center' },
+        2: { cellWidth: 68 },
+        3: { cellWidth: 16, halign: 'center' },
+        4: { cellWidth: 19, halign: 'center' },
+        5: { cellWidth: 16, halign: 'right', fontStyle: 'bold' },
+        6: { cellWidth: 21, halign: 'center' },
       },
-      alternateRowStyles: {
-        fillColor: [250, 250, 250],
+      didParseCell: (hookData) => {
+        if (hookData.section === 'body') {
+          const meta = rowsMeta[hookData.row.index];
+          if (meta?.isGap) {
+            // Linha de período sem apontamento em destaque discreto cinza-claro e itálico/negrito
+            hookData.cell.styles.fillColor = [235, 235, 240];
+            hookData.cell.styles.textColor = [39, 39, 42];
+            if (hookData.column.index === 2 || hookData.column.index === 6) {
+              hookData.cell.styles.fontStyle = 'bold';
+            }
+          } else if (hookData.row.index % 2 === 1) {
+            hookData.cell.styles.fillColor = [250, 250, 250];
+          }
+        }
       },
     });
     currentY = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 6 : currentY + 12;
@@ -433,7 +514,6 @@ export async function generateAndSaveLeaderTimelinePdf(
   doc.setTextColor(24, 24, 27);
   doc.text('AÇÃO DO LÍDER / ENCAMINHAMENTO DE GESTÃO', margin + 4, currentY + 5);
 
-  // Opções de classificação com marcação [X] ou [ ]
   const allOptions = ['Alinhamento / OK', 'Orientação Verbal', 'Ajuste de Processo', 'Acompanhamento', 'Outra Ação'];
   const selectedClasses = leaderAction.classifications || [];
   const checkLine = allOptions
@@ -449,8 +529,7 @@ export async function generateAndSaveLeaderTimelinePdf(
   doc.setLineWidth(0.2);
   doc.line(margin + 4, currentY + 12, pageWidth - margin - 4, currentY + 12);
 
-  // Texto digitado pelo líder OU linhas pautadas para preenchimento à mão
-  const trimmedAction = (leaderAction.actionText || '').trim();
+  const trimmedAction = sanitizePdfText(leaderAction.actionText);
   if (trimmedAction) {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
@@ -465,13 +544,12 @@ export async function generateAndSaveLeaderTimelinePdf(
     });
   }
 
-  // Rodapé do formulário: Responsável, Prazo e Assinatura
   const footerLineY = currentY + 41;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6.8);
   doc.setTextColor(63, 63, 70);
-  doc.text(`Responsável: ${leaderAction.responsible || '_________________________'}`, margin + 4, footerLineY);
-  doc.text(`Prazo: ${leaderAction.deadline || '____/____/______'}`, margin + 78, footerLineY);
+  doc.text(`Responsável: ${sanitizePdfText(leaderAction.responsible) || '_________________________'}`, margin + 4, footerLineY);
+  doc.text(`Prazo: ${sanitizePdfText(leaderAction.deadline) || '____/____/______'}`, margin + 78, footerLineY);
 
   doc.setDrawColor(63, 63, 70);
   doc.line(pageWidth - margin - 62, footerLineY - 2.5, pageWidth - margin - 4, footerLineY - 2.5);
